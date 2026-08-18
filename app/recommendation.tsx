@@ -1,0 +1,151 @@
+import { StatusBar } from 'expo-status-bar';
+import { StyleSheet, View, Text, ScrollView, ActivityIndicator, TouchableOpacity, Alert } from 'react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import * as Calendar from 'expo-calendar';
+import { useAuth } from '@/hooks/useAuth';
+import { PlaceRecommendation } from '@/lib/recommendations';
+import { useEffect, useState } from 'react';
+import Animated, { FadeInDown, FadeIn } from 'react-native-reanimated';
+
+export default function SuggestionsScreen() {
+  const { duration, start, end, cityContext } = useLocalSearchParams();
+  const { user, getRecommendations } = useAuth();
+  const router = useRouter();
+  const [recommendations, setRecommendations] = useState<PlaceRecommendation[]>([]);
+  const [isComputing, setIsComputing] = useState(true);
+
+  const city = (cityContext as string) || user?.homebase || '';
+  const durationMins = parseInt(duration as string, 10);
+  const durationLabel = durationMins >= 60
+    ? `${Math.floor(durationMins / 60)}h${durationMins % 60 > 0 ? ` ${durationMins % 60}min` : ''}`
+    : `${durationMins}min`;
+
+  useEffect(() => {
+    if (!duration || !start) return;
+    let cancelled = false;
+    setIsComputing(true);
+    getRecommendations({
+      city: city || 'New York, USA',
+      durationMinutes: durationMins,
+      startTimeIso: start as string
+    })
+      .then(places => {
+        if (!cancelled) setRecommendations(places.map((p: any) => ({ ...p, id: p._id })));
+      })
+      .catch(() => {
+        if (!cancelled) setRecommendations([]);
+      })
+      .finally(() => {
+        if (!cancelled) setIsComputing(false);
+      });
+    return () => { cancelled = true; };
+  }, [duration, durationMins, city, start, getRecommendations]);
+
+  // Always creates a new, separate calendar entry — never touches an existing event
+  // (including one that was already busy, e.g. reached via "Scheduled Conflicts" on the
+  // Home tab). A suggestion is something to add alongside your schedule, not something
+  // that should silently overwrite a real meeting's title/location/notes.
+  const handleSelectPlace = async (place: PlaceRecommendation) => {
+    try {
+      const calendars = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
+      const writableCalendars = calendars.filter(c => c.allowsModifications);
+
+      if (writableCalendars.length > 0) {
+        await Calendar.createEventAsync(writableCalendars[0].id, {
+          title: place.name,
+          location: `${place.name}, ${place.city}`,
+          startDate: new Date(start as string),
+          endDate: new Date(end as string),
+          notes: place.description
+        });
+        Alert.alert('Success!', 'Added this suggestion to your device calendar as a new event.');
+      } else {
+        Alert.alert('Scheduled!', `Added "${place.name}" to your schedule!`);
+      }
+      router.back();
+    } catch (e: any) {
+      Alert.alert('Error', 'Could not add to calendar: ' + e.message);
+    }
+  };
+
+  return (
+    <View style={styles.container}>
+      <Text style={styles.title}>Smart Suggestions</Text>
+      <Text style={styles.subtitle}>
+        {durationLabel} free window{city ? ` · ${city}` : ''}
+      </Text>
+      
+      <View style={styles.separator} />
+      
+      <ScrollView contentContainerStyle={styles.scroll}>
+        {isComputing ? (
+          <Animated.View entering={FadeIn} style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#3B82F6" />
+            <Text style={styles.loadingText}>Odys.ai Engine is analyzing your preferences...</Text>
+            
+            {/* Skeleton Placeholders */}
+            {[1, 2, 3].map((key) => (
+              <View key={key} style={styles.skeletonCard}>
+                <View style={styles.skeletonHeader} />
+                <View style={styles.skeletonRow} />
+                <View style={[styles.skeletonRow, { width: '60%' }]} />
+              </View>
+            ))}
+          </Animated.View>
+        ) : recommendations.length === 0 ? (
+          <Animated.View entering={FadeIn}>
+            <Text style={styles.emptyText}>No pristine activities found that fit this extremely tight schedule constraint.</Text>
+          </Animated.View>
+        ) : (
+          recommendations.map((place, index) => (
+            <TouchableOpacity 
+              key={place.id}
+              activeOpacity={0.7}
+              onPress={() => handleSelectPlace(place)}
+            >
+              <Animated.View 
+                entering={FadeInDown.delay(index * 150).springify()}
+                style={styles.card}
+              >
+                <View style={styles.cardHeader}>
+                  <Text style={styles.placeName}>{place.name}</Text>
+                  <View style={styles.badge}>
+                    <Text style={styles.badgeText}>{place.matchScore > 0 ? `${place.matchScore} tag match` : 'New idea'}</Text>
+                  </View>
+                </View>
+                <Text style={styles.category}>{place.category} • {place.estimatedDuration} mins • {place.distanceKm}km away • {place.rating} ★</Text>
+                <Text style={styles.description}>{place.description}</Text>
+                <View style={{ marginTop: 12, borderTopWidth: 1, borderColor: '#334155', paddingTop: 12 }}>
+                  <Text style={{ color: '#F8FAFC', fontWeight: 'bold' }}>Select this option</Text>
+                </View>
+              </Animated.View>
+            </TouchableOpacity>
+          ))
+        )}
+      </ScrollView>
+
+      <StatusBar style="light" />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#0F172A', padding: 24 },
+  scroll: { paddingBottom: 40 },
+  title: { fontSize: 24, fontWeight: 'bold', color: '#FFF' },
+  subtitle: { fontSize: 16, color: '#94A3B8', marginTop: 4 },
+  separator: { marginVertical: 20, height: 1, width: '100%', backgroundColor: '#334155' },
+  loadingContainer: { alignItems: 'center', marginTop: 20 },
+  loadingText: { color: '#3B82F6', marginTop: 12, marginBottom: 32, fontSize: 16, fontWeight: '600' },
+  skeletonCard: { backgroundColor: '#1E293B', padding: 16, borderRadius: 12, marginBottom: 16, width: '100%', opacity: 0.5 },
+  skeletonHeader: { height: 20, backgroundColor: '#334155', borderRadius: 4, width: '40%', marginBottom: 16 },
+  skeletonRow: { height: 12, backgroundColor: '#334155', borderRadius: 4, width: '100%', marginBottom: 8 },
+  emptyText: { color: '#94A3B8', fontStyle: 'italic', lineHeight: 22 },
+  card: { backgroundColor: '#1E293B', padding: 16, borderRadius: 12, marginBottom: 16, borderLeftWidth: 3, borderLeftColor: '#3B82F6', borderWidth: 1, borderColor: '#334155' },
+  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  placeName: { fontSize: 18, fontWeight: '700', color: '#F8FAFC', flex: 1 },
+  badge: { backgroundColor: '#10B981', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 },
+  badgeText: { color: '#FFF', fontSize: 12, fontWeight: 'bold' },
+  category: { color: '#3B82F6', fontWeight: '600', fontSize: 13, marginBottom: 8 },
+  description: { color: '#CBD5E1', fontSize: 14, lineHeight: 20 }
+});

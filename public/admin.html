@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Odys.ai — Vetted Places Admin</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 960px; margin: 0 auto; padding: 24px; background: #f7f7f8; color: #1a1a1a; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  p.hint { color: #666; margin-top: 0; font-size: 13px; }
+  .panel { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin-bottom: 20px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  label { display: block; font-size: 12px; color: #444; margin-bottom: 2px; }
+  input, select, textarea { padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; }
+  input[type=text], textarea { width: 100%; box-sizing: border-box; }
+  .field { flex: 1; min-width: 140px; }
+  textarea { width: 100%; box-sizing: border-box; min-height: 50px; font-family: inherit; }
+  button { padding: 7px 14px; border-radius: 4px; border: 1px solid #333; background: #1a1a1a; color: #fff; cursor: pointer; font-size: 13px; }
+  button.secondary { background: #fff; color: #1a1a1a; }
+  button.danger { background: #fff; color: #b00020; border-color: #b00020; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eee; vertical-align: top; }
+  th { color: #666; font-weight: 600; }
+  .tag { display: inline-block; background: #eee; border-radius: 10px; padding: 1px 8px; font-size: 11px; margin-right: 4px; }
+  .source-curated { color: #0a7a2f; font-weight: 600; }
+  .source-generated { color: #999; }
+  .actions button { margin-right: 6px; }
+  #status { font-size: 13px; color: #b00020; min-height: 16px; }
+  .filter-row { display: flex; gap: 8px; align-items: end; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+  <h1>Vetted Places Admin</h1>
+  <p class="hint">Local-only tool. Everything added or edited here is saved as a permanent, curated entry — never touched by the app's automatic per-trip place generation.</p>
+
+  <div class="panel">
+    <h2 id="form-title" style="margin-top:0; font-size:15px;">Add a place</h2>
+    <div id="status"></div>
+    <form id="place-form">
+      <input type="hidden" id="place-id">
+      <div class="row">
+        <div class="field"><label>Name</label><input type="text" id="f-name" required></div>
+        <div class="field"><label>City</label><input type="text" id="f-city" required></div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label>Category</label>
+          <select id="f-category" required>
+            <option value="Restaurant">Restaurant</option>
+            <option value="Activity">Activity</option>
+            <option value="Event">Event</option>
+          </select>
+        </div>
+        <div class="field"><label>Genre (e.g. Italian, Museums, Concerts)</label><input type="text" id="f-genre" required></div>
+        <div class="field"><label>Rating (0-5)</label><input type="text" id="f-rating" value="4.5"></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>Estimated duration (minutes)</label><input type="text" id="f-duration" value="60"></div>
+        <div class="field"><label>Distance (km)</label><input type="text" id="f-distance" value="1"></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>Description</label><textarea id="f-description"></textarea></div>
+      </div>
+      <div class="row">
+        <button type="submit" id="submit-btn">Add place</button>
+        <button type="button" class="secondary" id="cancel-edit" style="display:none;">Cancel edit</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="panel">
+    <div class="filter-row">
+      <div class="field"><label>Filter by city</label><input type="text" id="city-filter" placeholder="e.g. Paris"></div>
+      <button type="button" class="secondary" id="refresh-btn">Refresh</button>
+    </div>
+    <table>
+      <thead>
+        <tr><th>Name</th><th>City</th><th>Category / Genre</th><th>Rating</th><th>Duration</th><th>Source</th><th>Actions</th></tr>
+      </thead>
+      <tbody id="places-body"></tbody>
+    </table>
+  </div>
+
+<script>
+const statusEl = document.getElementById('status');
+const form = document.getElementById('place-form');
+const cancelBtn = document.getElementById('cancel-edit');
+const submitBtn = document.getElementById('submit-btn');
+const formTitle = document.getElementById('form-title');
+
+function setStatus(msg, isError) {
+  statusEl.textContent = msg || '';
+  statusEl.style.color = isError ? '#b00020' : '#0a7a2f';
+}
+
+function resetForm() {
+  form.reset();
+  document.getElementById('place-id').value = '';
+  document.getElementById('f-rating').value = '4.5';
+  document.getElementById('f-duration').value = '60';
+  document.getElementById('f-distance').value = '1';
+  cancelBtn.style.display = 'none';
+  submitBtn.textContent = 'Add place';
+  formTitle.textContent = 'Add a place';
+}
+
+async function loadPlaces() {
+  const city = document.getElementById('city-filter').value.trim();
+  const url = city ? `/admin/api/places?city=${encodeURIComponent(city)}` : '/admin/api/places';
+  const res = await fetch(url);
+  if (!res.ok) {
+    setStatus('Failed to load places', true);
+    return;
+  }
+  const places = await res.json();
+  const body = document.getElementById('places-body');
+  body.innerHTML = '';
+  places.forEach(p => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${escapeHtml(p.name)}</td>
+      <td>${escapeHtml(p.city)}</td>
+      <td><span class="tag">${escapeHtml(p.category)}</span><span class="tag">${escapeHtml(p.genre)}</span></td>
+      <td>${p.rating ?? ''}</td>
+      <td>${p.estimatedDuration ?? ''} min</td>
+      <td class="source-${p.source}">${p.source}</td>
+      <td class="actions">
+        <button type="button" data-edit="${p._id}" class="secondary">Edit</button>
+        <button type="button" data-delete="${p._id}" class="danger">Delete</button>
+      </td>`;
+    body.appendChild(tr);
+    tr.querySelector('[data-edit]').addEventListener('click', () => startEdit(p));
+    tr.querySelector('[data-delete]').addEventListener('click', () => deletePlace(p._id, p.name));
+  });
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function startEdit(p) {
+  document.getElementById('place-id').value = p._id;
+  document.getElementById('f-name').value = p.name;
+  document.getElementById('f-city').value = p.city;
+  document.getElementById('f-category').value = p.category;
+  document.getElementById('f-genre').value = p.genre;
+  document.getElementById('f-rating').value = p.rating;
+  document.getElementById('f-duration').value = p.estimatedDuration;
+  document.getElementById('f-distance').value = p.distanceKm;
+  document.getElementById('f-description').value = p.description || '';
+  cancelBtn.style.display = 'inline-block';
+  submitBtn.textContent = 'Save changes';
+  formTitle.textContent = `Editing "${p.name}"`;
+  setStatus('');
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+async function deletePlace(id, name) {
+  if (!confirm(`Delete "${name}"? This can't be undone.`)) return;
+  const res = await fetch(`/admin/api/places/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    setStatus('Delete failed', true);
+    return;
+  }
+  setStatus(`Deleted "${name}".`);
+  loadPlaces();
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const id = document.getElementById('place-id').value;
+  const payload = {
+    name: document.getElementById('f-name').value.trim(),
+    city: document.getElementById('f-city').value.trim(),
+    category: document.getElementById('f-category').value,
+    genre: document.getElementById('f-genre').value.trim(),
+    rating: parseFloat(document.getElementById('f-rating').value) || 4.5,
+    estimatedDuration: parseInt(document.getElementById('f-duration').value, 10) || 60,
+    distanceKm: parseFloat(document.getElementById('f-distance').value) || 1,
+    description: document.getElementById('f-description').value.trim()
+  };
+
+  const res = await fetch(id ? `/admin/api/places/${id}` : '/admin/api/places', {
+    method: id ? 'PUT' : 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    setStatus(err.error || 'Save failed', true);
+    return;
+  }
+
+  setStatus(id ? 'Saved.' : 'Added.');
+  resetForm();
+  loadPlaces();
+});
+
+cancelBtn.addEventListener('click', resetForm);
+document.getElementById('refresh-btn').addEventListener('click', loadPlaces);
+document.getElementById('city-filter').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); loadPlaces(); } });
+
+loadPlaces();
+</script>
+</body>
+</html>
