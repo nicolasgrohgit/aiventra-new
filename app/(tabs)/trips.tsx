@@ -1,12 +1,17 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, View, Text, Platform, ScrollView, TouchableOpacity, Modal, TextInput, ActivityIndicator } from 'react-native';
+import { StyleSheet, View, Text, Platform, ScrollView, TouchableOpacity, Modal, TextInput, ActivityIndicator, Alert } from 'react-native';
 import { ThemedText } from '@/components/themed-text';
 import { useAuth } from '@/hooks/useAuth';
+import { useTrips } from '@/hooks/useTrips';
+import { useContacts } from '@/hooks/useContacts';
+import { useEvents } from '@/hooks/useEvents';
 import { PlaceRecommendation } from '@/lib/recommendations';
 import { NativeDatePicker } from '@/components/ui/NativeDatePicker';
-import { getTripDaySchedule } from '@/lib/calendar';
+import { getTripDaySchedule, getDeviceEventsForDateRange } from '@/lib/calendar';
 import { guessTimezoneForCity } from '@/lib/timezones';
 import { searchCities, CityResult } from '@/lib/geocoding';
+import { CircleShareSelector } from '@/components/ui/circle-share-selector';
+import { FOOD_GENRES_CATEGORIZED, ACTIVITY_GENRES_CATEGORIZED, EVENT_GENRES_CATEGORIZED } from '@/constants/preferences';
 
 interface EventParticipant {
   user_id: string;
@@ -33,18 +38,34 @@ interface TripMock {
   startDate: Date;
   endDate: Date;
   timezone: string;
+  sharedWithCircles: string[];
+}
+
+interface NearbyFriend {
+  userId: string;
+  name: string;
+  avatarUrl?: string;
+  matches: { type: 'lives_here' | 'visiting'; startDate?: string; endDate?: string }[];
 }
 
 const DURATION_OPTIONS = [60, 90, 120, 180];
 
+// Every genre tag, grouped for the "Refine Your Search" tag picker — same taxonomy the
+// solo-recommendation endpoint scores against (see flattenPreferenceTags in
+// lib/place-matching.ts), just offered as an in-the-moment override instead of the user's
+// saved preference profile.
+const REFINE_TAG_GROUPS = [...FOOD_GENRES_CATEGORIZED, ...ACTIVITY_GENRES_CATEGORIZED, ...EVENT_GENRES_CATEGORIZED];
+
 const formatTripDate = (d: Date, tz: string) => d.toLocaleDateString('en-CA', { timeZone: tz });
 
 export default function TripsScreen() {
+  const { user } = useAuth();
+  const { trips, setTrips } = useTrips();
+  const { contacts, refreshContacts } = useContacts();
   const {
-    user, trips, setTrips, contacts,
-    fetchTripEvents, fetchInvitedEvents, createEvent, updateEvent, respondToEvent, getJointRecommendations, getRecommendations,
-    refreshContacts
-  } = useAuth();
+    fetchTripEvents, fetchInvitedEvents, createEvent, importTripEvents, updateEvent, respondToEvent, getJointRecommendations, getRecommendations,
+    getFriendsNearby
+  } = useEvents();
 
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editTripId, setEditTripId] = useState<string | null>(null);
@@ -52,6 +73,9 @@ export default function TripsScreen() {
   const [newDestination, setNewDestination] = useState('');
   const [startDate, setStartDate] = useState(new Date());
   const [endDate, setEndDate] = useState(new Date(Date.now() + 86400000 * 3));
+  // Who can see this trip's destination/dates as a "traveling there" signal — private
+  // (empty) by default, opt-in per circle, editable here whether creating or editing.
+  const [newSharedWithCircles, setNewSharedWithCircles] = useState<string[]>([]);
 
   // Destination city autocomplete/validation — catches typos before they silently fall
   // through to lib/places-population.ts's synthetic "Local {typo} Cafe" fallback content.
@@ -65,10 +89,34 @@ export default function TripsScreen() {
     setDestinationFocused(false);
   };
 
-  const [selectedPlace, setSelectedPlace] = useState<{ place: PlaceRecommendation, tripId: string } | null>(null);
+  // slotStart carries the actual day+time of the free-time slot the tapped PlaceCard was
+  // shown under — scheduleDate/scheduleTime are synced to it below, rather than defaulting
+  // to "now" regardless of which day's slot was actually tapped.
+  const [selectedPlace, setSelectedPlace] = useState<{ place: PlaceRecommendation, tripId: string, slotStart: Date } | null>(null);
   const [scheduleDate, setScheduleDate] = useState(new Date());
   const [scheduleTime, setScheduleTime] = useState(new Date());
   const [scheduleInviteContactId, setScheduleInviteContactId] = useState<string | null>(null);
+
+  // "Looking for something else?" — a refined-search flow, pre-filled with the day/destination
+  // context from wherever it was tapped, letting the user override the time window and/or
+  // narrow to specific tags for just this one search (see handleRefineSearch below).
+  const [refineSearchContext, setRefineSearchContext] = useState<{ tripId: string, destination: string, dayLabel: string, date: Date } | null>(null);
+  const [refineDuration, setRefineDuration] = useState(90);
+  const [refineTime, setRefineTime] = useState(new Date());
+  const [refineTags, setRefineTags] = useState<string[]>([]);
+  const [refineStep, setRefineStep] = useState<'form' | 'loading' | 'results'>('form');
+  const [refineResults, setRefineResults] = useState<PlaceRecommendation[]>([]);
+  // The actual instant last searched for — kept separate from refineTime/refineSearchContext.date
+  // so result PlaceCards always schedule against what was really queried, even if the user
+  // fiddles with the form controls again before tapping a result.
+  const [refineStartInstant, setRefineStartInstant] = useState<Date | null>(null);
+
+  useEffect(() => {
+    if (selectedPlace) {
+      setScheduleDate(new Date(selectedPlace.slotStart));
+      setScheduleTime(new Date(selectedPlace.slotStart));
+    }
+  }, [selectedPlace]);
 
   const [expandedTripIds, setExpandedTripIds] = useState<Set<string>>(new Set());
 
@@ -79,17 +127,26 @@ export default function TripsScreen() {
   const [invitedEvents, setInvitedEvents] = useState<TripEvent[]>([]);
   const [showInvitedModal, setShowInvitedModal] = useState(false);
 
-  // "Propose an event" — the blind joint-matching flow: pick a slot + one friend, get
-  // suggestions computed from both your tastes without either of you seeing the other's.
+  // "Propose an event" — pick a slot, then either keep it as Me-Time (solo — the default,
+  // reusing the same solo recommendation endpoint the day-schedule proposals already use) or
+  // invite a friend for blind joint-matching (suggestions computed from both your tastes
+  // without either of you seeing the other's).
   const [proposeTripId, setProposeTripId] = useState<string | null>(null);
   const [proposeTitle, setProposeTitle] = useState('');
   const [proposeDate, setProposeDate] = useState(new Date());
   const [proposeTime, setProposeTime] = useState(new Date());
   const [proposeDuration, setProposeDuration] = useState(90);
+  const [proposeMode, setProposeMode] = useState<'me-time' | 'invite'>('me-time');
   const [proposeContactId, setProposeContactId] = useState<string | null>(null);
   const [proposeStep, setProposeStep] = useState<'form' | 'loading' | 'results'>('form');
   const [proposeEventId, setProposeEventId] = useState<string | null>(null);
   const [proposeResults, setProposeResults] = useState<any[]>([]);
+
+  // "Friends nearby" — circle-scoped, sharer-driven discovery of who's already at (or
+  // headed to) a trip's destination. Purely a discovery layer in front of "Propose an
+  // Event" — tapping a bubble pre-selects that person there, it doesn't change how events
+  // or joint-matching themselves work.
+  const [nearbyFriendsByTrip, setNearbyFriendsByTrip] = useState<Record<string, NearbyFriend[]>>({});
 
   // "AI Schedule Proposals" recommendations, keyed by `${tripId}-${slotStartIso}` and
   // fetched from the real server-side Place collection (see hooks/useAuth.tsx's
@@ -117,8 +174,36 @@ export default function TripsScreen() {
     }
   };
 
+  const refreshNearbyFriends = async (trip: TripMock) => {
+    const friends = await getFriendsNearby({
+      city: trip.destination,
+      startDate: trip.startDate.toISOString(),
+      endDate: trip.endDate.toISOString()
+    });
+    setNearbyFriendsByTrip(prev => ({ ...prev, [trip.id]: friends }));
+  };
+
+  // Opportunistic calendar-import sync — same shape as lib/places-population.ts's
+  // ensurePlacesForCity: triggered from an existing touchpoint (viewing/creating a trip),
+  // not a new button. Only syncs if calendar access is already granted (never prompts here —
+  // see getDeviceEventsForDateRange), so this is a silent no-op for most trips today.
+  const syncDeviceCalendarForTrip = async (trip: TripMock) => {
+    const events = await getDeviceEventsForDateRange(trip.startDate, trip.endDate);
+    if (events.length === 0) return;
+    await importTripEvents(trip.id, events.map(e => ({
+      id: e.id,
+      title: e.title,
+      startTime: e.startTime.toISOString(),
+      endTime: e.endTime.toISOString(),
+      location: e.location
+    })));
+    refreshTripEvents(trip.id);
+  };
+
   useEffect(() => {
     trips.forEach(t => refreshTripEvents(t.id));
+    trips.forEach(t => refreshNearbyFriends(t));
+    trips.forEach(t => syncDeviceCalendarForTrip(t));
     refreshInvitedEvents();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trips]);
@@ -211,6 +296,7 @@ export default function TripsScreen() {
     setNewDestination('');
     setStartDate(new Date());
     setEndDate(new Date(Date.now() + 86400000 * 3));
+    setNewSharedWithCircles([]);
     resetDestinationLookup();
     setShowCreateModal(true);
   };
@@ -220,8 +306,13 @@ export default function TripsScreen() {
     setNewDestination(trip.destination);
     setStartDate(trip.startDate);
     setEndDate(trip.endDate);
+    setNewSharedWithCircles(trip.sharedWithCircles || []);
     resetDestinationLookup();
     setShowCreateModal(true);
+  };
+
+  const toggleNewSharedCircle = (circle: string) => {
+    setNewSharedWithCircles(prev => prev.includes(circle) ? prev.filter(c => c !== circle) : [...prev, circle]);
   };
 
   const handleDeleteTrip = (tripId: string) => {
@@ -229,8 +320,8 @@ export default function TripsScreen() {
   };
 
   const handleSaveTrip = () => {
-    if (!newDestination) { alert("Please input a destination city explicitly (e.g. Rome)."); return; }
-    if (startDate > endDate) { alert("Start Date must naturally precede the End Date sequentially."); return; }
+    if (!newDestination) { Alert.alert('Missing Destination', 'Please enter a destination city, e.g. Rome.'); return; }
+    if (startDate > endDate) { Alert.alert('Invalid Dates', 'The start date must be before the end date.'); return; }
 
     if (editTripId) {
       setTrips(trips.map(t => t.id === editTripId ? {
@@ -238,7 +329,8 @@ export default function TripsScreen() {
         destination: newDestination,
         startDate: startDate,
         endDate: endDate,
-        timezone: guessTimezoneForCity(newDestination)
+        timezone: guessTimezoneForCity(newDestination),
+        sharedWithCircles: newSharedWithCircles
       } : t));
     } else {
       setTrips([{
@@ -246,7 +338,8 @@ export default function TripsScreen() {
         destination: newDestination,
         startDate: startDate,
         endDate: endDate,
-        timezone: guessTimezoneForCity(newDestination)
+        timezone: guessTimezoneForCity(newDestination),
+        sharedWithCircles: newSharedWithCircles
       }, ...trips]);
     }
     resetDestinationLookup();
@@ -271,18 +364,22 @@ export default function TripsScreen() {
       await refreshTripEvents(selectedPlace.tripId);
       setSelectedPlace(null);
       setScheduleInviteContactId(null);
+      // Harmless no-op if the place was picked from a trip's regular AI proposals rather than
+      // a refine-search result — only closes the refine modal if it was actually open.
+      closeRefineSearch();
     } catch (err: any) {
-      alert(err.message || 'Could not add this to your itinerary.');
+      Alert.alert('Error', err.message || 'Could not add this to your itinerary.');
     }
   };
 
-  const openProposeModal = (tripId: string) => {
+  const openProposeModal = (tripId: string, preselectContactId?: string) => {
     setProposeTripId(tripId);
     setProposeTitle('');
     setProposeDate(new Date());
     setProposeTime(new Date());
     setProposeDuration(90);
-    setProposeContactId(null);
+    setProposeMode(preselectContactId ? 'invite' : 'me-time');
+    setProposeContactId(preselectContactId || null);
     setProposeStep('form');
     setProposeEventId(null);
     setProposeResults([]);
@@ -291,12 +388,75 @@ export default function TripsScreen() {
     refreshContacts();
   };
 
+  // Tapping a "Friends nearby" bubble jumps straight into Propose an Event with that person
+  // pre-selected — this is purely a discovery shortcut, it still goes through the same
+  // Contact-based invite mechanic as picking someone by hand. If they're not already one of
+  // your own linked contacts (nearby-friends is sharer-driven, so seeing them doesn't
+  // require you to have added them), we ask you to add them first via Circles rather than
+  // silently creating a contact behind your back.
+  const handleTapNearbyFriend = (tripId: string, friend: NearbyFriend) => {
+    const existingContact = contacts.find((c: any) => c.contact_user_id === friend.userId);
+    if (!existingContact) {
+      Alert.alert(
+        'Add them first',
+        `${friend.name} isn't in your Circles yet. Add them as a contact first, then you'll be able to invite them here.`
+      );
+      return;
+    }
+    openProposeModal(tripId, existingContact.id);
+  };
+
   const closeProposeModal = () => setProposeTripId(null);
+
+  const openRefineSearch = (trip: TripMock, day: { dayLabel: string, date: Date }) => {
+    setRefineSearchContext({ tripId: trip.id, destination: trip.destination, dayLabel: day.dayLabel, date: day.date });
+    setRefineDuration(90);
+    const defaultTime = new Date(day.date);
+    defaultTime.setHours(12, 0, 0, 0);
+    setRefineTime(defaultTime);
+    setRefineTags([]);
+    setRefineStep('form');
+    setRefineResults([]);
+    setRefineStartInstant(null);
+  };
+
+  const closeRefineSearch = () => setRefineSearchContext(null);
+
+  const toggleRefineTag = (tag: string) => {
+    setRefineTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
+  };
+
+  const handleRefineSearch = async () => {
+    if (!refineSearchContext) return;
+    const trip = trips.find(t => t.id === refineSearchContext.tripId);
+    const finalStart = new Date(refineSearchContext.date);
+    finalStart.setHours(refineTime.getHours(), refineTime.getMinutes(), 0, 0);
+
+    setRefineStep('loading');
+    try {
+      const places = await getRecommendations({
+        city: refineSearchContext.destination,
+        durationMinutes: refineDuration,
+        startTimeIso: finalStart.toISOString(),
+        timezone: trip?.timezone,
+        tagOverride: refineTags.length > 0 ? refineTags : undefined
+      });
+      setRefineResults(places.map((p: any) => ({ ...p, id: p._id })));
+      setRefineStartInstant(finalStart);
+      setRefineStep('results');
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Could not refine this search.');
+      setRefineStep('form');
+    }
+  };
 
   const handleProposeSubmit = async () => {
     if (!proposeTripId) return;
-    if (!proposeTitle.trim()) { alert('Give this a name, e.g. "Dinner".'); return; }
-    if (!proposeContactId) { alert('Pick a friend to invite.'); return; }
+    if (!proposeTitle.trim()) { Alert.alert('Missing Info', 'Give this a name, e.g. "Dinner".'); return; }
+    if (proposeMode === 'invite' && !proposeContactId) { Alert.alert('Missing Info', 'Pick a friend to invite, or switch to Me-Time.'); return; }
+
+    const trip = trips.find(t => t.id === proposeTripId);
+    if (!trip) return;
 
     const finalStart = new Date(proposeDate);
     finalStart.setHours(proposeTime.getHours(), proposeTime.getMinutes(), 0, 0);
@@ -308,15 +468,27 @@ export default function TripsScreen() {
         title: proposeTitle.trim(),
         startTime: finalStart.toISOString(),
         endTime: finalEnd.toISOString(),
-        participantContactIds: [proposeContactId]
+        participantContactIds: proposeMode === 'invite' && proposeContactId ? [proposeContactId] : []
       });
       setProposeEventId(event._id);
-      const recs = await getJointRecommendations(event._id);
+
+      // Me-Time reuses the same solo recommendation engine as the day-schedule proposals
+      // (one person's tastes, deterministic scoring) — inviting someone switches to the
+      // blind joint-matching endpoint instead. Neither of those mechanics changes here.
+      const recs = proposeMode === 'invite'
+        ? await getJointRecommendations(event._id)
+        : (await getRecommendations({
+            city: trip.destination,
+            durationMinutes: proposeDuration,
+            startTimeIso: finalStart.toISOString(),
+            timezone: trip.timezone
+          })).map((p: any) => ({ ...p, jointScore: p.matchScore }));
+
       setProposeResults(recs);
       setProposeStep('results');
       await refreshTripEvents(proposeTripId);
     } catch (err: any) {
-      alert(err.message || 'Could not propose this event.');
+      Alert.alert('Error', err.message || 'Could not propose this event.');
       setProposeStep('form');
     }
   };
@@ -328,7 +500,7 @@ export default function TripsScreen() {
       await refreshTripEvents(proposeTripId);
       closeProposeModal();
     } catch {
-      alert('Could not save this place to the event.');
+      Alert.alert('Error', 'Could not save this place to the event.');
     }
   };
 
@@ -337,7 +509,7 @@ export default function TripsScreen() {
       await respondToEvent(eventId, status);
       await refreshInvitedEvents();
     } catch {
-      alert('Could not send your response.');
+      Alert.alert('Error', 'Could not send your response.');
     }
   };
 
@@ -345,8 +517,8 @@ export default function TripsScreen() {
     e.participants.find(p => p.user_id === myUserId)?.status === 'pending'
   ).length;
 
-  const PlaceCard = ({ place, tripId }: { place: PlaceRecommendation, tripId: string }) => (
-    <TouchableOpacity style={styles.placeCard} activeOpacity={0.8} onPress={() => { setSelectedPlace({ place, tripId }); refreshContacts(); }}>
+  const PlaceCard = ({ place, tripId, slotStart }: { place: PlaceRecommendation, tripId: string, slotStart: Date }) => (
+    <TouchableOpacity style={styles.placeCard} activeOpacity={0.8} onPress={() => { setSelectedPlace({ place, tripId, slotStart }); refreshContacts(); }}>
       <View style={styles.placeHeader}>
         <Text style={styles.placeName} numberOfLines={1}>{place.name}</Text>
         <View style={styles.badge}><Text style={styles.badgeText}>{place.matchScore > 0 ? `${place.matchScore} tag match` : 'New idea'}</Text></View>
@@ -356,6 +528,24 @@ export default function TripsScreen() {
     </TouchableOpacity>
   );
 
+  // "Looking for something else?" — appended after the real suggestions (or shown alone when
+  // there are none), opens a placeholder modal pre-filled with this day/destination.
+  const RefineSearchCard = ({ trip, day }: { trip: TripMock, day: { dayLabel: string, date: Date } }) => (
+    <TouchableOpacity
+      style={styles.refineCard}
+      activeOpacity={0.8}
+      onPress={() => openRefineSearch(trip, day)}
+    >
+      <Text style={styles.refineCardIcon}>🔍</Text>
+      <Text style={styles.refineCardText}>Looking for{'\n'}something else?</Text>
+    </TouchableOpacity>
+  );
+
+  // selectedId/onSelect deal in Contact._id (c.id) — what participantContactIds actually
+  // needs server-side (see POST /api/trips/:tripId/events). Previously this picked
+  // c.contact_user_id (the linked User's id) instead, which would have made every real
+  // invite fail with "not found in your circle" — never caught because nothing in this
+  // session could actually run the RN UI, only the API directly.
   const ContactPicker = ({ selectedId, onSelect }: { selectedId: string | null, onSelect: (id: string | null) => void }) => (
     eligibleContacts.length === 0 ? (
       <Text style={styles.emptyText}>
@@ -364,12 +554,12 @@ export default function TripsScreen() {
     ) : (
       <View style={{ gap: 10 }}>
         {eligibleContacts.map((c: any) => {
-          const selected = selectedId === c.contact_user_id;
+          const selected = selectedId === c.id;
           return (
             <TouchableOpacity
               key={c.id}
               style={[styles.eventSelectRow, selected && styles.eventSelectRowActive]}
-              onPress={() => onSelect(selected ? null : c.contact_user_id)}
+              onPress={() => onSelect(selected ? null : c.id)}
             >
               <View style={[styles.checkboxNative, selected && styles.checkboxNativeActive]}>
                 <Text style={styles.checkboxText}>{selected ? '✓' : ''}</Text>
@@ -388,7 +578,7 @@ export default function TripsScreen() {
         <View style={styles.header}>
           <View style={styles.headerTextContainer}>
             <ThemedText style={styles.title}>Your Trips</ThemedText>
-            <ThemedText style={styles.subtitle}>Scheduled automated itineraries.</ThemedText>
+            <ThemedText style={styles.subtitle}>Plan and share your upcoming trips.</ThemedText>
           </View>
           <TouchableOpacity style={styles.addButton} onPress={handleOpenCreateTarget}>
             <Text style={styles.addButtonText}>+</Text>
@@ -404,7 +594,7 @@ export default function TripsScreen() {
         )}
 
         {trips.length === 0 ? (
-          <Text style={styles.emptyText}>{"You securely haven't populated any trips analytically yet."}</Text>
+          <Text style={styles.emptyText}>{"You haven't added any trips yet."}</Text>
         ) : (
           trips.map(trip => {
             const totalTripDays = Math.round((trip.endDate.getTime() - trip.startDate.getTime()) / 86400000) + 1;
@@ -424,8 +614,30 @@ export default function TripsScreen() {
                    </View>
                  </View>
 
+                 {(nearbyFriendsByTrip[trip.id]?.length || 0) > 0 && (
+                   <View style={styles.nearbyContainer}>
+                     <Text style={styles.nearbyLabel}>Friends nearby</Text>
+                     <View style={styles.nearbyBubbleRow}>
+                       {nearbyFriendsByTrip[trip.id].map(friend => {
+                         const livesHere = friend.matches.some(m => m.type === 'lives_here');
+                         return (
+                           <TouchableOpacity
+                             key={friend.userId}
+                             style={styles.nearbyBubble}
+                             activeOpacity={0.7}
+                             onPress={() => handleTapNearbyFriend(trip.id, friend)}
+                           >
+                             <Text style={styles.nearbyBubbleText}>{friend.name}</Text>
+                             <Text style={styles.nearbyBubbleSub}>{livesHere ? 'lives here' : 'visiting'}</Text>
+                           </TouchableOpacity>
+                         );
+                       })}
+                     </View>
+                   </View>
+                 )}
+
                  <TouchableOpacity style={styles.sharedContext} activeOpacity={0.8} onPress={() => openProposeModal(trip.id)}>
-                   <Text style={styles.sharedText}>+ Propose an Event with a Friend</Text>
+                   <Text style={styles.sharedText}>+ Propose an Event</Text>
                  </TouchableOpacity>
 
                  {tripEvents.length > 0 && (
@@ -492,12 +704,18 @@ export default function TripsScreen() {
                                   {slotRecs === undefined ? (
                                     <ActivityIndicator size="small" color="#3B82F6" />
                                   ) : slotRecs.length === 0 ? (
-                                    <Text style={styles.emptyText}>No places fit this slot yet.</Text>
+                                    <>
+                                      <Text style={styles.emptyText}>No places fit this slot yet.</Text>
+                                      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.hScroll}>
+                                        <RefineSearchCard trip={trip} day={day} />
+                                      </ScrollView>
+                                    </>
                                   ) : (
                                     <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.hScroll}>
                                       {slotRecs.slice(0, 4).map(p => (
-                                        <PlaceCard key={`${slot.startTime.getTime()}-${p.id}`} place={p} tripId={trip.id} />
+                                        <PlaceCard key={`${slot.startTime.getTime()}-${p.id}`} place={p} tripId={trip.id} slotStart={slot.startTime} />
                                       ))}
+                                      <RefineSearchCard trip={trip} day={day} />
                                     </ScrollView>
                                   )}
                                 </View>
@@ -603,11 +821,41 @@ export default function TripsScreen() {
                   ))}
                 </View>
 
-                <Text style={styles.inputLabel}>Invite</Text>
-                <ContactPicker selectedId={proposeContactId} onSelect={setProposeContactId} />
+                <Text style={styles.inputLabel}>Who&apos;s this for</Text>
+                <View style={styles.modeToggleRow}>
+                  <TouchableOpacity
+                    style={[styles.modeToggleBtn, proposeMode === 'me-time' && styles.modeToggleBtnActive]}
+                    onPress={() => { setProposeMode('me-time'); setProposeContactId(null); }}
+                  >
+                    <Text style={[styles.modeToggleText, proposeMode === 'me-time' && styles.modeToggleTextActive]}>🌿 Me-Time</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.modeToggleBtn, proposeMode === 'invite' && styles.modeToggleBtnActive]}
+                    onPress={() => setProposeMode('invite')}
+                  >
+                    <Text style={[styles.modeToggleText, proposeMode === 'invite' && styles.modeToggleTextActive]}>Invite Someone</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {proposeMode === 'me-time' ? (
+                  <Text style={[styles.modalSubtitle, { marginTop: 4 }]}>
+                    Just for you — sometimes a little me-time is exactly what you need. We&apos;ll suggest places matching your own tastes.
+                  </Text>
+                ) : (
+                  <View style={{ marginBottom: 28 }}>
+                    {(nearbyFriendsByTrip[proposeTripId || '']?.length || 0) > 0 && (
+                      <Text style={styles.nearbyHint}>
+                        Tip: friends already surfaced on this trip&apos;s card are the easiest picks — tap their bubble instead to jump straight here pre-filled.
+                      </Text>
+                    )}
+                    <ContactPicker selectedId={proposeContactId} onSelect={setProposeContactId} />
+                  </View>
+                )}
 
                 <TouchableOpacity style={[styles.submitBtnLarge, { marginTop: 24 }]} onPress={handleProposeSubmit}>
-                  <Text style={styles.submitBtnText}>Find Places We&apos;d Both Like</Text>
+                  <Text style={styles.submitBtnText}>
+                    {proposeMode === 'me-time' ? 'Find Places For Me' : "Find Places We'd Both Like"}
+                  </Text>
                 </TouchableOpacity>
               </>
             )}
@@ -621,7 +869,9 @@ export default function TripsScreen() {
 
             {proposeStep === 'results' && (
               <>
-                <Text style={styles.modalSubtitle}>Ranked for both of you — pick one to lock it in.</Text>
+                <Text style={styles.modalSubtitle}>
+                  {proposeMode === 'invite' ? 'Ranked for both of you — pick one to lock it in.' : 'Picked for your tastes — choose one to lock it in.'}
+                </Text>
                 {proposeResults.length === 0 ? (
                   <Text style={styles.emptyText}>No matches found for this slot yet — the event&apos;s been created, you can pick a place from the trip proposals below instead.</Text>
                 ) : (
@@ -661,7 +911,7 @@ export default function TripsScreen() {
             <Text style={styles.detailedDescText}>{selectedPlace?.place.description}</Text>
 
             <View style={styles.separator} />
-            <Text style={styles.proposalsHeader}>Chronologize Sequence</Text>
+            <Text style={styles.proposalsHeader}>Schedule It</Text>
 
             <Text style={styles.inputLabel}>Date</Text>
             <NativeDatePicker value={scheduleDate} onChange={setScheduleDate} mode="date" format="date" />
@@ -673,9 +923,118 @@ export default function TripsScreen() {
             <ContactPicker selectedId={scheduleInviteContactId} onSelect={setScheduleInviteContactId} />
 
             <TouchableOpacity style={[styles.submitBtn, {backgroundColor: '#3B82F6', marginTop: 20}]} onPress={handleAddToItinerary}>
-               <Text style={styles.submitBtnText}>Add + Chronologize</Text>
+               <Text style={styles.submitBtnText}>Add to Itinerary</Text>
             </TouchableOpacity>
           </View>
+        </View>
+      </Modal>
+
+      {/* Refined search — override the time window and/or narrow to specific tags for one search */}
+      <Modal visible={!!refineSearchContext} animationType="slide" presentationStyle="pageSheet" onRequestClose={closeRefineSearch}>
+        <View style={styles.modalContainer}>
+          <ScrollView showsVerticalScrollIndicator={false}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Refine Your Search</Text>
+              <TouchableOpacity onPress={closeRefineSearch} style={styles.closeButton}>
+                <Text style={styles.closeButtonText}>Close</Text>
+              </TouchableOpacity>
+            </View>
+            {refineSearchContext && (
+              <>
+                <View style={styles.refineContextBadge}>
+                  <Text style={styles.refineContextText}>{refineSearchContext.dayLabel}</Text>
+                  <Text style={styles.refineContextText}>{refineSearchContext.destination}</Text>
+                </View>
+
+                {refineStep === 'form' && (
+                  <>
+                    <Text style={styles.modalSubtitle}>
+                      Tell us more specifically what you&apos;re in the mood for — pick a time window
+                      and, optionally, the kinds of places to prioritize.
+                    </Text>
+
+                    <Text style={styles.inputLabel}>Time</Text>
+                    <NativeDatePicker value={refineTime} onChange={setRefineTime} mode="time" format="time" />
+
+                    <Text style={styles.inputLabel}>Duration</Text>
+                    <View style={{ flexDirection: 'row', gap: 10, marginBottom: 28 }}>
+                      {DURATION_OPTIONS.map(mins => (
+                        <TouchableOpacity
+                          key={mins}
+                          style={[styles.durationPill, refineDuration === mins && styles.durationPillActive]}
+                          onPress={() => setRefineDuration(mins)}
+                        >
+                          <Text style={[styles.durationPillText, refineDuration === mins && styles.durationPillTextActive]}>{mins}m</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+
+                    <Text style={styles.inputLabel}>What are you in the mood for? (optional)</Text>
+                    {REFINE_TAG_GROUPS.map(group => (
+                      <View key={group.type} style={{ marginBottom: 16 }}>
+                        <Text style={styles.tagGroupLabel}>{group.type}</Text>
+                        <View style={styles.tagPillRow}>
+                          {group.activities.map(tag => {
+                            const selected = refineTags.includes(tag);
+                            return (
+                              <TouchableOpacity
+                                key={tag}
+                                style={[styles.tagPill, selected && styles.tagPillActive]}
+                                onPress={() => toggleRefineTag(tag)}
+                              >
+                                <Text style={[styles.tagPillText, selected && styles.tagPillTextActive]}>{tag}</Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      </View>
+                    ))}
+
+                    <TouchableOpacity style={[styles.submitBtnLarge, { marginTop: 8 }]} onPress={handleRefineSearch}>
+                      <Text style={styles.submitBtnText}>Search</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+
+                {refineStep === 'loading' && (
+                  <View style={{ alignItems: 'center', marginTop: 40 }}>
+                    <ActivityIndicator color="#3B82F6" size="large" />
+                    <Text style={[styles.modalSubtitle, { marginTop: 20, textAlign: 'center' }]}>Searching…</Text>
+                  </View>
+                )}
+
+                {refineStep === 'results' && (
+                  <>
+                    <TouchableOpacity onPress={() => setRefineStep('form')} style={{ marginBottom: 20 }}>
+                      <Text style={styles.closeButtonText}>‹ Adjust search</Text>
+                    </TouchableOpacity>
+                    {refineResults.length === 0 ? (
+                      <Text style={styles.emptyText}>Nothing matched that — try a wider time window or fewer selected tags.</Text>
+                    ) : (
+                      refineResults.map(p => (
+                        <TouchableOpacity
+                          key={p.id}
+                          style={styles.placeCardWide}
+                          activeOpacity={0.8}
+                          onPress={() => {
+                            setSelectedPlace({ place: p, tripId: refineSearchContext.tripId, slotStart: refineStartInstant || refineSearchContext.date });
+                            refreshContacts();
+                          }}
+                        >
+                          <View style={styles.placeHeader}>
+                            <Text style={styles.placeName} numberOfLines={1}>{p.name}</Text>
+                            <View style={styles.badge}><Text style={styles.badgeText}>{p.matchScore > 0 ? `${p.matchScore} tag match` : 'New idea'}</Text></View>
+                          </View>
+                          <Text style={styles.placeCategory}>{p.category} • {p.rating} ★</Text>
+                          <Text style={styles.placeDesc} numberOfLines={2}>{p.description}</Text>
+                        </TouchableOpacity>
+                      ))
+                    )}
+                  </>
+                )}
+              </>
+            )}
+          </ScrollView>
         </View>
       </Modal>
 
@@ -690,7 +1049,7 @@ export default function TripsScreen() {
               </TouchableOpacity>
             </View>
 
-            <Text style={styles.modalSubtitle}>Ensure recursive mapping natively explicitly systematically comprehensively locally safely.</Text>
+            <Text style={styles.modalSubtitle}>Add a destination and travel dates to get started.</Text>
 
             <Text style={styles.inputLabel}>Destination City</Text>
             <View style={{ marginBottom: 28 }}>
@@ -729,9 +1088,18 @@ export default function TripsScreen() {
             <Text style={styles.inputLabel}>End Date</Text>
             <NativeDatePicker value={endDate} onChange={setEndDate} mode="date" format="date" />
 
+            <View style={{ marginTop: 8 }}>
+              <CircleShareSelector
+                label="Share This Trip With"
+                helperText="Lets people in these circles see you're heading here on these dates, so they can notice and invite you when they're planning something too."
+                selected={newSharedWithCircles}
+                onToggle={toggleNewSharedCircle}
+              />
+            </View>
+
             <View style={{ marginTop: 24 }}>
               <TouchableOpacity style={styles.submitBtnLarge} onPress={handleSaveTrip}>
-                 <Text style={styles.submitBtnText}>{editTripId ? 'Secure Modifiers' : 'Initialize Itinerary'}</Text>
+                 <Text style={styles.submitBtnText}>{editTripId ? 'Save Changes' : 'Create Trip'}</Text>
               </TouchableOpacity>
             </View>
           </ScrollView>
@@ -769,6 +1137,13 @@ const styles = StyleSheet.create({
   sharedContext: { backgroundColor: 'rgba(59, 130, 246, 0.1)', padding: 14, borderRadius: 12, borderLeftWidth: 4, borderLeftColor: '#3B82F6', marginBottom: 24, paddingVertical: 18, alignItems: 'center' },
   sharedText: { color: '#3B82F6', fontWeight: '800', fontSize: 15, textTransform: 'uppercase' },
 
+  nearbyContainer: { marginBottom: 20 },
+  nearbyLabel: { color: '#94A3B8', fontSize: 12, fontWeight: '800', textTransform: 'uppercase', marginBottom: 10, letterSpacing: 0.5 },
+  nearbyBubbleRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  nearbyBubble: { backgroundColor: 'rgba(16, 185, 129, 0.12)', borderWidth: 1, borderColor: '#10B981', borderRadius: 16, paddingHorizontal: 14, paddingVertical: 8 },
+  nearbyBubbleText: { color: '#10B981', fontWeight: '800', fontSize: 13 },
+  nearbyBubbleSub: { color: '#6EE7B7', fontSize: 10, marginTop: 1, textTransform: 'uppercase', letterSpacing: 0.3 },
+
   timelineContainer: { backgroundColor: '#1E293B', borderRadius: 20, padding: 20, marginBottom: 24, borderWidth: 1, borderColor: '#334155' },
   timelineHeader: { color: '#10B981', fontSize: 18, fontWeight: '800', marginBottom: 20, textTransform: 'uppercase' },
   timelineEventCard: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 16 },
@@ -793,6 +1168,12 @@ const styles = StyleSheet.create({
   badgeText: { color: '#FFF', fontSize: 11, fontWeight: '800' },
   placeCategory: { color: '#3B82F6', fontWeight: '700', fontSize: 13, marginBottom: 10 },
   placeDesc: { color: '#94A3B8', fontSize: 14, lineHeight: 22 },
+
+  refineCard: { backgroundColor: '#1E293B', padding: 20, borderRadius: 20, width: 140, marginRight: 16, borderWidth: 1, borderColor: '#334155', borderStyle: 'dashed', alignItems: 'center', justifyContent: 'center' },
+  refineCardIcon: { fontSize: 24, marginBottom: 10 },
+  refineCardText: { color: '#94A3B8', fontSize: 13, fontWeight: '700', textAlign: 'center', lineHeight: 18 },
+  refineContextBadge: { backgroundColor: 'rgba(59, 130, 246, 0.1)', paddingVertical: 14, borderRadius: 14, flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 18, marginBottom: 20, borderWidth: 1, borderColor: '#3B82F630' },
+  refineContextText: { color: '#3B82F6', fontSize: 14, fontWeight: '800' },
 
   // Day-by-day schedule breakdown
   dayBlock: { borderTopWidth: 1, borderTopColor: '#1E293B', paddingTop: 16, marginTop: 4, marginBottom: 4 },
@@ -840,6 +1221,20 @@ const styles = StyleSheet.create({
   durationPillActive: { backgroundColor: '#3B82F6', borderColor: '#3B82F6' },
   durationPillText: { color: '#94A3B8', fontWeight: '700', fontSize: 14 },
   durationPillTextActive: { color: '#FFF' },
+
+  tagGroupLabel: { color: '#64748B', fontSize: 12, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 },
+  tagPillRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  tagPill: { paddingVertical: 10, paddingHorizontal: 14, backgroundColor: '#1E293B', borderRadius: 20, borderWidth: 1, borderColor: '#334155' },
+  tagPillActive: { backgroundColor: '#3B82F6', borderColor: '#3B82F6' },
+  tagPillText: { color: '#94A3B8', fontWeight: '700', fontSize: 13 },
+  tagPillTextActive: { color: '#FFF' },
+
+  modeToggleRow: { flexDirection: 'row', gap: 10, marginBottom: 4 },
+  modeToggleBtn: { flex: 1, paddingVertical: 14, backgroundColor: '#1E293B', borderRadius: 12, alignItems: 'center', borderWidth: 1, borderColor: '#334155' },
+  modeToggleBtnActive: { backgroundColor: 'rgba(16, 185, 129, 0.15)', borderColor: '#10B981' },
+  modeToggleText: { color: '#94A3B8', fontWeight: '700', fontSize: 14 },
+  modeToggleTextActive: { color: '#10B981' },
+  nearbyHint: { color: '#64748B', fontSize: 12, lineHeight: 17, marginBottom: 14, fontStyle: 'italic' },
 
   inputLabel: { color: '#E2E8F0', fontSize: 14, fontWeight: '700', textTransform: 'uppercase', marginBottom: 10 },
   textInput: { backgroundColor: '#1E293B', borderWidth: 1, borderColor: '#334155', borderRadius: 14, padding: 18, color: '#FFF', fontSize: 16, marginBottom: 28 },

@@ -3,16 +3,21 @@ import { StyleSheet, View, Text, ScrollView, ActivityIndicator, TouchableOpacity
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Calendar from 'expo-calendar';
 import { useAuth } from '@/hooks/useAuth';
+import { useEvents } from '@/hooks/useEvents';
 import { PlaceRecommendation } from '@/lib/recommendations';
 import { useEffect, useState } from 'react';
 import Animated, { FadeInDown, FadeIn } from 'react-native-reanimated';
 
 export default function SuggestionsScreen() {
   const { duration, start, end, cityContext } = useLocalSearchParams();
-  const { user, getRecommendations } = useAuth();
+  const { user } = useAuth();
+  const { getRecommendations } = useEvents();
   const router = useRouter();
   const [recommendations, setRecommendations] = useState<PlaceRecommendation[]>([]);
   const [isComputing, setIsComputing] = useState(true);
+  // undefined = default "near me" ceiling (DEFAULT_MAX_DISTANCE_KM, 5km server-side). Set by
+  // handleExpandRadius below once the user asks for a wider search.
+  const [maxDistanceKm, setMaxDistanceKm] = useState<number | undefined>(undefined);
 
   const city = (cityContext as string) || user?.homebase || '';
   const durationMins = parseInt(duration as string, 10);
@@ -27,7 +32,8 @@ export default function SuggestionsScreen() {
     getRecommendations({
       city: city || 'New York, USA',
       durationMinutes: durationMins,
-      startTimeIso: start as string
+      startTimeIso: start as string,
+      ...(maxDistanceKm !== undefined ? { maxDistanceKm } : {})
     })
       .then(places => {
         if (!cancelled) setRecommendations(places.map((p: any) => ({ ...p, id: p._id })));
@@ -39,7 +45,16 @@ export default function SuggestionsScreen() {
         if (!cancelled) setIsComputing(false);
       });
     return () => { cancelled = true; };
-  }, [duration, durationMins, city, start, getRecommendations]);
+  }, [duration, durationMins, city, start, maxDistanceKm, getRecommendations]);
+
+  // Re-runs the same query with the "near me" ceiling raised well past the 5km default —
+  // 25km stays within a single metro area (a taxi/transit ride, not a day trip), which fits
+  // "free time near your hotel" better than an uncapped search would. Once expanded, the
+  // button gives way to a static note rather than staying tappable — a second tap at the same
+  // ceiling can't surface anything new, so offering it again would just be misleading.
+  const handleExpandRadius = () => {
+    setMaxDistanceKm(25);
+  };
 
   // Always creates a new, separate calendar entry — never touches an existing event
   // (including one that was already busy, e.g. reached via "Scheduled Conflicts" on the
@@ -94,7 +109,16 @@ export default function SuggestionsScreen() {
           </Animated.View>
         ) : recommendations.length === 0 ? (
           <Animated.View entering={FadeIn}>
-            <Text style={styles.emptyText}>No pristine activities found that fit this extremely tight schedule constraint.</Text>
+            <Text style={styles.emptyText}>No suggestions fit this time window yet — try a longer slot.</Text>
+            {maxDistanceKm === undefined ? (
+              <TouchableOpacity style={styles.expandButton} activeOpacity={0.7} onPress={handleExpandRadius}>
+                <Text style={styles.expandButtonText}>Expand Search Radius</Text>
+              </TouchableOpacity>
+            ) : (
+              <Text style={styles.expandedNoteText}>
+                Already searching up to {maxDistanceKm}km — nothing fits there either yet.
+              </Text>
+            )}
           </Animated.View>
         ) : (
           recommendations.map((place, index) => (
@@ -141,6 +165,9 @@ const styles = StyleSheet.create({
   skeletonHeader: { height: 20, backgroundColor: '#334155', borderRadius: 4, width: '40%', marginBottom: 16 },
   skeletonRow: { height: 12, backgroundColor: '#334155', borderRadius: 4, width: '100%', marginBottom: 8 },
   emptyText: { color: '#94A3B8', fontStyle: 'italic', lineHeight: 22 },
+  expandButton: { marginTop: 20, backgroundColor: '#1E293B', borderWidth: 1, borderColor: '#334155', borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
+  expandButtonText: { color: '#3B82F6', fontWeight: '700', fontSize: 15 },
+  expandedNoteText: { color: '#64748B', fontStyle: 'italic', fontSize: 13, marginTop: 16, textAlign: 'center' },
   card: { backgroundColor: '#1E293B', padding: 16, borderRadius: 12, marginBottom: 16, borderLeftWidth: 3, borderLeftColor: '#3B82F6', borderWidth: 1, borderColor: '#334155' },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
   placeName: { fontSize: 18, fontWeight: '700', color: '#F8FAFC', flex: 1 },

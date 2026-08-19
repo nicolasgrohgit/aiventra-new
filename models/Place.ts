@@ -13,10 +13,13 @@ export interface IPlace extends Document {
   estimatedDuration: number;
   distanceKm: number;
   // 'curated' = added by hand through the admin site, vetted, permanent — never touched by
-  // the auto-population step. 'generated' = synthetic fallback content auto-created at trip
-  // creation time (see lib/places-population.ts) to top up thin/uncovered cities; safe to
-  // regenerate or eventually replace with real API results without losing curated data.
-  source: 'curated' | 'generated';
+  // the auto-population step. 'google' = fetched live from Google Places API (New) at
+  // population time (see lib/google-places-client.ts, lib/places-population.ts) — real venue
+  // data, but safe to refresh/replace on a future re-fetch, unlike curated. 'generated' =
+  // synthetic fallback content, used when there's no curated coverage AND either no
+  // GOOGLE_PLACES_API_KEY is configured or the Google fetch didn't return enough to fill a
+  // city; safe to regenerate at any time.
+  source: 'curated' | 'generated' | 'google';
   // Reserved for a future geo/radius bolt-on (a $geoNear stage ahead of the tag-scoring
   // stages in the same aggregation) — deliberately not indexed or queried yet.
   location?: {
@@ -35,7 +38,7 @@ const PlaceSchema = new Schema<IPlace>({
   description: { type: String, required: true },
   estimatedDuration: { type: Number, required: true },
   distanceKm: { type: Number, required: true },
-  source: { type: String, enum: ['curated', 'generated'], required: true, default: 'generated' },
+  source: { type: String, enum: ['curated', 'generated', 'google'], required: true, default: 'generated' },
   location: {
     type: { type: String, enum: ['Point'] },
     coordinates: { type: [Number] }

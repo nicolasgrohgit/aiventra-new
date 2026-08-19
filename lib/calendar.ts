@@ -52,3 +52,36 @@ export async function getDeviceEventsForToday(useSimulatedIfDenied = false): Pro
 
   return useSimulatedIfDenied ? generateMockEventsForToday() : [];
 }
+
+/**
+ * Fetch device calendar events for an arbitrary date range — used to opportunistically sync
+ * a trip's actual dates (not just "today") into Event documents with source: 'imported' (see
+ * POST /api/trips/:tripId/events/import in server.ts). Deliberately does NOT prompt for
+ * permission — only reads if calendar access is already granted, since this sync is a
+ * background nicety triggered from viewing/creating a trip, not something that should
+ * interrupt that flow with a fresh permission dialog. Returns [] if not granted, on any
+ * calendar with no readable calendars, or on error.
+ */
+export async function getDeviceEventsForDateRange(startDate: Date, endDate: Date): Promise<CalendarEvent[]> {
+  try {
+    const { status } = await Calendar.getCalendarPermissionsAsync();
+    if (status !== 'granted') return [];
+
+    const allCalendars = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
+    const calendarIds = allCalendars.map(c => c.id);
+    if (calendarIds.length === 0) return [];
+
+    const deviceEvents = await Calendar.getEventsAsync(calendarIds, startDate, endDate);
+
+    return deviceEvents.map(evt => ({
+      id: evt.id,
+      title: evt.title,
+      startTime: new Date(evt.startDate),
+      endTime: new Date(evt.endDate),
+      location: evt.location,
+    }));
+  } catch (error) {
+    console.warn("Failed to fetch native calendar events for range: ", error);
+    return [];
+  }
+}

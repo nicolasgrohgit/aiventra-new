@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, ScrollView, TouchableOpacity, Text, Platform, TextInput, Modal } from 'react-native';
+import { StyleSheet, View, ScrollView, TouchableOpacity, Text, Platform, TextInput, Modal, Alert } from 'react-native';
 import { Image } from 'expo-image';
+import Constants from 'expo-constants';
 import { ThemedText } from '@/components/themed-text';
 import { useAuth } from '@/hooks/useAuth';
 import { NativeDatePicker } from '@/components/ui/NativeDatePicker';
-import * as Calendar from 'expo-calendar';
 import { searchCities, CityResult } from '@/lib/geocoding';
 import { FOOD_GENRES_CATEGORIZED, ACTIVITY_GENRES_CATEGORIZED, EVENT_GENRES_CATEGORIZED } from '@/constants/preferences';
+import { CircleShareSelector } from '@/components/ui/circle-share-selector';
+import { hasGoogleMatch } from '@/lib/google-places-types';
 
 export const COMMON_DIETS = ['Vegetarian', 'Vegan', 'Halal', 'Kosher', 'Gluten-Free', 'Keto', 'Nut-Free'];
 
@@ -38,12 +40,18 @@ export const CHANGELOG_HISTORY = [
 
 export default function ProfileScreen() {
   const { user, updatePreferences, updateUser, logout } = useAuth();
-  
+  // Derived from app.json rather than a second hardcoded copy, so the two can't drift apart.
+  const appVersion = Constants.expoConfig?.version || CHANGELOG_HISTORY[0]?.version || '1.0.0';
+
   const [firstName, setFirstName] = useState(user?.firstName || '');
   const [lastName, setLastName] = useState(user?.lastName || '');
   const [email, setEmail] = useState(user?.email || '');
   const [dob, setDob] = useState<Date>(new Date(user?.dob || '1990-01-01T12:00:00'));
   const [homebase, setHomebase] = useState(user?.homebase || '');
+  // Standing "I live here" presence signal — private by default, opt-in per circle. See
+  // Trip.sharedWithCircles (trips.tsx) for the parallel, date-bound "I'm traveling there"
+  // signal — these are deliberately separate since one is tied to a trip and one isn't.
+  const [homebaseSharedCircles, setHomebaseSharedCircles] = useState<string[]>(user?.homebaseSharedCircles || []);
 
   // City autocomplete/validation — catches typos before they silently fall through to
   // lib/recommendations.ts's fake "Local {typo} Cafe" placeholder content.
@@ -94,17 +102,22 @@ export default function ProfileScreen() {
   const [showEventModal, setShowEventModal] = useState(false);
   const [showVersionModal, setShowVersionModal] = useState(false);
 
+  const toggleHomebaseCircle = (circle: string) => {
+    setHomebaseSharedCircles(prev => prev.includes(circle) ? prev.filter(c => c !== circle) : [...prev, circle]);
+  };
+
   const handleSave = () => {
-    updateUser({ 
-      firstName, 
-      lastName, 
-      email, 
+    updateUser({
+      firstName,
+      lastName,
+      email,
       homebase,
-      dob: dob.toISOString().split('T')[0], 
-      name: `${firstName} ${lastName}`.trim() 
+      homebaseSharedCircles,
+      dob: dob.toISOString().split('T')[0],
+      name: `${firstName} ${lastName}`.trim()
     });
     updatePreferences({ budget, currency, dateFormat, activityLevel: activityPace, dietary, foodGenres, activityGenres, eventGenres });
-    alert("Profile explicit structures organically mapped globally!");
+    Alert.alert('Saved', 'Your profile has been updated.');
   };
 
   const toggleArrayItem = (item: string, stateArray: string[], setStateArray: (arr: string[]) => void) => {
@@ -150,7 +163,7 @@ export default function ProfileScreen() {
      </View>
   );
 
-  const CategorizedSelectionModal = ({ visible, close, title, description, groupedOptions, selected, toggle }: any) => (
+  const CategorizedSelectionModal = ({ visible, close, title, description, groupedOptions, selected, toggle, category }: any) => (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={close}>
       <View style={styles.modalContainer}>
         <View style={styles.modalHeader}>
@@ -160,22 +173,29 @@ export default function ProfileScreen() {
           </TouchableOpacity>
         </View>
         <Text style={styles.modalSubtitle}>{description}</Text>
-        
+
         <ScrollView showsVerticalScrollIndicator={false}>
+          {category === 'Event' && (
+            <Text style={styles.categoryNote}>
+              Event venues are covered — matching what&apos;s actually on during your dates is coming soon.
+            </Text>
+          )}
           {groupedOptions.map((group: any) => (
             <View key={group.type} style={styles.categoryGroup}>
               <Text style={styles.categoryTitle}>{group.type}</Text>
               <View style={styles.bubblesContainer}>
                 {group.activities.map((opt: string) => {
                   const active = selected.includes(opt);
+                  const comingSoon = !hasGoogleMatch(opt);
                   return (
-                    <TouchableOpacity 
-                      key={opt} 
-                      style={[styles.bubbleOption, active && styles.bubbleOptionActive]} 
-                      onPress={() => toggle(opt)} 
+                    <TouchableOpacity
+                      key={opt}
+                      style={[styles.bubbleOption, active && styles.bubbleOptionActive, comingSoon && styles.bubbleOptionComingSoon]}
+                      onPress={() => toggle(opt)}
                       activeOpacity={0.7}
                     >
                       <Text style={[styles.bubbleOptionText, active && styles.bubbleOptionTextActive]}>{opt}</Text>
+                      {comingSoon && <Text style={styles.comingSoonBadge}>Soon</Text>}
                     </TouchableOpacity>
                   )
                 })}
@@ -309,6 +329,13 @@ export default function ProfileScreen() {
              {homebaseWarning && <Text style={styles.cityWarningText}>{homebaseWarning}</Text>}
            </View>
 
+           <CircleShareSelector
+             label="Share My Home City With"
+             helperText="Lets people in these circles see you live here when they're planning a trip there. Private by default — nothing is shared until you pick a circle."
+             selected={homebaseSharedCircles}
+             onToggle={toggleHomebaseCircle}
+           />
+
            <Text style={styles.inputLabel}>Date of Birth</Text>
            <NativeDatePicker value={dob} onChange={setDob} mode="date" format="date" />
         </View>
@@ -329,34 +356,17 @@ export default function ProfileScreen() {
            <ConfigRowModal title="Favorite Event Types" arrayString={eventGenres} openModal={() => setShowEventModal(true)} />
         </View>
 
-        <View style={styles.engineConfigCard}>
-           <Text style={styles.cardHeader}>Integrations</Text>
-           <Text style={styles.cardDesc}>Sync external services for better context resolution.</Text>
-           <View style={styles.separator} />
-           
-           <TouchableOpacity style={styles.integrationBtn} onPress={async () => {
-             const { status } = await Calendar.requestCalendarPermissionsAsync();
-             if (status === 'granted') {
-               alert("Native Calendar successfully linked!");
-             } else {
-               alert("Permission denied. Calendar unlinked.");
-             }
-           }}>
-             <Text style={styles.integrationBtnText}>Sync Native Calendar</Text>
-           </TouchableOpacity>
-        </View>
-
-        <TouchableOpacity 
-           style={styles.engineConfigCard} 
-           activeOpacity={0.7} 
+        <TouchableOpacity
+           style={styles.engineConfigCard}
+           activeOpacity={0.7}
            onPress={() => setShowVersionModal(true)}
          >
             <Text style={styles.cardHeader}>About</Text>
-            <Text style={styles.cardDesc}>App Version: v1.0.1 (View Changelog)</Text>
+            <Text style={styles.cardDesc}>App Version: v{appVersion} (View Changelog)</Text>
          </TouchableOpacity>
 
         <TouchableOpacity style={styles.saveButton} onPress={handleSave}>
-          <Text style={styles.saveButtonText}>Apply Adjustments</Text>
+          <Text style={styles.saveButtonText}>Save Changes</Text>
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.logoutButton} onPress={logout}>
@@ -364,9 +374,9 @@ export default function ProfileScreen() {
         </TouchableOpacity>
       </ScrollView>
       <GenericSelectionModal visible={showDietModal} close={() => setShowDietModal(false)} title="Dietary Limiters" description="Select any dietary restrictions to exclude matching food options from your suggestions." options={COMMON_DIETS} selected={dietary} toggle={(i:string) => toggleArrayItem(i, dietary, setDietary)} />
-      <CategorizedSelectionModal visible={showFoodModal} close={() => setShowFoodModal(false)} title="Dining Contexts" description="Select your favorite cuisines to prioritize them in dining recommendations." groupedOptions={FOOD_GENRES_CATEGORIZED} selected={foodGenres} toggle={(i:string) => toggleArrayItem(i, foodGenres, setFoodGenres)} />
-      <CategorizedSelectionModal visible={showActivityModal} close={() => setShowActivityModal(false)} title="Activity Genres" description="Choose the types of outdoor and indoor activities you enjoy most." groupedOptions={ACTIVITY_GENRES_CATEGORIZED} selected={activityGenres} toggle={(i:string) => toggleArrayItem(i, activityGenres, setActivityGenres)} />
-      <CategorizedSelectionModal visible={showEventModal} close={() => setShowEventModal(false)} title="Event Types" description="Select the categories of live entertainment and events you would like to discover." groupedOptions={EVENT_GENRES_CATEGORIZED} selected={eventGenres} toggle={(i:string) => toggleArrayItem(i, eventGenres, setEventGenres)} />
+      <CategorizedSelectionModal visible={showFoodModal} close={() => setShowFoodModal(false)} title="Dining Contexts" description="Select your favorite cuisines to prioritize them in dining recommendations." groupedOptions={FOOD_GENRES_CATEGORIZED} selected={foodGenres} toggle={(i:string) => toggleArrayItem(i, foodGenres, setFoodGenres)} category="Restaurant" />
+      <CategorizedSelectionModal visible={showActivityModal} close={() => setShowActivityModal(false)} title="Activity Genres" description="Choose the types of outdoor and indoor activities you enjoy most." groupedOptions={ACTIVITY_GENRES_CATEGORIZED} selected={activityGenres} toggle={(i:string) => toggleArrayItem(i, activityGenres, setActivityGenres)} category="Activity" />
+      <CategorizedSelectionModal visible={showEventModal} close={() => setShowEventModal(false)} title="Event Types" description="Select the categories of live entertainment and events you would like to discover." groupedOptions={EVENT_GENRES_CATEGORIZED} selected={eventGenres} toggle={(i:string) => toggleArrayItem(i, eventGenres, setEventGenres)} category="Event" />
       <VersionHistoryModal visible={showVersionModal} close={() => setShowVersionModal(false)} />
 
     </View>
@@ -415,8 +425,6 @@ const styles = StyleSheet.create({
   saveButtonText: { color: '#F8FAFC', fontSize: 16, fontWeight: '800' },
   logoutButton: { backgroundColor: 'rgba(220, 38, 38, 0.1)', paddingVertical: 18, borderRadius: 16, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(220, 38, 38, 0.3)' },
   logoutText: { color: '#FCA5A5', fontSize: 16, fontWeight: '800' },
-  integrationBtn: { backgroundColor: 'rgba(59, 130, 246, 0.15)', paddingVertical: 16, borderRadius: 12, alignItems: 'center', borderWidth: 1, borderColor: '#3B82F6' },
-  integrationBtnText: { color: '#3B82F6', fontSize: 15, fontWeight: '800' },
 
   modalContainer: { flex: 1, backgroundColor: '#0F172A', padding: 24, paddingTop: Platform.OS === 'ios' ? 40 : 24 },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
@@ -436,6 +444,9 @@ const styles = StyleSheet.create({
   bubbleOptionActive: { backgroundColor: 'rgba(59, 130, 246, 0.15)', borderColor: '#3B82F6' },
   bubbleOptionText: { color: '#94A3B8', fontSize: 14, fontWeight: '600' },
   bubbleOptionTextActive: { color: '#3B82F6' },
+  bubbleOptionComingSoon: { borderStyle: 'dashed' },
+  comingSoonBadge: { color: '#F59E0B', fontSize: 9, fontWeight: '700', marginTop: 3, textTransform: 'uppercase', letterSpacing: 0.5, textAlign: 'center' },
+  categoryNote: { color: '#64748B', fontSize: 13, lineHeight: 18, marginBottom: 18 },
   
   changelogCard: { backgroundColor: '#1E293B', padding: 20, borderRadius: 16, marginBottom: 20, borderWidth: 1, borderColor: '#334155' },
   changelogHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },

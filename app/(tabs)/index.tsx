@@ -3,6 +3,7 @@ import { Platform, StyleSheet, View, ScrollView, TouchableOpacity, ActivityIndic
 import { useRouter } from 'expo-router';
 import { ThemedText } from '@/components/themed-text';
 import { useAuth } from '@/hooks/useAuth';
+import { useTrips } from '@/hooks/useTrips';
 import { calculateFreeTimeSlots, generateMockEventsForToday, getDeviceEventsForToday, FreeTimeSlot, CalendarEvent } from '@/lib/calendar';
 import * as Location from 'expo-location';
 import * as Calendar from 'expo-calendar';
@@ -18,7 +19,8 @@ function getGreeting(): { text: string; emoji: string } {
 }
 
 export default function HomeScreen() {
-  const { user, trips } = useAuth();
+  const { user } = useAuth();
+  const { trips } = useTrips();
   const router = useRouter();
 
   // Calendar
@@ -131,21 +133,18 @@ export default function HomeScreen() {
     });
   };
 
-  const handleEventSuggest = (evt: CalendarEvent) => {
-    const durationMins = Math.round((evt.endTime.getTime() - evt.startTime.getTime()) / 60000);
-    router.push({
-      pathname: '/recommendation' as any,
-      params: {
-        eventId: evt.id,
-        duration: durationMins,
-        start:    evt.startTime.toISOString(),
-        end:      evt.endTime.toISOString(),
-        cityContext: contextCity,
-      },
-    });
-  };
-
   const { text: greetingText, emoji: greetingEmoji } = getGreeting();
+
+  // Free slots (green) and busy conflicts (red) merged into one chronological timeline,
+  // rather than two separate stacked sections — each item keeps its own styling/behavior.
+  type TimelineItem =
+    | { type: 'free'; key: string; startTime: Date; slot: FreeTimeSlot }
+    | { type: 'event'; key: string; startTime: Date; event: CalendarEvent };
+
+  const timelineItems: TimelineItem[] = [
+    ...freeSlots.map((slot, idx): TimelineItem => ({ type: 'free', key: `slot-${idx}`, startTime: slot.startTime, slot })),
+    ...events.map((evt): TimelineItem => ({ type: 'event', key: `evt-${evt.id}`, startTime: evt.startTime, event: evt })),
+  ].sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
 
   return (
     <View style={styles.container}>
@@ -232,33 +231,33 @@ export default function HomeScreen() {
               <ThemedText style={{fontSize: 24, marginRight: 12}}>📅</ThemedText>
               <View style={{flex: 1}}>
                 <ThemedText style={styles.connectCalendarTitle}>Sync Native Calendar</ThemedText>
-                <ThemedText style={styles.connectCalendarDesc}>Odys.ai is currently using mock data. Connect your device calendar for real scheduling!</ThemedText>
+                <ThemedText style={styles.connectCalendarDesc}>Connect your device calendar to see your real schedule and get better suggestions.</ThemedText>
               </View>
             </View>
           </TouchableOpacity>
         )}
 
-        {/* ── Free Slots ── */}
+        {/* ── Today's Schedule: free slots (green) and busy conflicts (red), merged into one chronological view ── */}
         <ThemedText style={styles.sectionTitle}>
-          Free time today{locationCity ? ` · ${locationCity}` : ''}
+          Today&apos;s Schedule{locationCity ? ` · ${locationCity}` : ''}
         </ThemedText>
         <View style={styles.timeline}>
-          {events.length === 0 && (
-            <ThemedText style={styles.subtitle}>No events today!</ThemedText>
+          {freeSlots.length === 0 && events.length === 0 && (
+            <ThemedText style={styles.subtitle}>Nothing scheduled or free right now.</ThemedText>
           )}
 
-          {freeSlots.map((slot, idx) => (
+          {timelineItems.map(item => item.type === 'free' ? (
             <TouchableOpacity
-              key={`slot-${idx}`}
+              key={item.key}
               style={styles.freeSlotCard}
-              onPress={() => handleSuggest(slot)}
+              onPress={() => handleSuggest(item.slot)}
               activeOpacity={0.8}
             >
               <View style={styles.slotContent}>
                 <ThemedText style={styles.slotTime}>
-                  {formatTime(slot.startTime)} – {formatTime(slot.endTime)}
+                  {formatTime(item.slot.startTime)} – {formatTime(item.slot.endTime)}
                 </ThemedText>
-                <ThemedText style={styles.slotDuration}>{slot.durationMinutes} min free</ThemedText>
+                <ThemedText style={styles.slotDuration}>{item.slot.durationMinutes} min free</ThemedText>
                 <ThemedText style={styles.slotDescription}>
                   Tap to get AI suggestions fitting this gap{locationCity ? ` in ${locationCity}` : ''}.
                 </ThemedText>
@@ -267,27 +266,16 @@ export default function HomeScreen() {
                 <ThemedText style={styles.chevronText}>›</ThemedText>
               </View>
             </TouchableOpacity>
-          ))}
-
-          {/* Scheduled conflicts */}
-          <ThemedText style={[styles.sectionTitle, { marginTop: 32, marginBottom: 8 }]}>Scheduled Conflicts</ThemedText>
-          <ThemedText style={[styles.subtitle, { marginBottom: 20 }]}>Tap on any busy slot below to discover AI alternatives or find nearby activities!</ThemedText>
-          {events.map(evt => (
-            <TouchableOpacity 
-              key={evt.id} 
-              style={styles.eventCard}
-              onPress={() => handleEventSuggest(evt)}
-              activeOpacity={0.8}
-            >
+          ) : (
+            // Purely informational — inherited from the device calendar, not something to
+            // plan around from here, so no onPress/tap affordance at all.
+            <View key={item.key} style={styles.eventCard}>
               <ThemedText style={styles.eventTime}>
-                {formatTime(evt.startTime)} – {formatTime(evt.endTime)}
+                {formatTime(item.event.startTime)} – {formatTime(item.event.endTime)}
               </ThemedText>
-              <ThemedText style={styles.eventTitle}>{evt.title}</ThemedText>
-              <ThemedText style={styles.eventLocation}>{evt.location}</ThemedText>
-              <ThemedText style={{ color: '#FCA5A5', marginTop: 8, fontSize: 13, fontWeight: '600' }}>
-                Tap to plan something during this event
-              </ThemedText>
-            </TouchableOpacity>
+              <ThemedText style={styles.eventTitle}>{item.event.title}</ThemedText>
+              <ThemedText style={styles.eventLocation}>{item.event.location}</ThemedText>
+            </View>
           ))}
         </View>
 

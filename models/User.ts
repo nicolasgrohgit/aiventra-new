@@ -17,6 +17,12 @@ export interface IUser extends Document {
     activityGenres?: string[];
     eventGenres?: string[];
   };
+  // Circles that can see this user's homebase as a standing "lives here" presence signal —
+  // separate from any specific trip. Empty by default (private); opt-in only, editable
+  // anytime from Profile. Formally declared (not left to strict:false) because it's read via
+  // direct property access in GET /api/friends-nearby — this project was already burned once
+  // by an undeclared field that stored fine but returned undefined on direct access.
+  homebaseSharedCircles: string[];
 }
 
 const UserSchema = new Schema<IUser>({
@@ -33,7 +39,8 @@ const UserSchema = new Schema<IUser>({
     foodGenres: [{ type: String }],
     activityGenres: [{ type: String }],
     eventGenres: [{ type: String }],
-  }
+  },
+  homebaseSharedCircles: { type: [String], default: [] }
 }, { timestamps: true, strict: false }); // strict: false only needed now for top-level ad hoc fields (firstName, homebase, etc.) — preferences.* is fully declared above
 
 export default mongoose.models.User || mongoose.model<IUser>('User', UserSchema);

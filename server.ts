@@ -6,7 +6,7 @@ import pino from 'pino';
 import pinoHttp from 'pino-http';
 import * as Sentry from '@sentry/node';
 import connectToDatabase from './lib/mongodb';
-import { isMealWindow, flattenPreferenceTags, buildCityDurationMatchStage, escapeRegExp } from './lib/place-matching';
+import { isMealWindow, flattenPreferenceTags, buildCityDurationMatchStage, escapeRegExp, cityNeedle } from './lib/place-matching';
 import { guessTimezoneForCity } from './lib/timezones';
 import User from './models/User';
 import Trip from './models/Trip';
@@ -180,7 +180,7 @@ app.get('/api/trips', authenticate, async (req: AuthedRequest, res: express.Resp
 
 app.post('/api/trips', authenticate, async (req: AuthedRequest, res: express.Response) => {
   try {
-    const { destination, startDate, endDate, timezone } = req.body;
+    const { destination, startDate, endDate, timezone, sharedWithCircles } = req.body;
     if (!destination || !startDate || !endDate) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
@@ -189,7 +189,8 @@ app.post('/api/trips', authenticate, async (req: AuthedRequest, res: express.Res
       destination,
       start_date: new Date(startDate),
       end_date: new Date(endDate),
-      timezone
+      timezone,
+      sharedWithCircles: sharedWithCircles || []
     });
     // Best-effort: a thin/uncovered destination shouldn't block trip creation, just miss
     // out on having candidate places ready until the next trip to that city tries again.
@@ -204,12 +205,13 @@ app.post('/api/trips', authenticate, async (req: AuthedRequest, res: express.Res
 
 app.put('/api/trips/:id', authenticate, async (req: AuthedRequest, res: express.Response) => {
   try {
-    const { destination, startDate, endDate, timezone } = req.body;
+    const { destination, startDate, endDate, timezone, sharedWithCircles } = req.body;
     const updateData: any = {};
     if (destination !== undefined) updateData.destination = destination;
     if (startDate !== undefined) updateData.start_date = new Date(startDate);
     if (endDate !== undefined) updateData.end_date = new Date(endDate);
     if (timezone !== undefined) updateData.timezone = timezone;
+    if (sharedWithCircles !== undefined) updateData.sharedWithCircles = sharedWithCircles;
 
     // Scoping the query to user_id (not just _id) is what stops one authenticated
     // user from updating another user's trip by guessing/enumerating its id.
@@ -241,6 +243,98 @@ app.delete('/api/trips/:id', authenticate, async (req: AuthedRequest, res: expre
     res.json({ success: true, message: 'Trip deleted successfully' });
   } catch (error: any) {
     reportError(error, req, 'delete trip failed');
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Friend discovery for trip planning — sharer-driven, not symmetric: whether I can see
+// someone's shared presence depends on THEIR contact list (do they have a Contact pointing
+// at me, tagged with a circle they've shared that presence with), never on how I've
+// categorized them. Location is private by default; this only surfaces people who've
+// explicitly opted a circle into visibility (see homebaseSharedCircles / Trip.sharedWithCircles).
+app.get('/api/friends-nearby', authenticate, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    const city = typeof req.query.city === 'string' ? req.query.city.trim() : '';
+    if (!city) {
+      return res.status(400).json({ error: 'city is required' });
+    }
+    const startDate = typeof req.query.startDate === 'string' ? new Date(req.query.startDate) : null;
+    const endDate = typeof req.query.endDate === 'string' ? new Date(req.query.endDate) : null;
+    // Substring, not exact-anchored, and reduced to the name-only prefix — same reasoning as
+    // buildCityDurationMatchStage/cityNeedle in lib/place-matching.ts: either side of the
+    // comparison (query or stored value) might be a bare city name or "City, Country", and a
+    // plain substring match only catches the case where the stored value is the longer one.
+    const cityRegex = { $regex: escapeRegExp(cityNeedle(city)), $options: 'i' };
+
+    // Who has ME as a contact, and under which of THEIR circles? Only these people are even
+    // candidates — everyone else's sharing, however broad, is invisible to me by construction.
+    const contactsPointingAtMe = await Contact.find({ contact_user_id: req.userId });
+    const circlesByOwner = new Map<string, Set<string>>();
+    for (const c of contactsPointingAtMe) {
+      const ownerId = c.owner_user_id.toString();
+      if (!circlesByOwner.has(ownerId)) circlesByOwner.set(ownerId, new Set());
+      for (const tag of c.circle_tags) circlesByOwner.get(ownerId)!.add(tag);
+    }
+    const candidateIds = Array.from(circlesByOwner.keys()).filter(id => id !== req.userId);
+    if (candidateIds.length === 0) {
+      return res.json([]);
+    }
+
+    const results = new Map<string, any>();
+    const addMatch = (user: any, matchType: 'lives_here' | 'visiting', tripDates?: { startDate: Date; endDate: Date }) => {
+      const id = user._id.toString();
+      if (!results.has(id)) {
+        results.set(id, {
+          userId: id,
+          name: user.full_name || user.email,
+          avatarUrl: user.avatar_url,
+          matches: []
+        });
+      }
+      results.get(id).matches.push(matchType === 'visiting' ? { type: matchType, ...tripDates } : { type: matchType });
+    };
+
+    // "Living there" — homebase match, not date-bound.
+    const homebaseMatches = await User.find({
+      _id: { $in: candidateIds },
+      homebase: cityRegex,
+      homebaseSharedCircles: { $ne: [] }
+    });
+    for (const u of homebaseMatches) {
+      const myCircles = circlesByOwner.get(u._id.toString())!;
+      if (u.homebaseSharedCircles.some((c: string) => myCircles.has(c))) {
+        addMatch(u, 'lives_here');
+      }
+    }
+
+    // "Traveling there" — a shared trip, with dates overlapping the given range if provided.
+    const tripFilter: any = {
+      user_id: { $in: candidateIds },
+      destination: cityRegex,
+      sharedWithCircles: { $ne: [] }
+    };
+    if (startDate && endDate && !isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
+      tripFilter.start_date = { $lte: endDate };
+      tripFilter.end_date = { $gte: startDate };
+    }
+    const tripMatches = await Trip.find(tripFilter);
+    if (tripMatches.length > 0) {
+      const tripOwnerIds = Array.from(new Set(tripMatches.map(t => t.user_id.toString())));
+      const tripOwners = await User.find({ _id: { $in: tripOwnerIds } });
+      const ownerById = new Map(tripOwners.map(u => [u._id.toString(), u]));
+      for (const t of tripMatches) {
+        const ownerId = t.user_id.toString();
+        const myCircles = circlesByOwner.get(ownerId)!;
+        const owner = ownerById.get(ownerId);
+        if (owner && t.sharedWithCircles.some((c: string) => myCircles.has(c))) {
+          addMatch(owner, 'visiting', { startDate: t.start_date, endDate: t.end_date });
+        }
+      }
+    }
+
+    res.json(Array.from(results.values()));
+  } catch (error: any) {
+    reportError(error, req, 'friends nearby lookup failed');
     res.status(500).json({ error: error.message });
   }
 });
@@ -330,6 +424,57 @@ app.post('/api/trips/:tripId/events', authenticate, async (req: AuthedRequest, r
     res.json(event);
   } catch (error: any) {
     reportError(error, req, 'create event failed');
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Opportunistic device-calendar sync (see lib/calendar.ts's getDeviceEventsForDateRange) —
+// upserts a batch of device calendar events as source: 'imported' Event documents, keyed on
+// the device event's own id so repeated syncs update rather than duplicate. Imported events
+// are never shareable (no participants ever set here) — that's a 'created'-only concept.
+app.post('/api/trips/:tripId/events/import', authenticate, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    const trip = await Trip.findOne({ _id: req.params.tripId, user_id: req.userId });
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+
+    const { events } = req.body;
+    if (!Array.isArray(events)) {
+      return res.status(400).json({ error: 'events must be an array' });
+    }
+
+    const imported = [];
+    for (const evt of events) {
+      const { id, title, startTime, endTime, location } = evt || {};
+      if (!id || !title || !startTime || !endTime) continue; // skip malformed entries rather than failing the whole batch
+
+      const doc = await Event.findOneAndUpdate(
+        { trip_id: trip._id, google_event_id: id, source: 'imported' },
+        {
+          $set: {
+            trip_id: trip._id,
+            created_by: req.userId,
+            source: 'imported',
+            title,
+            start_time: new Date(startTime),
+            end_time: new Date(endTime),
+            location,
+            google_event_id: id
+          }
+        },
+        { upsert: true, new: true, runValidators: true }
+      );
+      imported.push(doc);
+    }
+
+    req.log.info(
+      { event: 'events_imported', userId: req.userId, tripId: trip._id.toString(), count: imported.length },
+      'calendar events imported'
+    );
+    res.json(imported);
+  } catch (error: any) {
+    reportError(error, req, 'import events failed');
     res.status(500).json({ error: error.message });
   }
 });
@@ -468,7 +613,7 @@ app.post('/api/events/:id/recommendations', authenticate, async (req: AuthedRequ
 // so this just scores against one tag set instead of aggregating across participants.
 app.post('/api/recommendations', authenticate, async (req: AuthedRequest, res: express.Response) => {
   try {
-    const { city, durationMinutes, startTimeIso, timezone } = req.body;
+    const { city, durationMinutes, startTimeIso, timezone, maxDistanceKm, tagOverride } = req.body;
     if (!city || !durationMinutes || !startTimeIso) {
       return res.status(400).json({ error: 'city, durationMinutes, and startTimeIso are required' });
     }
@@ -478,10 +623,26 @@ app.post('/api/recommendations', authenticate, async (req: AuthedRequest, res: e
       return res.status(404).json({ error: 'User not found' });
     }
 
+    // Unlike POST /api/trips, nothing else ever populates places for wherever the user
+    // currently is — the Home tab's "Smart Suggestions" queries by live location, which was
+    // never necessarily used to create a trip. Best-effort: a population failure shouldn't
+    // block the request, just leave it returning fewer/no results.
+    await ensurePlacesForCity(city).catch((err) => req.log.warn({ err }, 'places population failed'));
+
     const zone = timezone || guessTimezoneForCity(city);
     const mealWindow = isMealWindow(new Date(startTimeIso), zone);
-    const matchStage = buildCityDurationMatchStage(city, durationMinutes, mealWindow);
-    const tags = flattenPreferenceTags(user.preferences);
+    // maxDistanceKm is optional — omitted, the default "near me" ceiling applies
+    // (DEFAULT_MAX_DISTANCE_KM in lib/place-matching.ts). The "Expand Search Radius" button
+    // re-calls this same endpoint with a larger/absent value once the default comes up empty.
+    const matchStage = buildCityDurationMatchStage(
+      city, durationMinutes, mealWindow, typeof maxDistanceKm === 'number' ? maxDistanceKm : undefined
+    );
+    // tagOverride lets the "Refine Your Search" flow (trips.tsx) score against a specific set
+    // of tags the user picks in the moment ("just show me Museums") instead of always falling
+    // back to their saved preference profile — same $setIntersection scoring either way.
+    const tags = Array.isArray(tagOverride) && tagOverride.length > 0
+      ? tagOverride.filter((t: any) => typeof t === 'string')
+      : flattenPreferenceTags(user.preferences);
 
     const places = await Place.aggregate([
       { $match: matchStage },

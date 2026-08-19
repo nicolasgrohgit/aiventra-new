@@ -7,6 +7,9 @@ import * as Sentry from '@sentry/react-native';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { AuthProvider, useAuth } from '@/hooks/useAuth';
+import { TripsProvider } from '@/hooks/useTrips';
+import { ContactsProvider } from '@/hooks/useContacts';
+import { EventsProvider } from '@/hooks/useEvents';
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -67,11 +70,20 @@ function RootLayout() {
   const colorScheme = useColorScheme();
 
   return (
+    // AuthProvider wraps the others — Trips/Contacts/Events each react to the current user
+    // from AuthProvider to sync/clear their own data (see docs/useauth-split-plan.md). Order
+    // among Trips/Contacts/Events doesn't matter functionally, none depend on each other.
     <AuthProvider>
-      <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-        <InitialLayout />
-        <StatusBar style="auto" />
-      </ThemeProvider>
+      <TripsProvider>
+        <ContactsProvider>
+          <EventsProvider>
+            <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+              <InitialLayout />
+              <StatusBar style="auto" />
+            </ThemeProvider>
+          </EventsProvider>
+        </ContactsProvider>
+      </TripsProvider>
     </AuthProvider>
   );
 }

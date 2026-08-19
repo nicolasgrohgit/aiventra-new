@@ -22,9 +22,13 @@ npm run server             # runs the Express/Mongoose API (server.ts) via tsx, 
 bash scripts/expose-server.sh  # exposes the local :3000 backend via localtunnel, for testing on a physical device
 
 npm run lint                # expo lint (flat ESLint config extending eslint-config-expo)
+npm test                    # runs the test suite (Node's built-in test runner via `tsx --test`)
 ```
 
-There is no test suite / test script configured in this repo.
+**Changelog**: this project keeps `CHANGELOG.md` up to date — add an entry (grouped under
+`## [Unreleased]` for in-progress work, promoted to a dated `0.0.x` version once finished)
+for every meaningful change, and bump the `version` field in both `package.json` and
+`app.json` to match whenever a version is finalized. Versions are `0.0.x` while pre-release.
 
 The mobile app and the backend are two independent processes — `npm start` does not start the backend. For any feature that hits `/api/*`, run `npm run server` in a second terminal.
 

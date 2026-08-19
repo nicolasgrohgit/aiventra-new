@@ -3,13 +3,13 @@ import { StyleSheet, View, ScrollView, TouchableOpacity, Text, Platform, Modal, 
 import { Image } from 'expo-image';
 import { ThemedText } from '@/components/themed-text';
 import { DEFAULT_CIRCLES, getContactsByCircle, Contact } from '@/lib/contacts';
-import { useAuth } from '@/hooks/useAuth';
+import { useContacts } from '@/hooks/useContacts';
 
 export default function SocialScreen() {
   const CIRCLE_FILTERS = ['All', ...DEFAULT_CIRCLES];
   const [activeCircle, setActiveCircle] = useState('All');
-  
-  const { contacts, setContacts } = useAuth();
+
+  const { contacts, setContacts } = useContacts();
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
@@ -124,15 +124,25 @@ export default function SocialScreen() {
             <Text style={styles.sheetSubtitle}>Assign them to a new Circle privacy tier.</Text>
             
             <View style={styles.sheetOptionsBounds}>
-              {DEFAULT_CIRCLES.filter(c => c !== activeCircle).map(circle => (
-                 <TouchableOpacity 
-                   key={circle} 
-                   style={styles.sheetOption}
-                   onPress={() => handleMoveContact(selectedContact!.id, circle)}
-                 >
-                   <Text style={styles.sheetOptionText}>{circle}</Text>
-                 </TouchableOpacity>
-              ))}
+              {DEFAULT_CIRCLES.map(circle => {
+                // The contact's OWN current circle(s), not the page's active filter tab —
+                // that was the bug: filtering/highlighting against `activeCircle` meant
+                // viewing the default "All" tab (which never equals a real circle name)
+                // showed every option with nothing marked as selected, regardless of the
+                // contact's actual assignment.
+                const isCurrent = !!selectedContact?.circleTags?.includes(circle);
+                return (
+                  <TouchableOpacity
+                    key={circle}
+                    style={[styles.sheetOption, isCurrent && styles.sheetOptionActive]}
+                    onPress={() => handleMoveContact(selectedContact!.id, circle)}
+                  >
+                    <Text style={[styles.sheetOptionText, isCurrent && styles.sheetOptionTextActive]}>
+                      {isCurrent ? '✓  ' : ''}{circle}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
 
             <TouchableOpacity onPress={() => setSelectedContact(null)} style={styles.cancelButton}>
@@ -158,7 +168,7 @@ export default function SocialScreen() {
           </View>
           
           <Text style={styles.modalSubtitle}>
-            Send a secure email invitation to an external contact. Once they join Odys.ai, you can share real-time Time-Gap events!
+            Add someone by email. Once they join Odys.ai, you&apos;ll be able to invite them to shared events.
           </Text>
           
           <Text style={styles.inputLabel}>Email Address</Text>
@@ -216,7 +226,9 @@ const styles = StyleSheet.create({
   sheetSubtitle: { color: '#94A3B8', fontSize: 15, marginBottom: 28, textAlign: 'center' },
   sheetOptionsBounds: { backgroundColor: '#1E293B', borderRadius: 16, overflow: 'hidden' },
   sheetOption: { paddingVertical: 18, borderBottomWidth: 1, borderBottomColor: '#334155', alignItems: 'center' },
+  sheetOptionActive: { backgroundColor: 'rgba(59, 130, 246, 0.15)' },
   sheetOptionText: { color: '#3B82F6', fontSize: 18, fontWeight: '700' },
+  sheetOptionTextActive: { color: '#93C5FD' },
   cancelButton: { marginTop: 16, paddingVertical: 18, borderRadius: 16, backgroundColor: '#1E293B', alignItems: 'center' },
   cancelText: { color: '#EF4444', fontSize: 18, fontWeight: '800' },
 

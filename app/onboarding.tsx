@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, SafeAreaView, TextInput, ScrollView } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, SafeAreaView, TextInput, ScrollView, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/hooks/useAuth';
 import { searchCities, CityResult } from '@/lib/geocoding';
@@ -58,7 +58,7 @@ export default function OnboardingScreen() {
 
   const handleNext = () => {
     if (step === 1) {
-      if (!homebase) { alert('Please enter your home city.'); return; }
+      if (!homebase) { Alert.alert('Missing Info', 'Please enter your home city.'); return; }
       updateUser({ homebase });
       setStep(2);
     } else if (step < TOTAL_STEPS) {
@@ -161,7 +161,7 @@ export default function OnboardingScreen() {
           <View style={styles.stepContainer}>
             <Text style={styles.title}>Food Tastes</Text>
             <Text style={styles.subtitle}>Pick a few cuisines you enjoy — this is what both your own suggestions and shared-event matching with friends are based on. Optional, and you can always refine it later in Profile.</Text>
-            <CategorizedPicker groupedOptions={FOOD_GENRES_CATEGORIZED} selected={foodGenres} onToggle={(opt) => toggleInArray(opt, foodGenres, setFoodGenres)} />
+            <CategorizedPicker groupedOptions={FOOD_GENRES_CATEGORIZED} selected={foodGenres} onToggle={(opt) => toggleInArray(opt, foodGenres, setFoodGenres)} category="Restaurant" />
           </View>
         )}
 
@@ -169,7 +169,7 @@ export default function OnboardingScreen() {
           <View style={styles.stepContainer}>
             <Text style={styles.title}>Activity Tastes</Text>
             <Text style={styles.subtitle}>What kinds of things do you like doing when you have free time in a new city? Optional, refine anytime in Profile.</Text>
-            <CategorizedPicker groupedOptions={ACTIVITY_GENRES_CATEGORIZED} selected={activityGenres} onToggle={(opt) => toggleInArray(opt, activityGenres, setActivityGenres)} />
+            <CategorizedPicker groupedOptions={ACTIVITY_GENRES_CATEGORIZED} selected={activityGenres} onToggle={(opt) => toggleInArray(opt, activityGenres, setActivityGenres)} category="Activity" />
           </View>
         )}
 
@@ -177,7 +177,7 @@ export default function OnboardingScreen() {
           <View style={styles.stepContainer}>
             <Text style={styles.title}>Event Tastes</Text>
             <Text style={styles.subtitle}>Concerts, shows, sports — pick what you&apos;re into. Optional, refine anytime in Profile.</Text>
-            <CategorizedPicker groupedOptions={EVENT_GENRES_CATEGORIZED} selected={eventGenres} onToggle={(opt) => toggleInArray(opt, eventGenres, setEventGenres)} />
+            <CategorizedPicker groupedOptions={EVENT_GENRES_CATEGORIZED} selected={eventGenres} onToggle={(opt) => toggleInArray(opt, eventGenres, setEventGenres)} category="Event" />
           </View>
         )}
       </ScrollView>

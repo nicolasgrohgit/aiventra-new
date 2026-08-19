@@ -27,6 +27,18 @@ export function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// City strings in this app come in two shapes depending on where they were entered: a bare
+// city name ("Paris", from the Home tab's reverse-geocoded live location) or "City, Country"
+// (from the geocoding-autocomplete picker used for trip destinations/homebase, e.g.
+// trips.tsx's `${c.name}, ${c.country}`). A plain substring match only catches one direction
+// — a stored "Paris" does NOT contain the query "Paris, France", so a trip to "Paris, France"
+// would silently never match the curated `city: 'Paris'` places seeded by
+// scripts/seed-curated-places.ts. Reducing both sides to the name-only prefix before matching
+// makes it symmetric regardless of which shape either side happens to be in.
+export function cityNeedle(city: string): string {
+  return city.split(',')[0].trim();
+}
+
 /**
  * Mongo category filter for the time-of-day the event/slot falls in: meal windows (short
  * enough to actually be a meal) get restaurants only (excluding cafes); everything else gets
@@ -49,10 +61,26 @@ export function buildCategoryFilter(mealWindow: boolean, durationMinutes: number
   return {};
 }
 
-export function buildCityDurationMatchStage(city: string, durationMinutes: number, mealWindow: boolean): any {
+// Default "near me" ceiling for the initial search — chosen against the real spread of
+// distanceKm values across curated Paris/Rome/London data (roughly 0.3-7.2km), so this
+// genuinely excludes a meaningful tail of farther-out places rather than being a no-op cap.
+// "Expand Search Radius" (recommendation.tsx) re-queries with this ceiling raised/removed.
+export const DEFAULT_MAX_DISTANCE_KM = 5;
+
+export function buildCityDurationMatchStage(
+  city: string,
+  durationMinutes: number,
+  mealWindow: boolean,
+  maxDistanceKm: number = DEFAULT_MAX_DISTANCE_KM
+): any {
+  // Substring, not exact-anchored: city strings aren't consistent across the app — a trip
+  // destination is typically "Amsterdam, Netherlands" (picked from geocoding autocomplete),
+  // while the Home tab's reverse-geocoded current location is a bare "Amsterdam". An anchored
+  // ^...$ match would treat those as different cities and silently return nothing.
   return {
-    city: { $regex: `^${escapeRegExp(city.trim())}$`, $options: 'i' },
+    city: { $regex: escapeRegExp(cityNeedle(city)), $options: 'i' },
     estimatedDuration: { $lte: durationMinutes },
+    distanceKm: { $lte: maxDistanceKm },
     ...buildCategoryFilter(mealWindow, durationMinutes)
   };
 }
