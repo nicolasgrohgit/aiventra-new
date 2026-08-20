@@ -3,17 +3,20 @@ import {
   CalendarEvent,
   FreeTimeSlot,
   DaySchedule,
+  SlotProposal,
   calculateFreeTimeSlots,
   getHardcodedFreeSlots,
   getTripDaySchedule,
+  labelFreeSlot,
+  expandSlotForProposals,
   generateMockEventsForToday,
 } from './free-time';
 
 // The pure free-time-slot math lives in lib/free-time.ts (kept RN-independent so it's
 // testable in plain Node — this file can't be, since expo-calendar transitively pulls in
 // react-native). Re-exported here so existing `@/lib/calendar` imports are unaffected.
-export type { CalendarEvent, FreeTimeSlot, DaySchedule };
-export { calculateFreeTimeSlots, getHardcodedFreeSlots, getTripDaySchedule, generateMockEventsForToday };
+export type { CalendarEvent, FreeTimeSlot, DaySchedule, SlotProposal };
+export { calculateFreeTimeSlots, getHardcodedFreeSlots, getTripDaySchedule, labelFreeSlot, expandSlotForProposals, generateMockEventsForToday };
 
 /**
  * Request permission and fetch actual device events for today.

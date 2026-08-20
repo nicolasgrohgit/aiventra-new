@@ -4,8 +4,53 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
-## [0.0.20] - 2026-08-20
+## [0.0.21] - 2026-08-20
 ### Fixed
+- **Trip day-schedule now uses the real imported calendar instead of a hardcoded work-day
+  guess.** `getTripDaySchedule` (`lib/free-time.ts`) previously always used
+  `getHardcodedFreeSlots`'s fixed Mon–Fri 8:30–18:00-busy / 12:00–13:30-lunch / 18:00–22:00-
+  evening assumption, completely ignoring the real imported calendar events already synced
+  per trip (`Event` docs with `source: 'imported'`) — a known, deliberately-deferred gap from
+  the calendar-import work (see 0.0.14). It now takes an optional `importedEvents` param: any
+  day that actually has synced calendar data computes real gaps via the existing
+  `calculateFreeTimeSlots`, correctly excluding times already spoken for (e.g. no longer
+  suggesting a "Lunch Break" at noon if there's a real meeting then) and surfacing genuine
+  free windows the fixed pattern would've missed entirely; a day with no synced data still
+  falls back to the hardcoded pattern exactly as before. New `labelFreeSlot` classifies these
+  real slots ('Lunch Break' / 'Evening' / 'Free Time') consistently with the hardcoded path's
+  own labels. Live-verified against a real trip's actual synced calendar (a genuine day of
+  meetings): free gaps now correctly appear around real meetings instead of a static pattern.
+- **"Scheduled Sequence" no longer mislabels real meetings as "Proposed, picking a place
+  together."** That timeline (`trips.tsx`) rendered every `Event` the same way regardless of
+  `source` — an imported real meeting (never has a `place_name`, by design) fell into the
+  same "unresolved, needs a place" branch as a genuine user-created event still awaiting a
+  place. Imported events now render as plain read-only busy blocks (title + time only, red
+  indicator matching the Home tab's existing busy-block convention); `source: 'created'`
+  events are unaffected.
+- **No feedback when a recommendation is actually added to the itinerary.** Verified directly
+  against the database that "Add to Itinerary" was already committing correctly — the bug was
+  purely a lack of UI feedback: no confirmation, and the exact same recommendation card stayed
+  visually identical to an unscheduled one, reading as "nothing happened." Adding now shows a
+  confirmation alert (naming the invited friend when one was picked), and any place already
+  scheduled for the trip gets a "✓ Scheduled" badge on its card instead of the normal
+  match-score badge.
+
+### Added
+- **Evening slots now propose both an activity and a dinner, not just one.** A free-time slot
+  long enough to fit both (≥150min, with a real overlap of the dinner window) now expands into
+  two labeled proposal rows — "🎭 Activity" then "🍽️ Dinner" — each independently queried
+  against the existing recommendation engine (dinner's duration is capped at 120min so
+  `buildCategoryFilter` in `lib/place-matching.ts` stays in its Restaurant-only branch rather
+  than falling through to an unfiltered match). New `expandSlotForProposals`
+  (`lib/free-time.ts`) is typed as an array of `{ type, ... }` rather than a hardcoded pair
+  specifically so a future third suggestion (e.g. a post-dinner show, once a real
+  ticketing/listings data source exists — see `lib/google-places-types.ts`'s documented
+  venue-vs-schedule gap) can be added without restructuring callers; not built now, this is
+  just the shape that leaves room for it. Also fixes an existing gap where weekend "Full Day"
+  slots never surfaced dinner options at all (the single full-day slot's meal-window check
+  only looked at its start time, which is always morning).
+
+
 - **Critical: every restored session sent a malformed auth token, 401ing every API call.**
   `hooks/useAuth.tsx`'s `saveState` helper `JSON.stringify`s whatever it's given before
   writing to AsyncStorage — correct for objects, but for the plain JWT string this wraps it

@@ -1,5 +1,12 @@
 import { DateTime } from 'luxon';
 import { DEVICE_TIMEZONE } from './timezones';
+import { isMealWindow } from './place-matching';
+
+// Dinner-window boundaries, kept in sync with isMealWindow's own dinner check (18.5-21.0) —
+// duplicated as numbers (rather than re-deriving from isMealWindow) because callers below need
+// the actual start/end instants, not just a boolean.
+const DINNER_WINDOW_START_HOUR = 18.5;
+const DINNER_WINDOW_END_HOUR = 21.0;
 
 // Split out of lib/calendar.ts so this pure date/time logic is testable in plain Node
 // (see lib/free-time.test.ts) — lib/calendar.ts transitively imports expo-calendar, which
@@ -120,6 +127,109 @@ export function calculateFreeTimeSlots(
 }
 
 /**
+ * Classifies a computed FreeTimeSlot the same way getHardcodedFreeSlots labels its own
+ * output ('Lunch Break' | 'Evening' | 'Free Time'), based on overlap with isMealWindow's
+ * lunch/dinner boundaries — so real-calendar-derived slots (getTripDaySchedule, once it has
+ * imported events to work with) and hardcoded-fallback slots read consistently in the UI,
+ * which already keys icon choice off slot.label === 'Lunch Break'.
+ */
+export function labelFreeSlot(slot: FreeTimeSlot, timezone: string = DEVICE_TIMEZONE): string {
+  const start = DateTime.fromJSDate(slot.startTime).setZone(timezone);
+  const end = DateTime.fromJSDate(slot.endTime).setZone(timezone);
+
+  const overlapMinutes = (windowStartHour: number, windowEndHour: number) => {
+    const winStart = start.set({ hour: Math.floor(windowStartHour), minute: (windowStartHour % 1) * 60, second: 0, millisecond: 0 });
+    const winEnd = start.set({ hour: Math.floor(windowEndHour), minute: (windowEndHour % 1) * 60, second: 0, millisecond: 0 });
+    const overlapStart = start > winStart ? start : winStart;
+    const overlapEnd = end < winEnd ? end : winEnd;
+    return Math.max(0, overlapEnd.diff(overlapStart, 'minutes').minutes);
+  };
+
+  const lunchOverlap = overlapMinutes(11.5, 13.5);
+  const dinnerOverlap = overlapMinutes(DINNER_WINDOW_START_HOUR, DINNER_WINDOW_END_HOUR);
+
+  if (lunchOverlap >= 30 && lunchOverlap >= dinnerOverlap) return 'Lunch Break';
+  if (dinnerOverlap >= 30) return 'Evening';
+  return 'Free Time';
+}
+
+/**
+ * Splits a free-time slot into one proposal per suggestion type instead of a single flat
+ * list — an evening slot long enough to fit both should propose an activity AND a dinner,
+ * not just whichever the slot's start time happens to classify as. Typed as an array of
+ * { type, ... } rather than a hardcoded pair so a future 'show' (post-dinner) type can be
+ * appended later without restructuring callers — see docs on the Event taxonomy's
+ * venue-vs-schedule gap for why that third type isn't built yet.
+ *
+ * Splits only when the slot both overlaps the dinner window by a meaningful amount and is
+ * long enough overall that carving out a dinner portion still leaves a real activity portion
+ * — short slots or slots that don't reach dinner time at all (e.g. an afternoon gap) are
+ * returned unchanged as a single 'activity' proposal, i.e. today's behavior.
+ */
+export interface SlotProposal {
+  type: 'activity' | 'meal';
+  label: string;
+  icon: string;
+  startTime: Date;
+  endTime: Date;
+  durationMinutes: number;
+}
+
+export function expandSlotForProposals(slot: FreeTimeSlot, timezone: string = DEVICE_TIMEZONE): SlotProposal[] {
+  const start = DateTime.fromJSDate(slot.startTime).setZone(timezone);
+  const end = DateTime.fromJSDate(slot.endTime).setZone(timezone);
+
+  const dinnerWindowStart = start.set({ hour: 18, minute: 30, second: 0, millisecond: 0 });
+  const dinnerWindowEnd = start.set({ hour: 21, minute: 0, second: 0, millisecond: 0 });
+
+  const dinnerStart = start > dinnerWindowStart ? start : dinnerWindowStart;
+  const dinnerEnd = end < dinnerWindowEnd ? end : dinnerWindowEnd;
+  const dinnerOverlapMinutes = Math.max(0, dinnerEnd.diff(dinnerStart, 'minutes').minutes);
+
+  const asActivity = (): SlotProposal[] => [{
+    type: 'activity',
+    label: slot.label || labelFreeSlot(slot, timezone),
+    icon: '🌙',
+    startTime: slot.startTime,
+    endTime: slot.endTime,
+    durationMinutes: slot.durationMinutes
+  }];
+
+  if (dinnerOverlapMinutes < 45 || slot.durationMinutes < 150) {
+    return asActivity();
+  }
+
+  const activityEnd = dinnerStart;
+  const activityDurationMinutes = Math.min(180, Math.floor(activityEnd.diff(start, 'minutes').minutes));
+  if (activityDurationMinutes < 45) {
+    // Carving out dinner would leave too little of an activity window to bother splitting.
+    return asActivity();
+  }
+
+  return [
+    {
+      type: 'activity',
+      label: 'Activity',
+      icon: '🎭',
+      startTime: start.toJSDate(),
+      endTime: start.plus({ minutes: activityDurationMinutes }).toJSDate(),
+      durationMinutes: activityDurationMinutes
+    },
+    {
+      type: 'meal',
+      label: 'Dinner',
+      icon: '🍽️',
+      startTime: dinnerStart.toJSDate(),
+      endTime: dinnerEnd.toJSDate(),
+      // Capped at 120: buildCategoryFilter (lib/place-matching.ts) only guarantees a
+      // Restaurant-only result when mealWindow && durationMinutes <= 120 — anything longer
+      // falls through to an unfiltered match, defeating the point of a dedicated Dinner row.
+      durationMinutes: Math.min(120, Math.round(dinnerOverlapMinutes))
+    }
+  ];
+}
+
+/**
  * Returns the hardcoded free time slots for a given date based on the
  * fixed work schedule: busy Mon–Fri 08:30–18:00 with a 90-min lunch
  * window at 12:00–13:30. Weekends are fully open 08:00–22:00.
@@ -186,12 +296,21 @@ export function getHardcodedFreeSlots(date: Date, timezone: string = DEVICE_TIME
  *
  * `timezone` should be the trip's own destination timezone (see lib/timezones.ts)
  * so day boundaries and free slots reflect the destination's clock, not the device's.
+ *
+ * `importedEvents` (default none, fully backward compatible): real device-calendar events
+ * synced for this trip (Event docs with source: 'imported' — see POST
+ * /api/trips/:tripId/events/import). Any day that has at least one of these uses them to
+ * compute real gaps via calculateFreeTimeSlots instead of the fixed weekday/weekend
+ * assumption — a day with real data is a strictly better source of truth than a guess about
+ * a "typical" schedule. A day with none (calendar access not granted, or genuinely nothing
+ * synced yet) falls back to getHardcodedFreeSlots exactly as before.
  */
 export function getTripDaySchedule(
   startDate: Date,
   endDate: Date,
   maxDays = 5,
-  timezone: string = DEVICE_TIMEZONE
+  timezone: string = DEVICE_TIMEZONE,
+  importedEvents: CalendarEvent[] = []
 ): DaySchedule[] {
   const days: DaySchedule[] = [];
   let current = DateTime.fromJSDate(startDate).setZone(timezone).startOf('day');
@@ -202,11 +321,22 @@ export function getTripDaySchedule(
     const isWeekend = current.weekday === 6 || current.weekday === 7;
     const dayLabel = current.toFormat('EEE, MMM d');
 
+    const dayEvents = importedEvents.filter(e =>
+      DateTime.fromJSDate(e.startTime).setZone(timezone).hasSame(current, 'day')
+    );
+
+    const freeSlots = dayEvents.length > 0
+      ? calculateFreeTimeSlots(dayEvents, 8, 22, 60, timezone).map(slot => ({
+          ...slot,
+          label: labelFreeSlot(slot, timezone)
+        }))
+      : getHardcodedFreeSlots(current.toJSDate(), timezone);
+
     days.push({
       date: current.toJSDate(),
       dayLabel,
       isWeekend,
-      freeSlots: getHardcodedFreeSlots(current.toJSDate(), timezone),
+      freeSlots,
     });
 
     current = current.plus({ days: 1 });

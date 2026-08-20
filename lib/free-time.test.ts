@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { calculateFreeTimeSlots, getHardcodedFreeSlots, getTripDaySchedule } from './free-time';
+import { calculateFreeTimeSlots, getHardcodedFreeSlots, getTripDaySchedule, labelFreeSlot, expandSlotForProposals } from './free-time';
 
 const ZONE = 'Europe/Paris';
 
@@ -114,5 +114,86 @@ describe('getTripDaySchedule', () => {
   test('a single-day trip returns exactly one day', () => {
     const days = getTripDaySchedule(FUTURE_MONDAY, FUTURE_MONDAY, 5, ZONE);
     assert.equal(days.length, 1);
+  });
+
+  test('a day with imported events uses real gaps instead of the hardcoded pattern', () => {
+    // A meeting sits right across the hardcoded lunch window (12:00-13:30) — under the old
+    // fixed pattern this would still surface a "Lunch Break" slot regardless; with real data
+    // it must not, since the user is actually busy then.
+    const importedEvents = [
+      { id: 'a', title: 'Standup', startTime: new Date('2030-03-04T09:00:00+01:00'), endTime: new Date('2030-03-04T09:30:00+01:00') },
+      { id: 'b', title: 'Client lunch', startTime: new Date('2030-03-04T12:00:00+01:00'), endTime: new Date('2030-03-04T13:30:00+01:00') },
+    ];
+    const days = getTripDaySchedule(FUTURE_MONDAY, FUTURE_MONDAY, 5, ZONE, importedEvents);
+    assert.equal(days.length, 1);
+    const noon = days[0].freeSlots.find(s => s.startTime.getTime() <= new Date('2030-03-04T12:00:00+01:00').getTime()
+      && s.endTime.getTime() > new Date('2030-03-04T12:00:00+01:00').getTime());
+    assert.equal(noon, undefined, 'no free slot should span the real 12:00-13:30 meeting');
+    // The gap right after the meeting (13:30 onward) should still show up as free.
+    assert.ok(days[0].freeSlots.some(s => s.startTime.getTime() === new Date('2030-03-04T13:30:00+01:00').getTime()));
+  });
+
+  test('a day with no imported events falls back to the hardcoded pattern', () => {
+    const days = getTripDaySchedule(FUTURE_MONDAY, FUTURE_MONDAY, 5, ZONE, []);
+    assert.deepEqual(days[0].freeSlots.map(s => s.label), getHardcodedFreeSlots(FUTURE_MONDAY, ZONE).map(s => s.label));
+  });
+});
+
+describe('labelFreeSlot', () => {
+  test('labels a slot overlapping the lunch window', () => {
+    const slot = { startTime: new Date('2030-03-04T12:00:00+01:00'), endTime: new Date('2030-03-04T13:00:00+01:00'), durationMinutes: 60 };
+    assert.equal(labelFreeSlot(slot, ZONE), 'Lunch Break');
+  });
+
+  test('labels a slot overlapping the dinner window', () => {
+    const slot = { startTime: new Date('2030-03-04T18:00:00+01:00'), endTime: new Date('2030-03-04T22:00:00+01:00'), durationMinutes: 240 };
+    assert.equal(labelFreeSlot(slot, ZONE), 'Evening');
+  });
+
+  test('labels a slot overlapping neither as Free Time', () => {
+    const slot = { startTime: new Date('2030-03-04T14:00:00+01:00'), endTime: new Date('2030-03-04T16:00:00+01:00'), durationMinutes: 120 };
+    assert.equal(labelFreeSlot(slot, ZONE), 'Free Time');
+  });
+});
+
+describe('expandSlotForProposals', () => {
+  test('splits a long evening slot into Activity and Dinner', () => {
+    const slot = { startTime: new Date('2030-03-04T17:00:00+01:00'), endTime: new Date('2030-03-04T22:00:00+01:00'), durationMinutes: 300, label: 'Evening' };
+    const proposals = expandSlotForProposals(slot, ZONE);
+    assert.equal(proposals.length, 2);
+    assert.equal(proposals[0].type, 'activity');
+    assert.equal(proposals[0].label, 'Activity');
+    assert.equal(proposals[0].startTime.getTime(), slot.startTime.getTime());
+    assert.equal(proposals[1].type, 'meal');
+    assert.equal(proposals[1].label, 'Dinner');
+    // Dinner duration must stay <=120 so buildCategoryFilter (lib/place-matching.ts) stays
+    // in its Restaurant-only branch.
+    assert.ok(proposals[1].durationMinutes <= 120);
+    // Activity shouldn't run past where dinner starts.
+    assert.ok(proposals[0].endTime.getTime() <= proposals[1].startTime.getTime());
+  });
+
+  test('splits a weekend full-day slot too (it reaches dinner time)', () => {
+    const slot = getHardcodedFreeSlots(FUTURE_SATURDAY, ZONE)[0];
+    const proposals = expandSlotForProposals(slot, ZONE);
+    assert.equal(proposals.length, 2);
+    assert.equal(proposals[1].type, 'meal');
+    // Activity is capped, not the whole 8am-18:30 span.
+    assert.ok(proposals[0].durationMinutes <= 180);
+  });
+
+  test('does not split a short evening gap', () => {
+    const slot = { startTime: new Date('2030-03-04T19:30:00+01:00'), endTime: new Date('2030-03-04T20:30:00+01:00'), durationMinutes: 60, label: 'Evening' };
+    const proposals = expandSlotForProposals(slot, ZONE);
+    assert.equal(proposals.length, 1);
+    assert.equal(proposals[0].type, 'activity');
+  });
+
+  test('does not split a slot that never reaches the dinner window', () => {
+    const slot = { startTime: new Date('2030-03-04T09:00:00+01:00'), endTime: new Date('2030-03-04T16:00:00+01:00'), durationMinutes: 420, label: 'Free Time' };
+    const proposals = expandSlotForProposals(slot, ZONE);
+    assert.equal(proposals.length, 1);
+    assert.equal(proposals[0].startTime.getTime(), slot.startTime.getTime());
+    assert.equal(proposals[0].durationMinutes, 420);
   });
 });

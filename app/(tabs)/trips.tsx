@@ -7,7 +7,7 @@ import { useContacts } from '@/hooks/useContacts';
 import { useEvents } from '@/hooks/useEvents';
 import { PlaceRecommendation } from '@/lib/recommendations';
 import { NativeDatePicker } from '@/components/ui/NativeDatePicker';
-import { getTripDaySchedule, getDeviceEventsForDateRange } from '@/lib/calendar';
+import { getTripDaySchedule, getDeviceEventsForDateRange, expandSlotForProposals } from '@/lib/calendar';
 import { guessTimezoneForCity } from '@/lib/timezones';
 import { searchCities, CityResult } from '@/lib/geocoding';
 import { CircleShareSelector } from '@/components/ui/circle-share-selector';
@@ -57,6 +57,15 @@ const DURATION_OPTIONS = [60, 90, 120, 180];
 const REFINE_TAG_GROUPS = [...FOOD_GENRES_CATEGORIZED, ...ACTIVITY_GENRES_CATEGORIZED, ...EVENT_GENRES_CATEGORIZED];
 
 const formatTripDate = (d: Date, tz: string) => d.toLocaleDateString('en-CA', { timeZone: tz });
+
+// getTripDaySchedule's real-calendar path (vs. its hardcoded weekday/weekend fallback) needs
+// imported events in CalendarEvent shape — only 'imported' events represent an actual busy
+// block on the device calendar; 'created' events are things the user is proposing to do
+// during their free time, not obstacles to route around.
+const toImportedCalendarEvents = (events: TripEvent[]) =>
+  events
+    .filter(e => e.source === 'imported')
+    .map(e => ({ id: e._id, title: e.title, startTime: new Date(e.start_time), endTime: new Date(e.end_time) }));
 
 export default function TripsScreen() {
   const { user } = useAuth();
@@ -214,32 +223,35 @@ export default function TripsScreen() {
   useEffect(() => {
     trips.forEach((trip: TripMock) => {
       const isExpanded = expandedTripIds.has(trip.id);
-      const daySchedules = getTripDaySchedule(trip.startDate, trip.endDate, 5, trip.timezone);
+      const importedEvents = toImportedCalendarEvents(eventsByTrip[trip.id] || []);
+      const daySchedules = getTripDaySchedule(trip.startDate, trip.endDate, 5, trip.timezone, importedEvents);
       const visibleDays = isExpanded ? daySchedules : daySchedules.slice(0, 1);
 
       visibleDays.forEach(day => {
         day.freeSlots.forEach(slot => {
-          const key = `${trip.id}-${slot.startTime.toISOString()}`;
-          if (fetchedSlotKeys.current.has(key)) return;
-          fetchedSlotKeys.current.add(key);
+          expandSlotForProposals(slot, trip.timezone).forEach(proposal => {
+            const key = `${trip.id}-${proposal.startTime.toISOString()}-${proposal.type}`;
+            if (fetchedSlotKeys.current.has(key)) return;
+            fetchedSlotKeys.current.add(key);
 
-          getRecommendations({
-            city: trip.destination,
-            durationMinutes: slot.durationMinutes,
-            startTimeIso: slot.startTime.toISOString(),
-            timezone: trip.timezone
-          })
-            .then(places => {
-              setSlotRecommendations(prev => ({ ...prev, [key]: places.map((p: any) => ({ ...p, id: p._id })) }));
+            getRecommendations({
+              city: trip.destination,
+              durationMinutes: proposal.durationMinutes,
+              startTimeIso: proposal.startTime.toISOString(),
+              timezone: trip.timezone
             })
-            .catch(() => {
-              setSlotRecommendations(prev => ({ ...prev, [key]: [] }));
-            });
+              .then(places => {
+                setSlotRecommendations(prev => ({ ...prev, [key]: places.map((p: any) => ({ ...p, id: p._id })) }));
+              })
+              .catch(() => {
+                setSlotRecommendations(prev => ({ ...prev, [key]: [] }));
+              });
+          });
         });
       });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trips, expandedTripIds]);
+  }, [trips, expandedTripIds, eventsByTrip]);
 
   // Debounced city lookup for the destination field — warn, don't block: a legitimate city
   // might genuinely not appear in a partial-query top-5 result.
@@ -362,11 +374,22 @@ export default function TripsScreen() {
         participantContactIds: scheduleInviteContactId ? [scheduleInviteContactId] : []
       });
       await refreshTripEvents(selectedPlace.tripId);
+      const invitedName = scheduleInviteContactId
+        ? contacts.find((c: any) => c.id === scheduleInviteContactId)?.name
+        : null;
+      const placeName = selectedPlace.place.name;
       setSelectedPlace(null);
       setScheduleInviteContactId(null);
       // Harmless no-op if the place was picked from a trip's regular AI proposals rather than
       // a refine-search result — only closes the refine modal if it was actually open.
       closeRefineSearch();
+      // The event does commit whether or not this alert is seen — this is purely feedback so
+      // it doesn't read as "nothing happened" (the recommendation cards behind it don't change
+      // shape on their own; see PlaceCard's "✓ Scheduled" badge for the lasting signal).
+      Alert.alert(
+        'Added to your itinerary',
+        invitedName ? `${placeName} is on the schedule — ${invitedName} has been invited.` : `${placeName} is on the schedule.`
+      );
     } catch (err: any) {
       Alert.alert('Error', err.message || 'Could not add this to your itinerary.');
     }
@@ -517,16 +540,26 @@ export default function TripsScreen() {
     e.participants.find(p => p.user_id === myUserId)?.status === 'pending'
   ).length;
 
-  const PlaceCard = ({ place, tripId, slotStart }: { place: PlaceRecommendation, tripId: string, slotStart: Date }) => (
+  const PlaceCard = ({ place, tripId, slotStart, tripEvents }: { place: PlaceRecommendation, tripId: string, slotStart: Date, tripEvents: TripEvent[] }) => {
+    // A place already added to this trip (any day) looks identical to an unscheduled one
+    // otherwise, which is exactly why tapping "Add to Itinerary" reads as "nothing happened" —
+    // it did work, there's just no visible trace of it back on the card you tapped.
+    const alreadyScheduled = tripEvents.some(e => e.source === 'created' && e.place_id === place.id);
+    return (
     <TouchableOpacity style={styles.placeCard} activeOpacity={0.8} onPress={() => { setSelectedPlace({ place, tripId, slotStart }); refreshContacts(); }}>
       <View style={styles.placeHeader}>
         <Text style={styles.placeName} numberOfLines={1}>{place.name}</Text>
-        <View style={styles.badge}><Text style={styles.badgeText}>{place.matchScore > 0 ? `${place.matchScore} tag match` : 'New idea'}</Text></View>
+        {alreadyScheduled ? (
+          <View style={styles.badgeScheduled}><Text style={styles.badgeText}>✓ Scheduled</Text></View>
+        ) : (
+          <View style={styles.badge}><Text style={styles.badgeText}>{place.matchScore > 0 ? `${place.matchScore} tag match` : 'New idea'}</Text></View>
+        )}
       </View>
       <Text style={styles.placeCategory}>{place.category} • {place.rating} ★</Text>
       <Text style={styles.placeDesc} numberOfLines={2}>{place.description}</Text>
     </TouchableOpacity>
-  );
+    );
+  };
 
   // "Looking for something else?" — appended after the real suggestions (or shown alone when
   // there are none), opens a placeholder modal pre-filled with this day/destination.
@@ -598,8 +631,8 @@ export default function TripsScreen() {
         ) : (
           trips.map(trip => {
             const totalTripDays = Math.round((trip.endDate.getTime() - trip.startDate.getTime()) / 86400000) + 1;
-            const daySchedules = getTripDaySchedule(trip.startDate, trip.endDate, 5, trip.timezone);
             const tripEvents = eventsByTrip[trip.id] || [];
+            const daySchedules = getTripDaySchedule(trip.startDate, trip.endDate, 5, trip.timezone, toImportedCalendarEvents(tripEvents));
 
             return (
               <View key={trip.id} style={styles.tripCard}>
@@ -644,15 +677,25 @@ export default function TripsScreen() {
                     <View style={styles.timelineContainer}>
                       <Text style={styles.timelineHeader}>Scheduled Sequence</Text>
                       {tripEvents.map((event) => {
+                        // Imported events are real calendar meetings synced read-only from the
+                        // device — they're busy blocks the schedule routes around, not things
+                        // needing a place picked, so they never get the "Proposed…" treatment
+                        // a genuine user-created event without a place yet does.
+                        const isImported = event.source === 'imported';
                         const isResolved = !!event.place_name;
                         return (
                           <View key={event._id} style={styles.timelineEventCard}>
-                            <View style={[styles.timelineIndicator, !isResolved && styles.timelineIndicatorPending]} />
+                            <View style={[
+                              styles.timelineIndicator,
+                              isImported ? styles.timelineIndicatorBusy : (!isResolved && styles.timelineIndicatorPending)
+                            ]} />
                             <View style={styles.timelineEventContent}>
                               <Text style={styles.timelineEventTime}>
                                 {new Date(event.start_time).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: trip.timezone })}
                               </Text>
-                              {isResolved ? (
+                              {isImported ? (
+                                <Text style={styles.timelineEventName}>{event.title}</Text>
+                              ) : isResolved ? (
                                 <Text style={styles.timelineEventName}>{event.place_name}</Text>
                               ) : (
                                 <Text style={styles.timelineEventNamePending}>{event.title} — Proposed, picking a place together</Text>
@@ -689,17 +732,17 @@ export default function TripsScreen() {
                                 <Text style={styles.dayTypeBadgeText}>{day.isWeekend ? '🎉 Weekend' : '💼 Weekday'}</Text>
                               </View>
                             </View>
-                            {day.freeSlots.map(slot => {
-                              const slotKey = `${trip.id}-${slot.startTime.toISOString()}`;
+                            {day.freeSlots.flatMap(slot => expandSlotForProposals(slot, trip.timezone)).map(proposal => {
+                              const slotKey = `${trip.id}-${proposal.startTime.toISOString()}-${proposal.type}`;
                               const slotRecs = slotRecommendations[slotKey];
-                              const icon = day.isWeekend ? '☀️' : slot.label === 'Lunch Break' ? '🍽️' : '🌙';
+                              const icon = day.isWeekend && proposal.type === 'activity' ? '☀️' : proposal.icon;
                               const fmt = (d: Date) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: trip.timezone });
                               return (
-                                <View key={slot.startTime.toISOString()} style={styles.slotSection}>
+                                <View key={slotKey} style={styles.slotSection}>
                                   <View style={styles.slotHeaderRow}>
                                     <Text style={styles.slotIcon}>{icon}</Text>
-                                    <Text style={styles.slotLabelText}>{slot.label}</Text>
-                                    <Text style={styles.slotTimeRange}>{fmt(slot.startTime)} – {fmt(slot.endTime)} · {slot.durationMinutes}min</Text>
+                                    <Text style={styles.slotLabelText}>{proposal.label}</Text>
+                                    <Text style={styles.slotTimeRange}>{fmt(proposal.startTime)} – {fmt(proposal.endTime)} · {proposal.durationMinutes}min</Text>
                                   </View>
                                   {slotRecs === undefined ? (
                                     <ActivityIndicator size="small" color="#3B82F6" />
@@ -713,7 +756,7 @@ export default function TripsScreen() {
                                   ) : (
                                     <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.hScroll}>
                                       {slotRecs.slice(0, 4).map(p => (
-                                        <PlaceCard key={`${slot.startTime.getTime()}-${p.id}`} place={p} tripId={trip.id} slotStart={slot.startTime} />
+                                        <PlaceCard key={`${proposal.startTime.getTime()}-${p.id}`} place={p} tripId={trip.id} slotStart={proposal.startTime} tripEvents={tripEvents} />
                                       ))}
                                       <RefineSearchCard trip={trip} day={day} />
                                     </ScrollView>
@@ -1149,6 +1192,8 @@ const styles = StyleSheet.create({
   timelineEventCard: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 16 },
   timelineIndicator: { width: 14, height: 14, borderRadius: 7, backgroundColor: '#3B82F6', marginTop: 4, marginRight: 16, shadowColor: '#3B82F6', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.8, shadowRadius: 6 },
   timelineIndicatorPending: { backgroundColor: '#F59E0B', shadowColor: '#F59E0B' },
+  // Matches the Home tab's existing red busy-block convention (see app/(tabs)/index.tsx).
+  timelineIndicatorBusy: { backgroundColor: '#EF4444', shadowColor: '#EF4444' },
   timelineEventContent: { flex: 1, borderBottomWidth: 1, borderBottomColor: '#334155', paddingBottom: 16 },
   timelineEventTime: { color: '#F8FAFC', fontSize: 15, fontWeight: '800', marginBottom: 4 },
   timelineEventName: { color: '#94A3B8', fontSize: 15, marginBottom: 8 },
@@ -1165,6 +1210,7 @@ const styles = StyleSheet.create({
   placeHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   placeName: { color: '#F8FAFC', fontSize: 18, fontWeight: '800', flex: 1 },
   badge: { backgroundColor: '#10B981', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
+  badgeScheduled: { backgroundColor: '#3B82F6', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
   badgeText: { color: '#FFF', fontSize: 11, fontWeight: '800' },
   placeCategory: { color: '#3B82F6', fontWeight: '700', fontSize: 13, marginBottom: 10 },
   placeDesc: { color: '#94A3B8', fontSize: 14, lineHeight: 22 },
