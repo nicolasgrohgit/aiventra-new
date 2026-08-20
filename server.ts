@@ -6,7 +6,7 @@ import pino from 'pino';
 import pinoHttp from 'pino-http';
 import * as Sentry from '@sentry/node';
 import connectToDatabase from './lib/mongodb';
-import { isMealWindow, flattenPreferenceTags, buildCityDurationMatchStage, escapeRegExp, cityNeedle } from './lib/place-matching';
+import { isMealWindow, flattenPreferenceTags, buildCityDurationMatchStage, escapeRegExp, cityNeedle, shuffled } from './lib/place-matching';
 import { guessTimezoneForCity } from './lib/timezones';
 import User from './models/User';
 import Trip from './models/Trip';
@@ -646,7 +646,9 @@ app.post('/api/events/:id/recommendations', authenticate, async (req: AuthedRequ
       { $project: { name: 1, city: 1, category: 1, genre: 1, rating: 1, description: 1, estimatedDuration: 1, distanceKm: 1, jointScore: 1 } }
     ]);
 
-    res.json(places);
+    // Shuffled among the top-10 pool so this doesn't always surface the identical place first
+    // for every event proposed on the same trip.
+    res.json(shuffled(places));
   } catch (error: any) {
     reportError(error, req, 'joint recommendation failed');
     res.status(500).json({ error: error.message });
@@ -699,7 +701,9 @@ app.post('/api/recommendations', authenticate, async (req: AuthedRequest, res: e
       { $project: { name: 1, city: 1, category: 1, genre: 1, rating: 1, description: 1, estimatedDuration: 1, distanceKm: 1, matchScore: 1 } }
     ]);
 
-    res.json(places);
+    // Shuffled among the top-10 pool — otherwise every slot/day on a trip that shares a
+    // preference profile deterministically surfaces the identical highest-scored place first.
+    res.json(shuffled(places));
   } catch (error: any) {
     reportError(error, req, 'solo recommendation failed');
     res.status(500).json({ error: error.message });

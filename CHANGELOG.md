@@ -4,6 +4,35 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
+## [0.0.24] - 2026-08-20
+### Fixed
+- **Critical: long mostly-free slots got mislabeled and queried with the wrong meal category.**
+  `expandSlotForProposals` (`lib/free-time.ts`) previously only ever split a slot around the
+  *dinner* window — a slot like 08:00-16:00 (only genuinely busy 16:00-17:00) got a single
+  "Lunch Break" label purely because lunch was the window it overlapped *most*, but its raw
+  start time (08:00) is nowhere near lunch. Since the recommendation query filters by category
+  based on whether the queried instant itself falls in a meal window (`isMealWindow` /
+  `buildCategoryFilter`), that mismatch meant a slot labeled "Lunch Break" actually queried at
+  08:00 and came back with Activity/Event results instead of restaurants — live-verified as an
+  actual reported bug, not a hypothetical. `expandSlotForProposals` now generalizes the split
+  across both meal windows generically: it walks the slot chronologically and carves out an
+  Activity chunk (capped 180min, labeled "Morning/Afternoon/Evening Activity" by time of day)
+  before each meal window the slot meaningfully reaches, then a Lunch/Dinner chunk whose own
+  start time genuinely sits inside that window — so a long slot spanning both lunch and dinner
+  (e.g. a weekend "Full Day" slot) now correctly produces four proposals instead of silently
+  only ever surfacing dinner. Live-verified against the real reported trip: the 08:00-16:00
+  slot now splits into a "Morning Activity" proposal and a "Lunch" proposal that actually
+  returns restaurant-only results.
+- **Recommendations no longer always surface the identical top pick.** Every slot/day on a
+  trip that shares a preference profile deterministically returned the same highest-scored
+  place first, since the aggregation's `$sort`+`$limit: 10` was fully deterministic — visibly
+  repetitive when several slots on the same day all show the same "New idea" card. New
+  `shuffled()` (`lib/place-matching.ts`, Fisher-Yates) is applied to both recommendation
+  endpoints' already-scored top-10 pool right before responding — varies which of the already-
+  good matches surface first without ever letting a lower-scored place outrank a better one
+  that fell outside that pool. Live-verified: repeated identical queries against the real
+  backend now return different top-3 orderings.
+
 ## [0.0.23] - 2026-08-20
 ### Fixed
 - **Profile: the "Earliest Dinner" preset pills wrapped their own time text mid-value**

@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { isMealWindow, getMealWindows, flattenPreferenceTags, buildCategoryFilter, escapeRegExp, computeMatchScore } from './place-matching';
+import { isMealWindow, getMealWindows, flattenPreferenceTags, buildCategoryFilter, escapeRegExp, computeMatchScore, shuffled } from './place-matching';
 
 describe('isMealWindow', () => {
   test('12:30 in the given timezone is a meal window', () => {
@@ -148,5 +148,35 @@ describe('computeMatchScore', () => {
 
   test('empty participant list scores 0', () => {
     assert.equal(computeMatchScore(['Restaurant', 'French'], []), 0);
+  });
+});
+
+describe('shuffled', () => {
+  test('does not mutate the input array', () => {
+    const original = [1, 2, 3, 4, 5];
+    const copy = [...original];
+    shuffled(original);
+    assert.deepEqual(original, copy);
+  });
+
+  test('preserves every element, none added or dropped', () => {
+    const items = ['a', 'b', 'c', 'd', 'e'];
+    assert.deepEqual(shuffled(items).sort(), [...items].sort());
+  });
+
+  test('handles empty and single-element arrays without throwing', () => {
+    assert.deepEqual(shuffled([]), []);
+    assert.deepEqual(shuffled(['only']), ['only']);
+  });
+
+  test('actually varies order across repeated calls (not silently a no-op)', () => {
+    // Statistically near-certain over enough trials for a 10-element array; not flaky in
+    // practice — the only way this fails is if shuffled() stopped shuffling entirely.
+    const items = Array.from({ length: 10 }, (_, i) => i);
+    const orders = new Set();
+    for (let i = 0; i < 30; i++) {
+      orders.add(shuffled(items).join(','));
+    }
+    assert.ok(orders.size > 1, 'expected at least one different ordering across 30 shuffles');
   });
 });

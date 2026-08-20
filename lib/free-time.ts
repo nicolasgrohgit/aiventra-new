@@ -155,16 +155,30 @@ export function labelFreeSlot(slot: FreeTimeSlot, timezone: string = DEVICE_TIME
 
 /**
  * Splits a free-time slot into one proposal per suggestion type instead of a single flat
- * list — an evening slot long enough to fit both should propose an activity AND a dinner,
- * not just whichever the slot's start time happens to classify as. Typed as an array of
- * { type, ... } rather than a hardcoded pair so a future 'show' (post-dinner) type can be
- * appended later without restructuring callers — see docs on the Event taxonomy's
- * venue-vs-schedule gap for why that third type isn't built yet.
+ * list — a slot long enough to span a meal should propose an activity AND that meal, not just
+ * whichever label the slot's *overall* time range happens to classify as. This is what fixes
+ * a real observed bug: a slot like 08:00-16:00 (only genuinely busy 16:00-17:00) got labeled
+ * "Lunch Break" purely because lunch was the window it overlapped *most*, but its raw start
+ * time (08:00) is nowhere near lunch — so the recommendation query for it (which filters by
+ * category based on whether the *queried instant* falls in a meal window, see
+ * lib/place-matching.ts's isMealWindow/buildCategoryFilter) came back with Activity/Event
+ * results under a "Lunch Break" label instead of restaurants. Carving out a dedicated Lunch
+ * proposal whose own start time genuinely sits inside the lunch window fixes the mismatch at
+ * the source, rather than papering over it with a better label.
  *
- * Splits only when the slot both overlaps the dinner window by a meaningful amount and is
- * long enough overall that carving out a dinner portion still leaves a real activity portion
- * — short slots or slots that don't reach dinner time at all (e.g. an afternoon gap) are
- * returned unchanged as a single 'activity' proposal, i.e. today's behavior.
+ * Handles both meal windows generically (a slot can span just one, or — a weekend "Full Day"
+ * slot — both): walks the slot chronologically, emitting an Activity chunk for any meaningful
+ * gap before each meal window the slot reaches, then a Lunch/Dinner chunk for that window
+ * itself. Trailing time after the last relevant meal isn't surfaced as its own proposal
+ * (matches the already-accepted gap for "after dinner" — see the 'show' type note below).
+ *
+ * Typed as an array of { type, ... } rather than a hardcoded shape so a future 'show'
+ * (post-dinner) type can be appended later without restructuring callers — see docs on the
+ * Event taxonomy's venue-vs-schedule gap for why that third type isn't built yet.
+ *
+ * Only splits when the slot is long enough overall (>=150min) that carving out a meal still
+ * leaves something meaningful — short slots, or slots that don't reach any meal window, are
+ * returned unchanged as a single 'activity' proposal, i.e. today's behavior for those cases.
  */
 export interface SlotProposal {
   type: 'activity' | 'meal';
@@ -175,17 +189,16 @@ export interface SlotProposal {
   durationMinutes: number;
 }
 
+function activityLabel(startHour: number): string {
+  if (startHour < 12) return 'Morning Activity';
+  if (startHour < 17) return 'Afternoon Activity';
+  return 'Evening Activity';
+}
+
 export function expandSlotForProposals(slot: FreeTimeSlot, timezone: string = DEVICE_TIMEZONE, mealPrefs: MealTimePreferences = {}): SlotProposal[] {
   const start = DateTime.fromJSDate(slot.startTime).setZone(timezone);
   const end = DateTime.fromJSDate(slot.endTime).setZone(timezone);
-  const { dinnerStart: dinnerStartHour, dinnerEnd: dinnerEndHour } = getMealWindows(mealPrefs);
-
-  const dinnerWindowStart = start.set({ hour: Math.floor(dinnerStartHour), minute: (dinnerStartHour % 1) * 60, second: 0, millisecond: 0 });
-  const dinnerWindowEnd = start.set({ hour: Math.floor(dinnerEndHour), minute: (dinnerEndHour % 1) * 60, second: 0, millisecond: 0 });
-
-  const dinnerStart = start > dinnerWindowStart ? start : dinnerWindowStart;
-  const dinnerEnd = end < dinnerWindowEnd ? end : dinnerWindowEnd;
-  const dinnerOverlapMinutes = Math.max(0, dinnerEnd.diff(dinnerStart, 'minutes').minutes);
+  const windows = getMealWindows(mealPrefs);
 
   const asActivity = (): SlotProposal[] => [{
     type: 'activity',
@@ -196,38 +209,60 @@ export function expandSlotForProposals(slot: FreeTimeSlot, timezone: string = DE
     durationMinutes: slot.durationMinutes
   }];
 
-  if (dinnerOverlapMinutes < 45 || slot.durationMinutes < 150) {
+  if (slot.durationMinutes < 150) {
     return asActivity();
   }
 
-  const activityEnd = dinnerStart;
-  const activityDurationMinutes = Math.min(180, Math.floor(activityEnd.diff(start, 'minutes').minutes));
-  if (activityDurationMinutes < 45) {
-    // Carving out dinner would leave too little of an activity window to bother splitting.
+  const atHour = (hour: number) => start.set({ hour: Math.floor(hour), minute: (hour % 1) * 60, second: 0, millisecond: 0 });
+
+  const meals = ([
+    { label: 'Lunch', windowStart: windows.lunchStart, windowEnd: windows.lunchEnd },
+    { label: 'Dinner', windowStart: windows.dinnerStart, windowEnd: windows.dinnerEnd }
+  ] as const)
+    .map(m => {
+      const winStart = atHour(m.windowStart);
+      const winEnd = atHour(m.windowEnd);
+      const overlapStart = start > winStart ? start : winStart;
+      const overlapEnd = end < winEnd ? end : winEnd;
+      const overlapMinutes = Math.max(0, overlapEnd.diff(overlapStart, 'minutes').minutes);
+      return { label: m.label, overlapStart, overlapEnd, overlapMinutes };
+    })
+    .filter(m => m.overlapMinutes >= 45)
+    .sort((a, b) => a.overlapStart.toMillis() - b.overlapStart.toMillis());
+
+  if (meals.length === 0) {
     return asActivity();
   }
 
-  return [
-    {
-      type: 'activity',
-      label: 'Activity',
-      icon: '🎭',
-      startTime: start.toJSDate(),
-      endTime: start.plus({ minutes: activityDurationMinutes }).toJSDate(),
-      durationMinutes: activityDurationMinutes
-    },
-    {
+  const proposals: SlotProposal[] = [];
+  let cursor = start;
+  for (const meal of meals) {
+    const activityDurationMinutes = Math.min(180, Math.floor(meal.overlapStart.diff(cursor, 'minutes').minutes));
+    if (activityDurationMinutes >= 45) {
+      proposals.push({
+        type: 'activity',
+        label: activityLabel(cursor.hour + cursor.minute / 60),
+        icon: '🎭',
+        startTime: cursor.toJSDate(),
+        endTime: cursor.plus({ minutes: activityDurationMinutes }).toJSDate(),
+        durationMinutes: activityDurationMinutes
+      });
+    }
+    proposals.push({
       type: 'meal',
-      label: 'Dinner',
+      label: meal.label,
       icon: '🍽️',
-      startTime: dinnerStart.toJSDate(),
-      endTime: dinnerEnd.toJSDate(),
+      startTime: meal.overlapStart.toJSDate(),
+      endTime: meal.overlapEnd.toJSDate(),
       // Capped at 120: buildCategoryFilter (lib/place-matching.ts) only guarantees a
       // Restaurant-only result when mealWindow && durationMinutes <= 120 — anything longer
-      // falls through to an unfiltered match, defeating the point of a dedicated Dinner row.
-      durationMinutes: Math.min(120, Math.round(dinnerOverlapMinutes))
-    }
-  ];
+      // falls through to an unfiltered match, defeating the point of a dedicated meal row.
+      durationMinutes: Math.min(120, Math.round(meal.overlapMinutes))
+    });
+    cursor = meal.overlapEnd;
+  }
+
+  return proposals;
 }
 
 /**

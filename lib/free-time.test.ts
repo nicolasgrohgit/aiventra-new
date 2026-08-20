@@ -186,7 +186,7 @@ describe('expandSlotForProposals', () => {
     const proposals = expandSlotForProposals(slot, ZONE);
     assert.equal(proposals.length, 2);
     assert.equal(proposals[0].type, 'activity');
-    assert.equal(proposals[0].label, 'Activity');
+    assert.equal(proposals[0].label, 'Evening Activity');
     assert.equal(proposals[0].startTime.getTime(), slot.startTime.getTime());
     assert.equal(proposals[1].type, 'meal');
     assert.equal(proposals[1].label, 'Dinner');
@@ -197,13 +197,38 @@ describe('expandSlotForProposals', () => {
     assert.ok(proposals[0].endTime.getTime() <= proposals[1].startTime.getTime());
   });
 
-  test('splits a weekend full-day slot too (it reaches dinner time)', () => {
-    const slot = getHardcodedFreeSlots(FUTURE_SATURDAY, ZONE)[0];
+  // Regression test for a real reported bug: a mostly-free day (one meeting 16:00-17:00) was
+  // computing a single 08:00-16:00 "Lunch Break" slot — its raw start (08:00) is nowhere near
+  // lunch, so the recommendation query for it came back with Activity/Event results under a
+  // "Lunch Break" label instead of restaurants. It must now split into a real Activity chunk
+  // plus a Lunch chunk whose own start time genuinely sits inside the lunch window.
+  test('splits a long midday slot into Activity and Lunch (not a giant mislabeled block)', () => {
+    const slot = { startTime: new Date('2030-03-04T08:00:00+01:00'), endTime: new Date('2030-03-04T16:00:00+01:00'), durationMinutes: 480, label: 'Lunch Break' };
     const proposals = expandSlotForProposals(slot, ZONE);
     assert.equal(proposals.length, 2);
+    assert.equal(proposals[0].type, 'activity');
+    assert.equal(proposals[0].label, 'Morning Activity');
+    assert.equal(proposals[0].startTime.getTime(), slot.startTime.getTime());
     assert.equal(proposals[1].type, 'meal');
-    // Activity is capped, not the whole 8am-18:30 span.
+    assert.equal(proposals[1].label, 'Lunch');
+    // The Lunch proposal's own start time must genuinely fall inside the lunch window —
+    // this is what fixes the category-filter mismatch at the source.
+    const lunchStartHour = DateTime.fromJSDate(proposals[1].startTime).setZone(ZONE).hour
+      + DateTime.fromJSDate(proposals[1].startTime).setZone(ZONE).minute / 60;
+    assert.ok(lunchStartHour >= 11.5 && lunchStartHour <= 13.5);
+    assert.ok(proposals[1].durationMinutes <= 120);
+  });
+
+  test('a slot spanning both lunch and dinner splits into four proposals', () => {
+    const slot = getHardcodedFreeSlots(FUTURE_SATURDAY, ZONE)[0]; // weekend "Full Day": 08:00-22:00
+    const proposals = expandSlotForProposals(slot, ZONE);
+    assert.equal(proposals.length, 4);
+    assert.deepEqual(proposals.map(p => p.type), ['activity', 'meal', 'activity', 'meal']);
+    assert.equal(proposals[1].label, 'Lunch');
+    assert.equal(proposals[3].label, 'Dinner');
+    // Both activity chunks are capped, not left spanning the whole gap either side.
     assert.ok(proposals[0].durationMinutes <= 180);
+    assert.ok(proposals[2].durationMinutes <= 180);
   });
 
   test('does not split a short evening gap', () => {
@@ -213,12 +238,12 @@ describe('expandSlotForProposals', () => {
     assert.equal(proposals[0].type, 'activity');
   });
 
-  test('does not split a slot that never reaches the dinner window', () => {
-    const slot = { startTime: new Date('2030-03-04T09:00:00+01:00'), endTime: new Date('2030-03-04T16:00:00+01:00'), durationMinutes: 420, label: 'Free Time' };
+  test('does not split a slot that reaches no meal window at all', () => {
+    const slot = { startTime: new Date('2030-03-04T06:00:00+01:00'), endTime: new Date('2030-03-04T09:00:00+01:00'), durationMinutes: 180, label: 'Free Time' };
     const proposals = expandSlotForProposals(slot, ZONE);
     assert.equal(proposals.length, 1);
     assert.equal(proposals[0].startTime.getTime(), slot.startTime.getTime());
-    assert.equal(proposals[0].durationMinutes, 420);
+    assert.equal(proposals[0].durationMinutes, 180);
   });
 
   test('a late-dinner preference (Spanish-style) shifts the Dinner split later', () => {

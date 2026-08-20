@@ -125,3 +125,20 @@ export function computeMatchScore(placeTags: string[], participantTagSets: strin
     return total + intersectionSize;
   }, 0);
 }
+
+/**
+ * Fisher-Yates shuffle, non-mutating — applied to an already-scored-and-limited recommendation
+ * list (see POST /api/recommendations and POST /api/events/:id/recommendations) so repeated
+ * slots/days on the same trip don't all surface the identical top-scored place first every
+ * time. Deliberately applied AFTER scoring/limiting to the best candidates, so this only varies
+ * order *among already-good matches* — it never surfaces a genuinely worse place over a better
+ * one that fell outside that top-N pool.
+ */
+export function shuffled<T>(items: T[]): T[] {
+  const arr = [...items];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
