@@ -4,7 +4,7 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
-## [Unreleased]
+## [0.0.19] - 2026-08-20
 ### Fixed
 - **Critical: curated places were invisible to real trip-based recommendation queries.**
   `buildCityDurationMatchStage`'s city regex only matched when the *stored* `city` field
