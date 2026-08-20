@@ -5,7 +5,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://matters-haven-aircraft-longest.trycloudflare.com"
+        "EXPO_PUBLIC_API_URL": "https://cho-provinces-soc-sewing.trycloudflare.com"
       }
     },
     "production": {}

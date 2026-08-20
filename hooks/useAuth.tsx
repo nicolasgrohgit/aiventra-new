@@ -64,7 +64,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     const loadStorage = async () => {
       try {
         const storedToken = await AsyncStorage.getItem('@authToken');
-        if (storedToken) setAuthToken(storedToken);
+        if (storedToken) setAuthToken(JSON.parse(storedToken));
 
         const storedUser = await AsyncStorage.getItem('@user');
         const storedOnboarding = await AsyncStorage.getItem('@hasCompletedOnboarding');

@@ -4,6 +4,25 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
+## [0.0.20] - 2026-08-20
+### Fixed
+- **Critical: every restored session sent a malformed auth token, 401ing every API call.**
+  `hooks/useAuth.tsx`'s `saveState` helper `JSON.stringify`s whatever it's given before
+  writing to AsyncStorage — correct for objects, but for the plain JWT string this wraps it
+  in literal quote characters (`"eyJhbGci...m0"`). The token restore path on app boot read
+  that back with a bare `AsyncStorage.getItem` and passed it straight to `setAuthToken`
+  without `JSON.parse`, unlike the adjacent `@user`/`@hasCompletedOnboarding` reads — so
+  after any app restart, every request's `Authorization` header carried the token
+  double-quoted and failed JWT verification server-side. A token set directly via a fresh
+  `login()` call (same-session, no restart) was unaffected, since that path uses the raw
+  token in memory and never round-trips through storage first — which is why this was
+  invisible in normal development (rarely restarting a running Metro session) and only
+  surfaced against a real device that had actually restarted the app. Live-verified against
+  the real server log: a restored session's requests were literally arriving as
+  `Bearer \"eyJhbGci...\"` and 401ing across every endpoint (trips, contacts,
+  recommendations, friends-nearby). Fix is a one-line `JSON.parse` on the read side to match
+  how the token is written.
+
 ## [0.0.19] - 2026-08-20
 ### Fixed
 - **Critical: curated places were invisible to real trip-based recommendation queries.**
