@@ -4,6 +4,16 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
+## [0.0.23] - 2026-08-20
+### Fixed
+- **Profile: the "Earliest Dinner" preset pills wrapped their own time text mid-value**
+  (e.g. "18:0" / "0" on two lines inside one cramped pill) — `OptionRow`'s pill container had
+  no wrap, so 9 evenly-divided `flex: 1` pills in one row squeezed each one narrower than its
+  own "HH:mm" text. `OptionRow` now takes an optional `wrap` prop (used for the Earliest
+  Lunch/Dinner rows) that switches to content-sized pills flowing across multiple lines
+  instead of forcing a single cramped row; unchanged for the short rows (Budget/Currency/Date
+  Format) that already looked right as evenly-filled single-row pills.
+
 ## [0.0.22] - 2026-08-20
 ### Added
 - **Meal-time preferences**: Profile now has "Earliest Lunch"/"Earliest Dinner" pickers

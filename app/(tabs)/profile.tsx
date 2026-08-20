@@ -134,16 +134,21 @@ export default function ProfileScreen() {
     }
   };
 
-  const OptionRow = ({ label, options, current, onSelect }: any) => (
+  // `wrap`: for rows with more options than comfortably fit on one line (e.g. the 9 dinner-time
+  // presets) — flex:1 pills dividing a single row got so narrow their own text wrapped
+  // mid-value ("18:0" / "0"). Wrapped pills size to their content and flow onto multiple lines
+  // instead. Default (no `wrap`) is unchanged for the short rows (Budget/Currency/Date Format)
+  // that already look right as evenly-filled single-row pills.
+  const OptionRow = ({ label, options, current, onSelect, wrap }: any) => (
     <View style={styles.optionRowContainer}>
       <Text style={styles.optionLabel}>{label}</Text>
-      <View style={styles.optionsWrapper}>
+      <View style={[styles.optionsWrapper, wrap && styles.optionsWrapperWrap]}>
         {options.map((opt: string) => (
-          <TouchableOpacity 
+          <TouchableOpacity
             key={opt}
             onPress={() => onSelect(opt)}
             activeOpacity={0.8}
-            style={[styles.optionPill, current === opt && styles.optionPillActive]}
+            style={[styles.optionPill, wrap && styles.optionPillAuto, current === opt && styles.optionPillActive]}
           >
             <Text style={[styles.optionText, current === opt && styles.optionTextActive]}>{opt}</Text>
           </TouchableOpacity>
@@ -360,12 +365,14 @@ export default function ProfileScreen() {
              options={['12:00', '12:30', '13:00', '13:30', '14:00']}
              current={earliestLunchTime}
              onSelect={setEarliestLunchTime}
+             wrap
            />
            <OptionRow
              label="Earliest Dinner"
              options={['18:00', '18:30', '19:00', '19:30', '20:00', '20:30', '21:00', '21:30', '22:00']}
              current={earliestDinnerTime}
              onSelect={setEarliestDinnerTime}
+             wrap
            />
 
            <ConfigRowModal title="Dietary Restrictions" arrayString={dietary} openModal={() => setShowDietModal(true)} />
@@ -427,7 +434,9 @@ const styles = StyleSheet.create({
   optionRowContainer: { marginBottom: 28 },
   optionLabel: { color: '#DBEAFE', fontSize: 13, fontWeight: '700', textTransform: 'uppercase', marginBottom: 16 },
   optionsWrapper: { flexDirection: 'row', gap: 12 },
+  optionsWrapperWrap: { flexWrap: 'wrap' },
   optionPill: { flex: 1, paddingVertical: 14, backgroundColor: '#1E293B', borderRadius: 12, alignItems: 'center', borderWidth: 1, borderColor: '#334155' },
+  optionPillAuto: { flex: 0, paddingHorizontal: 16, minWidth: 64 },
   optionPillActive: { backgroundColor: '#3B82F6', borderColor: '#3B82F6' },
   optionText: { color: '#94A3B8', fontWeight: '600', fontSize: 15 },
   optionTextActive: { color: '#FFF' },
