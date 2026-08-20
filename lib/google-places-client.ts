@@ -25,15 +25,19 @@ const TEXT_SEARCH_URL = 'https://places.googleapis.com/v1/places:searchText';
 // Places API (New) requires an explicit field mask on every request (no "return everything"
 // default) — this also controls which SKU/pricing tier the call falls under, so keep it to
 // only what's actually used below.
-const FIELD_MASK = 'places.id,places.displayName,places.types,places.rating,places.editorialSummary';
+const FIELD_MASK = 'places.id,places.displayName,places.types,places.rating,places.editorialSummary,places.location';
 const MAX_RESULTS = 20;
 
-// No real per-visit duration or precise distance is available from a text search keyed only by
-// city (no user location, and Places API doesn't report typical visit length at all) — these
-// are coarse, clearly-approximate stand-ins, the same order of accuracy the synthetic generator
-// in lib/places-population.ts already uses, not a claim of real measurement. Real distance
-// needs the reserved `location` field on Place (models/Place.ts) plus the user's live
-// coordinates, deliberately out of scope here.
+// No real per-visit duration is available from a text search keyed only by city (Places API
+// doesn't report typical visit length at all) — DEFAULT_DURATION_MINUTES below is a coarse,
+// clearly-approximate stand-in, same order of accuracy the synthetic generator in
+// lib/places-population.ts already uses, not a claim of real measurement.
+//
+// Distance is different: Places API (New) returns real lat/lng per place (see `location` in
+// FIELD_MASK below), stored on Place.location and used by buildGeoNearStage
+// (lib/place-matching.ts) once a trip has a real anchor point (Trip.baseLocations). pseudoDistanceKm
+// below is now only a fallback for the static-field query path (trips with no anchor point
+// yet) — not the source of truth it used to be.
 const DEFAULT_DURATION_MINUTES: Record<'Restaurant' | 'Activity', number> = {
   Restaurant: 75,
   Activity: 90,
@@ -52,6 +56,7 @@ export interface GooglePlaceDraft {
   estimatedDuration: number;
   distanceKm: number;
   source: 'google';
+  location?: { type: 'Point'; coordinates: [number, number] };
 }
 
 // Deterministic (not random) so the same place gets the same placeholder distance across
@@ -121,6 +126,8 @@ export async function fetchGooglePlacesForCity(
     if (tags.length === 0) continue; // nothing in our taxonomy matched — drop, don't fabricate
 
     const name: string = place.displayName?.text || 'Unnamed place';
+    const lat = place.location?.latitude;
+    const lng = place.location?.longitude;
     drafts.push({
       name,
       city,
@@ -130,8 +137,13 @@ export async function fetchGooglePlacesForCity(
       rating: typeof place.rating === 'number' ? place.rating : 4.3,
       description: place.editorialSummary?.text || `A ${category.toLowerCase()} in ${city} (via Google Places).`,
       estimatedDuration: DEFAULT_DURATION_MINUTES[category],
+      // Fallback only — real distance comes from `location` below via buildGeoNearStage once
+      // the requesting trip has a real anchor point.
       distanceKm: pseudoDistanceKm(place.id || name),
       source: 'google',
+      location: typeof lat === 'number' && typeof lng === 'number'
+        ? { type: 'Point', coordinates: [lng, lat] }
+        : undefined,
     });
   }
 

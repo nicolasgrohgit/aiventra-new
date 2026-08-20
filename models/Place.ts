@@ -20,8 +20,12 @@ export interface IPlace extends Document {
   // GOOGLE_PLACES_API_KEY is configured or the Google fetch didn't return enough to fill a
   // city; safe to regenerate at any time.
   source: 'curated' | 'generated' | 'google';
-  // Reserved for a future geo/radius bolt-on (a $geoNear stage ahead of the tag-scoring
-  // stages in the same aggregation) — deliberately not indexed or queried yet.
+  // Real coordinates, used by buildGeoNearStage (lib/place-matching.ts) as the first stage of
+  // both recommendation aggregations once a trip has a real anchor point (Trip.baseLocations).
+  // Populated by: lib/google-places-client.ts (source: 'google', straight from the API
+  // response), scripts/backfill-curated-place-coords.ts (source: 'curated', one-time Nominatim
+  // geocode), and lib/places-population.ts (source: 'generated', jittered around the request's
+  // anchor point since there's no real venue to geocode).
   location?: {
     type: 'Point';
     coordinates: [number, number]; // [lng, lat]
@@ -39,14 +43,22 @@ const PlaceSchema = new Schema<IPlace>({
   estimatedDuration: { type: Number, required: true },
   distanceKm: { type: Number, required: true },
   source: { type: String, enum: ['curated', 'generated', 'google'], required: true, default: 'generated' },
+  // `default: undefined` on the array is deliberate and load-bearing: Mongoose otherwise
+  // defaults any array-typed path to `[]`, which materializes `location: { coordinates: [] }`
+  // on every document regardless of whether it was ever set — invalid GeoJSON (a Point needs
+  // exactly 2 coordinates) that breaks 2dsphere index creation outright. This is what actually
+  // keeps `location` truly absent until a real point is assigned.
   location: {
     type: { type: String, enum: ['Point'] },
-    coordinates: { type: [Number] }
+    coordinates: { type: [Number], default: undefined }
   }
 });
 
 // Supports the city + time-of-day-category filter the joint-recommendation endpoint runs
-// before scoring by tags. Not indexing `location` yet — no geo queries run against it today.
+// before scoring by tags.
 PlaceSchema.index({ city: 1, category: 1 });
+// Required for $geoNear (buildGeoNearStage, lib/place-matching.ts) — a 2dsphere index is a
+// hard prerequisite for any geospatial query against this field, not just a perf nicety.
+PlaceSchema.index({ location: '2dsphere' });
 
 export default mongoose.models.Place || mongoose.model<IPlace>('Place', PlaceSchema);

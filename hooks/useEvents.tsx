@@ -31,8 +31,12 @@ interface EventsContextType {
     // maxDistanceKm: omit for the default "near me" ceiling (see DEFAULT_MAX_DISTANCE_KM in
     // lib/place-matching.ts) — recommendation.tsx's "Expand Search Radius" passes a larger
     // value. tagOverride: score against these specific tags instead of the caller's saved
-    // preference profile — trips.tsx's "Refine Your Search" flow.
-    maxDistanceKm?: number; tagOverride?: string[];
+    // preference profile — trips.tsx's "Refine Your Search" flow. tripId: lets the server
+    // resolve a real anchor point from Trip.baseLocations (hotel/city) instead of falling back
+    // to the static-distanceKm match — trips.tsx passes this on every call. anchorLat/anchorLng:
+    // an explicit override anchor (the Home tab's live device location, no trip involved) —
+    // takes priority over tripId when both would somehow be given.
+    maxDistanceKm?: number; tagOverride?: string[]; tripId?: string; anchorLat?: number; anchorLng?: number;
   }) => Promise<any[]>;
   // Circle-scoped, sharer-driven friend discovery for trip planning — see the privacy model
   // documented on GET /api/friends-nearby in server.ts. Swallows errors to [] rather than
@@ -130,7 +134,10 @@ export const EventsProvider = ({ children }: { children: ReactNode }) => {
     return res.json();
   };
 
-  const getRecommendations = async (params: { city: string; durationMinutes: number; startTimeIso: string; timezone?: string }) => {
+  const getRecommendations = async (params: {
+    city: string; durationMinutes: number; startTimeIso: string; timezone?: string;
+    maxDistanceKm?: number; tagOverride?: string[]; tripId?: string; anchorLat?: number; anchorLng?: number;
+  }) => {
     const res = await apiFetch(`${API_URL}/api/recommendations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

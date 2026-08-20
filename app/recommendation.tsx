@@ -9,7 +9,7 @@ import { useEffect, useState } from 'react';
 import Animated, { FadeInDown, FadeIn } from 'react-native-reanimated';
 
 export default function SuggestionsScreen() {
-  const { duration, start, end, cityContext } = useLocalSearchParams();
+  const { duration, start, end, cityContext, lat, lng } = useLocalSearchParams();
   const { user } = useAuth();
   const { getRecommendations } = useEvents();
   const router = useRouter();
@@ -29,11 +29,16 @@ export default function SuggestionsScreen() {
     if (!duration || !start) return;
     let cancelled = false;
     setIsComputing(true);
+    const anchorLat = typeof lat === 'string' ? parseFloat(lat) : NaN;
+    const anchorLng = typeof lng === 'string' ? parseFloat(lng) : NaN;
     getRecommendations({
       city: city || 'New York, USA',
       durationMinutes: durationMins,
       startTimeIso: start as string,
-      ...(maxDistanceKm !== undefined ? { maxDistanceKm } : {})
+      ...(maxDistanceKm !== undefined ? { maxDistanceKm } : {}),
+      // The real device GPS point (see index.tsx's handleSuggest) beats any trip-based anchor
+      // — it's genuinely where the user is right now, not an approximation.
+      ...(!Number.isNaN(anchorLat) && !Number.isNaN(anchorLng) ? { anchorLat, anchorLng } : {})
     })
       .then(places => {
         if (!cancelled) setRecommendations(places.map((p: any) => ({ ...p, id: p._id })));
@@ -45,7 +50,7 @@ export default function SuggestionsScreen() {
         if (!cancelled) setIsComputing(false);
       });
     return () => { cancelled = true; };
-  }, [duration, durationMins, city, start, maxDistanceKm, getRecommendations]);
+  }, [duration, durationMins, city, start, maxDistanceKm, getRecommendations, lat, lng]);
 
   // Re-runs the same query with the "near me" ceiling raised well past the 5km default —
   // 25km stays within a single metro area (a taxi/transit ride, not a day trip), which fits

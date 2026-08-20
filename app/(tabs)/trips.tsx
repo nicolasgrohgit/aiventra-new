@@ -10,6 +10,7 @@ import { NativeDatePicker } from '@/components/ui/NativeDatePicker';
 import { getTripDaySchedule, getDeviceEventsForDateRange, expandSlotForProposals } from '@/lib/calendar';
 import { guessTimezoneForCity } from '@/lib/timezones';
 import { searchCities, CityResult } from '@/lib/geocoding';
+import { searchHotelLocation, HotelLocationResult } from '@/lib/hotel-geocoding';
 import { CircleShareSelector } from '@/components/ui/circle-share-selector';
 import { FOOD_GENRES_CATEGORIZED, ACTIVITY_GENRES_CATEGORIZED, EVENT_GENRES_CATEGORIZED } from '@/constants/preferences';
 
@@ -32,6 +33,15 @@ interface TripEvent {
   participants: EventParticipant[];
 }
 
+interface TripBaseLocation {
+  label: string;
+  lat: number;
+  lng: number;
+  source: 'hotel' | 'city';
+  startDate: string;
+  endDate: string;
+}
+
 interface TripMock {
   id: string;
   destination: string;
@@ -40,6 +50,7 @@ interface TripMock {
   timezone: string;
   sharedWithCircles: string[];
   dismissedSlots?: string[];
+  baseLocations?: TripBaseLocation[];
 }
 
 interface NearbyFriend {
@@ -93,11 +104,29 @@ export default function TripsScreen() {
   const [destinationSuggestions, setDestinationSuggestions] = useState<CityResult[]>([]);
   const [destinationWarning, setDestinationWarning] = useState<string | null>(null);
   const [destinationFocused, setDestinationFocused] = useState(false);
+  // The picked city's own centroid — previously discarded the moment a suggestion was tapped,
+  // now kept as the free 'city' baseLocations fallback anchor (see handleSaveTrip) and as the
+  // geographic bias for the hotel search below, so a generic hotel name can't resolve to a
+  // same-named place in the wrong country.
+  const [newDestinationCoords, setNewDestinationCoords] = useState<{ lat: number; lng: number } | null>(null);
+
+  // "Where are you staying? (optional)" — a real geocoded anchor point (Nominatim, see
+  // lib/hotel-geocoding.ts) far more precise than the city itself for "near me" distance
+  // filtering. Same debounced-suggestions pattern as the destination field above.
+  const [newHotelQuery, setNewHotelQuery] = useState('');
+  const [newHotelSuggestions, setNewHotelSuggestions] = useState<HotelLocationResult[]>([]);
+  const [newHotelFocused, setNewHotelFocused] = useState(false);
+  const [newHotelSelected, setNewHotelSelected] = useState<{ label: string; lat: number; lng: number } | null>(null);
 
   const resetDestinationLookup = () => {
     setDestinationSuggestions([]);
     setDestinationWarning(null);
     setDestinationFocused(false);
+  };
+
+  const resetHotelLookup = () => {
+    setNewHotelSuggestions([]);
+    setNewHotelFocused(false);
   };
 
   // slotStart carries the actual day+time of the free-time slot the tapped PlaceCard was
@@ -252,7 +281,8 @@ export default function TripsScreen() {
               city: trip.destination,
               durationMinutes: proposal.durationMinutes,
               startTimeIso: proposal.startTime.toISOString(),
-              timezone: trip.timezone
+              timezone: trip.timezone,
+              tripId: trip.id
             })
               .then(places => {
                 setSlotRecommendations(prev => ({ ...prev, [key]: places.map((p: any) => ({ ...p, id: p._id })) }));
@@ -296,6 +326,27 @@ export default function TripsScreen() {
     }, 300);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [newDestination]);
+
+  // Debounced hotel/accommodation lookup — biased to the picked destination city's centroid
+  // (newDestinationCoords) so a generic name like "Marriott" resolves within the right city,
+  // not wherever text-relevance alone would rank first worldwide.
+  useEffect(() => {
+    if (newHotelQuery.trim().length < 2) {
+      setNewHotelSuggestions([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const results = await searchHotelLocation(newHotelQuery, newDestinationCoords ?? undefined);
+        if (!cancelled) setNewHotelSuggestions(results);
+      } catch {
+        // Geocoding failures shouldn't block trip creation — the hotel field is optional.
+        if (!cancelled) setNewHotelSuggestions([]);
+      }
+    }, 300);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [newHotelQuery, newDestinationCoords]);
 
   // Only contacts who are real, linked app users can be invited — blind matching needs a
   // real account with real preferences on the other side, and there's nothing to match a
@@ -341,7 +392,11 @@ export default function TripsScreen() {
     setStartDate(new Date());
     setEndDate(new Date(Date.now() + 86400000 * 3));
     setNewSharedWithCircles([]);
+    setNewDestinationCoords(null);
+    setNewHotelQuery('');
+    setNewHotelSelected(null);
     resetDestinationLookup();
+    resetHotelLookup();
     setShowCreateModal(true);
   };
 
@@ -351,7 +406,15 @@ export default function TripsScreen() {
     setStartDate(trip.startDate);
     setEndDate(trip.endDate);
     setNewSharedWithCircles(trip.sharedWithCircles || []);
+    // Pre-fill from whatever baseLocations this trip already has — a hotel isn't always known
+    // at creation time, so editing it in later needs to work exactly like setting it does.
+    const existingCity = (trip.baseLocations || []).find(b => b.source === 'city');
+    const existingHotel = (trip.baseLocations || []).find(b => b.source === 'hotel');
+    setNewDestinationCoords(existingCity ? { lat: existingCity.lat, lng: existingCity.lng } : null);
+    setNewHotelSelected(existingHotel ? { label: existingHotel.label, lat: existingHotel.lat, lng: existingHotel.lng } : null);
+    setNewHotelQuery(existingHotel?.label || '');
     resetDestinationLookup();
+    resetHotelLookup();
     setShowCreateModal(true);
   };
 
@@ -367,6 +430,24 @@ export default function TripsScreen() {
     if (!newDestination) { Alert.alert('Missing Destination', 'Please enter a destination city, e.g. Rome.'); return; }
     if (startDate > endDate) { Alert.alert('Invalid Dates', 'The start date must be before the end date.'); return; }
 
+    // 'city' is the free centroid fallback (always included when we have it — costs nothing,
+    // previously discarded); 'hotel' is the higher-precision anchor when the user picked one.
+    // Both cover the trip's full date range — today's app is 1 trip = 1 city, so there's never
+    // more than one of each.
+    const baseLocations: TripBaseLocation[] = [];
+    if (newDestinationCoords) {
+      baseLocations.push({
+        label: newDestination, lat: newDestinationCoords.lat, lng: newDestinationCoords.lng,
+        source: 'city', startDate: startDate.toISOString(), endDate: endDate.toISOString()
+      });
+    }
+    if (newHotelSelected) {
+      baseLocations.push({
+        label: newHotelSelected.label, lat: newHotelSelected.lat, lng: newHotelSelected.lng,
+        source: 'hotel', startDate: startDate.toISOString(), endDate: endDate.toISOString()
+      });
+    }
+
     if (editTripId) {
       setTrips(trips.map(t => t.id === editTripId ? {
         ...t,
@@ -374,7 +455,8 @@ export default function TripsScreen() {
         startDate: startDate,
         endDate: endDate,
         timezone: guessTimezoneForCity(newDestination),
-        sharedWithCircles: newSharedWithCircles
+        sharedWithCircles: newSharedWithCircles,
+        baseLocations
       } : t));
     } else {
       setTrips([{
@@ -383,10 +465,12 @@ export default function TripsScreen() {
         startDate: startDate,
         endDate: endDate,
         timezone: guessTimezoneForCity(newDestination),
-        sharedWithCircles: newSharedWithCircles
+        sharedWithCircles: newSharedWithCircles,
+        baseLocations
       }, ...trips]);
     }
     resetDestinationLookup();
+    resetHotelLookup();
     setShowCreateModal(false);
   };
 
@@ -494,7 +578,8 @@ export default function TripsScreen() {
         durationMinutes: refineDuration,
         startTimeIso: finalStart.toISOString(),
         timezone: trip?.timezone,
-        tagOverride: refineTags.length > 0 ? refineTags : undefined
+        tagOverride: refineTags.length > 0 ? refineTags : undefined,
+        tripId: refineSearchContext.tripId
       });
       setRefineResults(places.map((p: any) => ({ ...p, id: p._id })));
       setRefineStartInstant(finalStart);
@@ -536,7 +621,8 @@ export default function TripsScreen() {
             city: trip.destination,
             durationMinutes: proposeDuration,
             startTimeIso: finalStart.toISOString(),
-            timezone: trip.timezone
+            timezone: trip.timezone,
+            tripId: trip.id
           })).map((p: any) => ({ ...p, jointScore: p.matchScore }));
 
       setProposeResults(recs);
@@ -1184,6 +1270,7 @@ export default function TripsScreen() {
                       style={styles.citySuggestionRow}
                       onPress={() => {
                         setNewDestination(`${c.name}, ${c.country}`);
+                        setNewDestinationCoords({ lat: c.latitude, lng: c.longitude });
                         resetDestinationLookup();
                       }}
                     >
@@ -1195,6 +1282,41 @@ export default function TripsScreen() {
               )}
               {destinationWarning && <Text style={styles.cityWarningText}>{destinationWarning}</Text>}
             </View>
+
+            <Text style={styles.inputLabel}>Where are you staying? (optional)</Text>
+            <View style={{ marginBottom: 8 }}>
+              <TextInput
+                style={[styles.textInput, { marginBottom: 0 }]}
+                placeholder="Hotel name or address"
+                placeholderTextColor="#64748B"
+                value={newHotelQuery}
+                onChangeText={(text) => { setNewHotelQuery(text); setNewHotelSelected(null); }}
+                onFocus={() => setNewHotelFocused(true)}
+                onBlur={() => setTimeout(() => setNewHotelFocused(false), 150)}
+              />
+              {newHotelFocused && newHotelSuggestions.length > 0 && (
+                <View style={styles.citySuggestionsBox}>
+                  {newHotelSuggestions.map((h, i) => (
+                    <TouchableOpacity
+                      key={`${h.label}-${i}`}
+                      style={styles.citySuggestionRow}
+                      onPress={() => {
+                        setNewHotelQuery(h.label);
+                        setNewHotelSelected({ label: h.label, lat: h.latitude, lng: h.longitude });
+                        resetHotelLookup();
+                      }}
+                    >
+                      <Text style={styles.citySuggestionText} numberOfLines={2}>{h.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+            </View>
+            <Text style={styles.hotelHelperText}>
+              A precise location gets you much more accurate &quot;near me&quot; restaurant and activity
+              suggestions than the city alone — especially in a city as large as your
+              destination might be. Powered by OpenStreetMap contributors.
+            </Text>
 
             <Text style={styles.inputLabel}>Start Date</Text>
             <NativeDatePicker value={startDate} onChange={setStartDate} mode="date" format="date" />
@@ -1365,6 +1487,7 @@ const styles = StyleSheet.create({
   citySuggestionText: { color: '#F8FAFC', fontSize: 15, fontWeight: '600' },
   citySuggestionSub: { color: '#64748B', fontSize: 12, marginTop: 2 },
   cityWarningText: { color: '#F59E0B', fontSize: 13, marginTop: 8, lineHeight: 18 },
+  hotelHelperText: { color: '#64748B', fontSize: 12, lineHeight: 17, marginBottom: 28 },
 
   submitBtn: { paddingVertical: 18, borderRadius: 16, alignItems: 'center', marginTop: 12 },
   submitBtnLarge: { backgroundColor: '#10B981', paddingVertical: 18, borderRadius: 16, alignItems: 'center', marginTop: 16 },

@@ -17,6 +17,22 @@ export interface ITrip extends Document {
   // /api/trips/:tripId/dismissed-slots in server.ts. Purely a display filter; manually adding
   // something to a dismissed window via Propose/Refine is unaffected.
   dismissedSlots: string[];
+  // Real anchor point(s) for "near me" distance filtering (see lib/place-matching.ts's
+  // buildGeoNearStage) — an array from day one even though today's UI only ever produces one
+  // entry, since this app is 1 trip = 1 city today but may become 1 trip = N cities later; an
+  // array needs no migration when that day comes, a scalar field would. 'city' is the free
+  // centroid fallback (from the destination autocomplete's own geocoding, previously
+  // discarded); 'hotel' is the higher-precision geocoded accommodation point when the user
+  // provides one. Query-side: pick the entry whose date range contains the slot being queried,
+  // preferring 'hotel' over 'city' for that range.
+  baseLocations: {
+    label: string;
+    lat: number;
+    lng: number;
+    source: 'hotel' | 'city';
+    startDate: Date;
+    endDate: Date;
+  }[];
 }
 
 const TripSchema = new Schema<ITrip>({
@@ -26,7 +42,18 @@ const TripSchema = new Schema<ITrip>({
   end_date: { type: Date, required: true },
   timezone: { type: String },
   sharedWithCircles: { type: [String], default: [] },
-  dismissedSlots: { type: [String], default: [] }
+  dismissedSlots: { type: [String], default: [] },
+  baseLocations: {
+    type: [{
+      label: { type: String, required: true },
+      lat: { type: Number, required: true },
+      lng: { type: Number, required: true },
+      source: { type: String, enum: ['hotel', 'city'], required: true },
+      startDate: { type: Date, required: true },
+      endDate: { type: Date, required: true }
+    }],
+    default: []
+  }
   // Events (created or imported) live in their own collection, queried by trip_id — see
   // models/Event.ts. They used to be embedded here, but an embedded array can't be queried
   // from the invited participant's side ("events I'm invited to") without scanning every

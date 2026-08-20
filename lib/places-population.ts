@@ -1,6 +1,7 @@
 import Place from '../models/Place';
-import { escapeRegExp, cityNeedle } from './place-matching';
+import { escapeRegExp, cityNeedle, jitterCoordinates, GeoPoint } from './place-matching';
 import { fetchGooglePlacesForCity } from './google-places-client';
+import { searchCities } from './geocoding';
 
 const MIN_PLACES_PER_CITY = 5;
 
@@ -12,8 +13,13 @@ const MIN_PLACES_PER_CITY = 5;
 //
 // `city` is the full string as given (e.g. "Amsterdam, Netherlands") — used for storage and
 // matching. `displayCity` is just the city-name portion, for names/descriptions that read
-// naturally ("Local Amsterdam Cafe", not "Local Amsterdam, Netherlands Cafe").
-function buildSyntheticPlaces(city: string, displayCity: string) {
+// naturally ("Local Amsterdam Cafe", not "Local Amsterdam, Netherlands Cafe"). `cityCenter`
+// (best-effort geocoded — see resolveCityCenter below) jitters each entry's real `location`
+// around the actual city centroid instead of leaving it unset, so buildGeoNearStage still has
+// something real-ish to filter/sort on for cities with no curated or Google coverage; distance
+// filtering degrading to "no location data at all" for exactly the thinnest-covered cities
+// would be the opposite of what you'd want.
+function buildSyntheticPlaces(city: string, displayCity: string, cityCenter: GeoPoint | null) {
   const drafts = [
     { name: `Local ${displayCity} Cafe`, category: 'Restaurant' as const, genre: 'Cafes', rating: 4.6, description: `A lovely local cafe to grab coffee, tea, and fresh pastries in ${displayCity}.`, estimatedDuration: 45, distanceKm: 1.1 },
     { name: `Local ${displayCity} Bistro`, category: 'Restaurant' as const, genre: 'European', rating: 4.7, description: `A highly-rated local dining spot offering classic regional dishes in ${displayCity}.`, estimatedDuration: 75, distanceKm: 1.2 },
@@ -27,7 +33,30 @@ function buildSyntheticPlaces(city: string, displayCity: string) {
     city,
     tags: [p.category, p.genre],
     source: 'generated' as const,
+    location: cityCenter
+      ? { type: 'Point' as const, coordinates: jitterToCoordinates(cityCenter) }
+      : undefined,
   }));
+}
+
+function jitterToCoordinates(center: GeoPoint): [number, number] {
+  const p = jitterCoordinates(center, 0.5, 3);
+  return [p.lng, p.lat];
+}
+
+// Best-effort city centroid lookup for jittering synthetic filler — reuses the same
+// Open-Meteo geocoder the trip-destination autocomplete already calls client-side (plain
+// fetch, no RN-specific dependency, safe to call from this server-side module too). Never
+// throws: a geocoding hiccup shouldn't block trip creation, it just means this population
+// run's synthetic places get no `location` (identical to today's behavior).
+async function resolveCityCenter(displayCity: string): Promise<GeoPoint | null> {
+  try {
+    const results = await searchCities(displayCity);
+    if (results.length === 0) return null;
+    return { lat: results[0].latitude, lng: results[0].longitude };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -78,5 +107,6 @@ export async function ensurePlacesForCity(city: string): Promise<void> {
   }
 
   if (filledCount >= MIN_PLACES_PER_CITY) return;
-  await Place.insertMany(buildSyntheticPlaces(normalized, displayCity));
+  const cityCenter = await resolveCityCenter(displayCity);
+  await Place.insertMany(buildSyntheticPlaces(normalized, displayCity, cityCenter));
 }

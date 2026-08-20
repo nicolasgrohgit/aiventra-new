@@ -6,7 +6,10 @@ import pino from 'pino';
 import pinoHttp from 'pino-http';
 import * as Sentry from '@sentry/node';
 import connectToDatabase from './lib/mongodb';
-import { isMealWindow, flattenPreferenceTags, buildCityDurationMatchStage, escapeRegExp, cityNeedle, shuffled } from './lib/place-matching';
+import {
+  isMealWindow, flattenPreferenceTags, buildCityDurationMatchStage, buildCityDurationQuery,
+  buildGeoNearStage, resolveAnchorForDate, escapeRegExp, cityNeedle, shuffled, DEFAULT_MAX_DISTANCE_KM
+} from './lib/place-matching';
 import { guessTimezoneForCity } from './lib/timezones';
 import User from './models/User';
 import Trip from './models/Trip';
@@ -167,6 +170,25 @@ app.put('/api/users/:id', authenticate, async (req: AuthedRequest, res: express.
   }
 });
 
+// Validates + converts the client's baseLocations payload (date strings) into the shape
+// Trip.baseLocations expects — never throws on malformed input, just drops invalid entries,
+// since a bad anchor point should degrade to "no anchor for this trip" (the existing
+// static-distanceKm fallback), not fail the whole trip create/update.
+function parseBaseLocations(raw: any): any[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(b => b && typeof b.lat === 'number' && typeof b.lng === 'number'
+      && (b.source === 'hotel' || b.source === 'city') && b.startDate && b.endDate)
+    .map(b => ({
+      label: typeof b.label === 'string' ? b.label : '',
+      lat: b.lat,
+      lng: b.lng,
+      source: b.source,
+      startDate: new Date(b.startDate),
+      endDate: new Date(b.endDate)
+    }));
+}
+
 // 2. Trips
 app.get('/api/trips', authenticate, async (req: AuthedRequest, res: express.Response) => {
   try {
@@ -180,7 +202,7 @@ app.get('/api/trips', authenticate, async (req: AuthedRequest, res: express.Resp
 
 app.post('/api/trips', authenticate, async (req: AuthedRequest, res: express.Response) => {
   try {
-    const { destination, startDate, endDate, timezone, sharedWithCircles } = req.body;
+    const { destination, startDate, endDate, timezone, sharedWithCircles, baseLocations } = req.body;
     if (!destination || !startDate || !endDate) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
@@ -190,7 +212,8 @@ app.post('/api/trips', authenticate, async (req: AuthedRequest, res: express.Res
       start_date: new Date(startDate),
       end_date: new Date(endDate),
       timezone,
-      sharedWithCircles: sharedWithCircles || []
+      sharedWithCircles: sharedWithCircles || [],
+      baseLocations: parseBaseLocations(baseLocations)
     });
     // Best-effort: a thin/uncovered destination shouldn't block trip creation, just miss
     // out on having candidate places ready until the next trip to that city tries again.
@@ -205,13 +228,14 @@ app.post('/api/trips', authenticate, async (req: AuthedRequest, res: express.Res
 
 app.put('/api/trips/:id', authenticate, async (req: AuthedRequest, res: express.Response) => {
   try {
-    const { destination, startDate, endDate, timezone, sharedWithCircles } = req.body;
+    const { destination, startDate, endDate, timezone, sharedWithCircles, baseLocations } = req.body;
     const updateData: any = {};
     if (destination !== undefined) updateData.destination = destination;
     if (startDate !== undefined) updateData.start_date = new Date(startDate);
     if (endDate !== undefined) updateData.end_date = new Date(endDate);
     if (timezone !== undefined) updateData.timezone = timezone;
     if (sharedWithCircles !== undefined) updateData.sharedWithCircles = sharedWithCircles;
+    if (baseLocations !== undefined) updateData.baseLocations = parseBaseLocations(baseLocations);
 
     // Scoping the query to user_id (not just _id) is what stops one authenticated
     // user from updating another user's trip by guessing/enumerating its id.
@@ -624,7 +648,8 @@ app.post('/api/events/:id/recommendations', authenticate, async (req: AuthedRequ
     // represent multiple people's preferences at once anyway.
     const organizer = users.find(u => u._id.toString() === event.created_by.toString());
     const mealWindow = isMealWindow(event.start_time, timezone, organizer?.preferences);
-    const matchStage = buildCityDurationMatchStage(trip.destination, durationMinutes, mealWindow);
+    const query = buildCityDurationQuery(trip.destination, durationMinutes, mealWindow);
+    const anchor = resolveAnchorForDate(trip.baseLocations || [], event.start_time);
 
     // Per-participant intersection-size fields are computed here but deliberately never
     // included in the final $project below — only the combined jointScore leaves this
@@ -637,8 +662,12 @@ app.post('/api/events/:id/recommendations', authenticate, async (req: AuthedRequ
       scoreFieldNames.push(`$${field}`);
     });
 
+    const firstStage = anchor
+      ? buildGeoNearStage(anchor, DEFAULT_MAX_DISTANCE_KM, query)
+      : { $match: { ...query, distanceKm: { $lte: DEFAULT_MAX_DISTANCE_KM } } };
+
     const places = await Place.aggregate([
-      { $match: matchStage },
+      firstStage,
       { $addFields: scoreFields },
       { $addFields: { jointScore: scoreFieldNames.length > 0 ? { $add: scoreFieldNames } : 0 } },
       { $sort: { jointScore: -1, rating: -1 } },
@@ -662,7 +691,7 @@ app.post('/api/events/:id/recommendations', authenticate, async (req: AuthedRequ
 // so this just scores against one tag set instead of aggregating across participants.
 app.post('/api/recommendations', authenticate, async (req: AuthedRequest, res: express.Response) => {
   try {
-    const { city, durationMinutes, startTimeIso, timezone, maxDistanceKm, tagOverride } = req.body;
+    const { city, durationMinutes, startTimeIso, timezone, maxDistanceKm, tagOverride, tripId, anchorLat, anchorLng } = req.body;
     if (!city || !durationMinutes || !startTimeIso) {
       return res.status(400).json({ error: 'city, durationMinutes, and startTimeIso are required' });
     }
@@ -680,26 +709,42 @@ app.post('/api/recommendations', authenticate, async (req: AuthedRequest, res: e
 
     const zone = timezone || guessTimezoneForCity(city);
     const mealWindow = isMealWindow(new Date(startTimeIso), zone, user.preferences);
-    // maxDistanceKm is optional — omitted, the default "near me" ceiling applies
-    // (DEFAULT_MAX_DISTANCE_KM in lib/place-matching.ts). The "Expand Search Radius" button
-    // re-calls this same endpoint with a larger/absent value once the default comes up empty.
-    const matchStage = buildCityDurationMatchStage(
-      city, durationMinutes, mealWindow, typeof maxDistanceKm === 'number' ? maxDistanceKm : undefined
-    );
     // tagOverride lets the "Refine Your Search" flow (trips.tsx) score against a specific set
     // of tags the user picks in the moment ("just show me Museums") instead of always falling
     // back to their saved preference profile — same $setIntersection scoring either way.
     const tags = Array.isArray(tagOverride) && tagOverride.length > 0
       ? tagOverride.filter((t: any) => typeof t === 'string')
       : flattenPreferenceTags(user.preferences);
+    const effectiveMaxDistanceKm = typeof maxDistanceKm === 'number' ? maxDistanceKm : DEFAULT_MAX_DISTANCE_KM;
 
-    const places = await Place.aggregate([
-      { $match: matchStage },
-      { $addFields: { matchScore: { $size: { $setIntersection: ['$tags', tags] } } } },
-      { $sort: { matchScore: -1, rating: -1 } },
-      { $limit: 10 },
-      { $project: { name: 1, city: 1, category: 1, genre: 1, rating: 1, description: 1, estimatedDuration: 1, distanceKm: 1, matchScore: 1 } }
-    ]);
+    // Real anchor point resolution, highest-precision first: an explicit override (the Home
+    // tab's live device location) beats resolving from a trip's baseLocations, which beats
+    // falling back to the static-distanceKm path for trips with no anchor yet.
+    let anchor: { lat: number; lng: number } | null = null;
+    if (typeof anchorLat === 'number' && typeof anchorLng === 'number') {
+      anchor = { lat: anchorLat, lng: anchorLng };
+    } else if (tripId) {
+      const trip = await Trip.findOne({ _id: tripId, user_id: req.userId });
+      if (trip) anchor = resolveAnchorForDate(trip.baseLocations || [], new Date(startTimeIso));
+    }
+
+    const pipeline = anchor
+      ? [
+          buildGeoNearStage(anchor, effectiveMaxDistanceKm, buildCityDurationQuery(city, durationMinutes, mealWindow)),
+          { $addFields: { matchScore: { $size: { $setIntersection: ['$tags', tags] } } } },
+          { $sort: { matchScore: -1, rating: -1 } },
+          { $limit: 10 },
+          { $project: { name: 1, city: 1, category: 1, genre: 1, rating: 1, description: 1, estimatedDuration: 1, distanceKm: 1, matchScore: 1 } }
+        ]
+      : [
+          { $match: buildCityDurationMatchStage(city, durationMinutes, mealWindow, effectiveMaxDistanceKm) },
+          { $addFields: { matchScore: { $size: { $setIntersection: ['$tags', tags] } } } },
+          { $sort: { matchScore: -1, rating: -1 } },
+          { $limit: 10 },
+          { $project: { name: 1, city: 1, category: 1, genre: 1, rating: 1, description: 1, estimatedDuration: 1, distanceKm: 1, matchScore: 1 } }
+        ];
+
+    const places = await Place.aggregate(pipeline);
 
     // Shuffled among the top-10 pool — otherwise every slot/day on a trip that shares a
     // preference profile deterministically surfaces the identical highest-scored place first.

@@ -1,6 +1,10 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { isMealWindow, getMealWindows, flattenPreferenceTags, buildCategoryFilter, escapeRegExp, computeMatchScore, shuffled } from './place-matching';
+import {
+  isMealWindow, getMealWindows, flattenPreferenceTags, buildCategoryFilter, escapeRegExp,
+  computeMatchScore, shuffled, buildGeoNearStage, resolveAnchorForDate, haversineDistanceKm,
+  jitterCoordinates, buildCityDurationQuery
+} from './place-matching';
 
 describe('isMealWindow', () => {
   test('12:30 in the given timezone is a meal window', () => {
@@ -178,5 +182,91 @@ describe('shuffled', () => {
       orders.add(shuffled(items).join(','));
     }
     assert.ok(orders.size > 1, 'expected at least one different ordering across 30 shuffles');
+  });
+});
+
+describe('buildCityDurationQuery', () => {
+  test('does not include a distance condition — that is $geoNear\'s job now', () => {
+    const query = buildCityDurationQuery('Paris, France', 90, false);
+    assert.equal('distanceKm' in query, false);
+  });
+
+  test('still includes city/duration/category conditions identically to the match-stage version', () => {
+    const query = buildCityDurationQuery('Paris, France', 90, true);
+    assert.deepEqual(query.city, { $regex: 'Paris', $options: 'i' });
+    assert.deepEqual(query.estimatedDuration, { $lte: 90 });
+  });
+});
+
+describe('buildGeoNearStage', () => {
+  test('produces a $geoNear stage with coordinates in [lng, lat] order', () => {
+    const stage = buildGeoNearStage({ lat: 48.85, lng: 2.35 }, 5, { city: 'Paris' });
+    assert.deepEqual(stage.$geoNear.near, { type: 'Point', coordinates: [2.35, 48.85] });
+  });
+
+  test('maxDistance is in meters even though the input is km', () => {
+    const stage = buildGeoNearStage({ lat: 0, lng: 0 }, 5, {});
+    assert.equal(stage.$geoNear.maxDistance, 5000);
+  });
+
+  test('distanceMultiplier converts the output distanceField back to km', () => {
+    const stage = buildGeoNearStage({ lat: 0, lng: 0 }, 5, {});
+    assert.equal(stage.$geoNear.distanceField, 'distanceKm');
+    assert.equal(stage.$geoNear.distanceMultiplier, 0.001);
+  });
+
+  test('passes the query object through unchanged, as $geoNear\'s query sub-option', () => {
+    const query = { city: 'Rome', estimatedDuration: { $lte: 90 } };
+    const stage = buildGeoNearStage({ lat: 0, lng: 0 }, 5, query);
+    assert.deepEqual(stage.$geoNear.query, query);
+  });
+});
+
+describe('haversineDistanceKm', () => {
+  test('a point compared to itself is 0km away', () => {
+    assert.equal(haversineDistanceKm({ lat: 48.85, lng: 2.35 }, { lat: 48.85, lng: 2.35 }), 0);
+  });
+
+  test('roughly matches the known real-world distance between two landmarks', () => {
+    // Eiffel Tower to the Louvre, actually ~3.9km apart.
+    const eiffelTower = { lat: 48.8584, lng: 2.2945 };
+    const louvre = { lat: 48.8606, lng: 2.3376 };
+    const distance = haversineDistanceKm(eiffelTower, louvre);
+    assert.ok(distance > 3 && distance < 5, `expected ~3.9km, got ${distance}`);
+  });
+});
+
+describe('jitterCoordinates', () => {
+  test('the jittered point is genuinely between minKm and maxKm from center', () => {
+    const center = { lat: 48.85, lng: 2.35 };
+    for (let i = 0; i < 20; i++) {
+      const point = jitterCoordinates(center, 0.5, 3);
+      const distance = haversineDistanceKm(center, point);
+      assert.ok(distance >= 0.45 && distance <= 3.05, `distance ${distance} out of [0.5, 3] range`);
+    }
+  });
+});
+
+describe('resolveAnchorForDate', () => {
+  const HOTEL = { lat: 48.86, lng: 2.35, source: 'hotel' as const, startDate: new Date('2026-09-01'), endDate: new Date('2026-09-05') };
+  const CITY = { lat: 48.85, lng: 2.35, source: 'city' as const, startDate: new Date('2026-09-01'), endDate: new Date('2026-09-05') };
+
+  test('prefers hotel over city when both cover the date', () => {
+    const anchor = resolveAnchorForDate([CITY, HOTEL], new Date('2026-09-03'));
+    assert.deepEqual(anchor, { lat: 48.86, lng: 2.35 });
+  });
+
+  test('falls back to city when there is no hotel entry', () => {
+    const anchor = resolveAnchorForDate([CITY], new Date('2026-09-03'));
+    assert.deepEqual(anchor, { lat: 48.85, lng: 2.35 });
+  });
+
+  test('returns null when no entry covers the date (falls back to static-distanceKm path)', () => {
+    const anchor = resolveAnchorForDate([CITY, HOTEL], new Date('2026-10-01'));
+    assert.equal(anchor, null);
+  });
+
+  test('returns null for an empty baseLocations array', () => {
+    assert.equal(resolveAnchorForDate([], new Date('2026-09-03')), null);
   });
 });

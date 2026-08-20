@@ -4,6 +4,55 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
+## [0.0.25] - 2026-08-20
+### Added
+- **Real hotel/accommodation-level location precision for "near me" filtering.** "Paris is too
+  wide" turned out to be structural, not a tuning problem: `Place.distanceKm` was a flat,
+  static number per place — curated places had hand-typed values with no real coordinates at
+  all, and Google-sourced places got a deterministic *hash* of the place's name mapped into a
+  fixed range (`pseudoDistanceKm`), fabricated rather than measured. There was no real anchor
+  point for "near" to be measured from anywhere in the app.
+  - New `Trip.baseLocations: BaseLocation[]` (`models/Trip.ts`) — an array from day one even
+    though today's UI only ever produces one entry (this app is 1 trip = 1 city today, may
+    become 1 trip = N cities later; an array needs no migration when that day comes, a scalar
+    field would). A free `source: 'city'` entry comes from the destination autocomplete's own
+    geocoding (previously fetched and immediately discarded); an optional higher-precision
+    `source: 'hotel'` entry comes from a new "Where are you staying? (optional)" field in the
+    trip create/edit modal (`app/(tabs)/trips.tsx`), geocoded via new `lib/hotel-geocoding.ts`
+    (Nominatim/OpenStreetMap — free, no API key, consistent with this app's existing no-key
+    provider choices; not gated behind the optional `GOOGLE_PLACES_API_KEY`).
+  - `Place.location` (a GeoJSON point reserved on the schema for exactly this since early in
+    the project but never wired up) is now actually populated: real coordinates straight from
+    Google Places API responses for `source: 'google'` places (one field-mask addition), a
+    one-time Nominatim backfill (`scripts/backfill-curated-place-coords.ts`) for the 60
+    existing curated places (49 successfully geocoded — the rest are generic
+    tour/market names with no exact venue match, gracefully left to the fallback path), and a
+    small random jitter around the request's city centroid for synthetic `generated` filler
+    (no real venue to geocode) so distance filtering still behaves sensibly for thin-coverage
+    cities.
+  - New `buildGeoNearStage`/`resolveAnchorForDate` (`lib/place-matching.ts`) replace the static
+    `distanceKm` filter with a real `$geoNear` aggregation stage (backed by a new 2dsphere
+    index) whenever a trip has a usable anchor point; trips with none fall back to exactly
+    today's static-field behavior, unchanged. Both recommendation endpoints
+    (`POST /api/recommendations`, `POST /api/events/:id/recommendations`) resolve the anchor
+    from the request's `tripId` (or an explicit `anchorLat`/`anchorLng` override — used by the
+    Home tab's live device GPS, previously fetched for weather/reverse-geocoding and also
+    discarded before now) before building the pipeline.
+  - Fixed a real data-integrity bug hit while shipping this: Mongoose's array-path default
+    (`[]`) meant every `Place.location` was silently materialized as invalid, empty-array
+    GeoJSON on every document regardless of whether it was ever set — which breaks 2dsphere
+    index creation outright. Fixed at the schema level (`coordinates: { default: undefined }`)
+    plus a one-time cleanup of the ~122 already-affected documents.
+  - Live-verified end-to-end against the real backend: geocoded a real Rome hotel, confirmed
+    `Trip.baseLocations` persists, confirmed recommendation queries against that trip return
+    genuine non-round-number computed distances (vs. the old hand-typed/hashed values) that
+    correctly respect a tightened radius (a 1km cap correctly excluded a 1.07km-away place),
+    and confirmed a trip with no anchor point still returns results via the unchanged fallback
+    path. Also caught and fixed a real geocoding accuracy bug during the curated-places
+    backfill: a generic name ("Appian Way Cycling Trail") resolved to a same-named street in
+    Illinois, USA before a hard `viewbox`+`bounded` geographic constraint was added — worth
+    noting since it's exactly the class of bug easy to ship silently with free-text geocoding.
+
 ## [0.0.24] - 2026-08-20
 ### Fixed
 - **Critical: long mostly-free slots got mislabeled and queried with the wrong meal category.**

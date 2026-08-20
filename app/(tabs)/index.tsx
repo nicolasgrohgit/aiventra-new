@@ -32,6 +32,11 @@ export default function HomeScreen() {
 
   // Location & context
   const [contextCity,    setContextCity]    = useState('');
+  // The real device GPS point — previously fetched only to reverse-geocode a city name and
+  // then discarded; now also passed through to recommendation.tsx as an explicit anchor
+  // override, giving "near me" filtering the best possible precision (better than any trip's
+  // hotel/city anchor, since this genuinely is where the user is right now).
+  const [contextCoords,  setContextCoords]  = useState<{ lat: number; lng: number } | null>(null);
   const [locationCity,   setLocationCity]   = useState('');
   const [locationRegion, setLocationRegion] = useState('');
   const [locationError,  setLocationError]  = useState<string | null>(null);
@@ -63,6 +68,7 @@ export default function HomeScreen() {
           accuracy: Location.Accuracy.Balanced,
         });
         const { latitude, longitude } = pos.coords;
+        setContextCoords({ lat: latitude, lng: longitude });
 
         // Reverse geocode → city name
         const [place] = await Location.reverseGeocodeAsync({ latitude, longitude });
@@ -129,6 +135,7 @@ export default function HomeScreen() {
         start:    slot.startTime.toISOString(),
         end:      slot.endTime.toISOString(),
         cityContext: contextCity,
+        ...(contextCoords ? { lat: String(contextCoords.lat), lng: String(contextCoords.lng) } : {}),
       },
     });
   };

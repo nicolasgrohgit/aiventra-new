@@ -142,7 +142,8 @@ export const TripsProvider = ({ children }: { children: ReactNode }) => {
               startDate: nt.startDate,
               endDate: nt.endDate,
               timezone: nt.timezone,
-              sharedWithCircles: nt.sharedWithCircles || []
+              sharedWithCircles: nt.sharedWithCircles || [],
+              baseLocations: nt.baseLocations || []
             })
           });
         } catch (err) {
@@ -159,7 +160,8 @@ export const TripsProvider = ({ children }: { children: ReactNode }) => {
           new Date(ot.startDate).getTime() !== new Date(nt.startDate).getTime() ||
           new Date(ot.endDate).getTime() !== new Date(nt.endDate).getTime() ||
           ot.timezone !== nt.timezone ||
-          JSON.stringify(ot.sharedWithCircles || []) !== JSON.stringify(nt.sharedWithCircles || [])
+          JSON.stringify(ot.sharedWithCircles || []) !== JSON.stringify(nt.sharedWithCircles || []) ||
+          JSON.stringify(ot.baseLocations || []) !== JSON.stringify(nt.baseLocations || [])
         );
         if (hasChanged) {
           const id = nt._id || nt.id;
@@ -169,7 +171,8 @@ export const TripsProvider = ({ children }: { children: ReactNode }) => {
               startDate: nt.startDate,
               endDate: nt.endDate,
               timezone: nt.timezone,
-              sharedWithCircles: nt.sharedWithCircles || []
+              sharedWithCircles: nt.sharedWithCircles || [],
+              baseLocations: nt.baseLocations || []
             };
             try {
               await apiFetch(`${API_URL}/api/trips/${id}`, {
