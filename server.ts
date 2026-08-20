@@ -247,6 +247,49 @@ app.delete('/api/trips/:id', authenticate, async (req: AuthedRequest, res: expre
   }
 });
 
+// AI Schedule Proposals slots the user has explicitly hidden as not applicable (trips.tsx's
+// per-slot "✕" control) — a pure display filter, not a data deletion, hence the symmetric
+// add/remove pair rather than a single destructive action. slotKey matches the identifier
+// shape trips.tsx already uses to cache recommendations per proposal
+// (`${proposal.startTime.toISOString()}-${proposal.type}`).
+app.post('/api/trips/:tripId/dismissed-slots', authenticate, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    const { slotKey } = req.body;
+    if (!slotKey || typeof slotKey !== 'string') {
+      return res.status(400).json({ error: 'slotKey is required' });
+    }
+    const trip = await Trip.findOneAndUpdate(
+      { _id: req.params.tripId, user_id: req.userId },
+      { $addToSet: { dismissedSlots: slotKey } },
+      { new: true }
+    );
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    res.json({ dismissedSlots: trip.dismissedSlots });
+  } catch (error: any) {
+    reportError(error, req, 'dismiss slot failed');
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/trips/:tripId/dismissed-slots/:slotKey', authenticate, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    const trip = await Trip.findOneAndUpdate(
+      { _id: req.params.tripId, user_id: req.userId },
+      { $pull: { dismissedSlots: req.params.slotKey } },
+      { new: true }
+    );
+    if (!trip) {
+      return res.status(404).json({ error: 'Trip not found' });
+    }
+    res.json({ dismissedSlots: trip.dismissedSlots });
+  } catch (error: any) {
+    reportError(error, req, 'restore dismissed slot failed');
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Friend discovery for trip planning — sharer-driven, not symmetric: whether I can see
 // someone's shared presence depends on THEIR contact list (do they have a Contact pointing
 // at me, tagged with a circle they've shared that presence with), never on how I've
@@ -576,7 +619,11 @@ app.post('/api/events/:id/recommendations', authenticate, async (req: AuthedRequ
 
     const durationMinutes = Math.round((event.end_time.getTime() - event.start_time.getTime()) / 60000);
     const timezone = trip.timezone || 'UTC';
-    const mealWindow = isMealWindow(event.start_time, timezone);
+    // Organizer's meal-time preference decides the window, not each participant's — they're
+    // the one who picked this event's time, and there's no single "meal time" that could
+    // represent multiple people's preferences at once anyway.
+    const organizer = users.find(u => u._id.toString() === event.created_by.toString());
+    const mealWindow = isMealWindow(event.start_time, timezone, organizer?.preferences);
     const matchStage = buildCityDurationMatchStage(trip.destination, durationMinutes, mealWindow);
 
     // Per-participant intersection-size fields are computed here but deliberately never
@@ -630,7 +677,7 @@ app.post('/api/recommendations', authenticate, async (req: AuthedRequest, res: e
     await ensurePlacesForCity(city).catch((err) => req.log.warn({ err }, 'places population failed'));
 
     const zone = timezone || guessTimezoneForCity(city);
-    const mealWindow = isMealWindow(new Date(startTimeIso), zone);
+    const mealWindow = isMealWindow(new Date(startTimeIso), zone, user.preferences);
     // maxDistanceKm is optional — omitted, the default "near me" ceiling applies
     // (DEFAULT_MAX_DISTANCE_KM in lib/place-matching.ts). The "Expand Search Radius" button
     // re-calls this same endpoint with a larger/absent value once the default comes up empty.

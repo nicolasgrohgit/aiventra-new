@@ -16,6 +16,12 @@ export interface IUser extends Document {
     foodGenres?: string[];
     activityGenres?: string[];
     eventGenres?: string[];
+    // "HH:mm", 24h — earliest this user would eat that meal. Shifts the lunch/dinner windows
+    // used both for recommendation category-filtering (isMealWindow) and trip free-slot
+    // labeling/splitting (labelFreeSlot, expandSlotForProposals) — see lib/place-matching.ts's
+    // getMealWindows, the single source of truth. Undefined = today's fixed defaults.
+    earliestLunchTime?: string;
+    earliestDinnerTime?: string;
   };
   // Circles that can see this user's homebase as a standing "lives here" presence signal —
   // separate from any specific trip. Empty by default (private); opt-in only, editable
@@ -39,6 +45,8 @@ const UserSchema = new Schema<IUser>({
     foodGenres: [{ type: String }],
     activityGenres: [{ type: String }],
     eventGenres: [{ type: String }],
+    earliestLunchTime: { type: String },
+    earliestDinnerTime: { type: String },
   },
   homebaseSharedCircles: { type: [String], default: [] }
 }, { timestamps: true, strict: false }); // strict: false only needed now for top-level ad hoc fields (firstName, homebase, etc.) — preferences.* is fully declared above

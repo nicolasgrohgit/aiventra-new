@@ -6,11 +6,38 @@ import { DateTime } from 'luxon';
 // (POST /api/events/:id/recommendations) in server.ts, so "one place, one meaning" holds
 // for how a place gets scored/filtered regardless of which endpoint is asking.
 
-export function isMealWindow(startTime: Date, timezone: string): boolean {
+export interface MealTimePreferences {
+  earliestLunchTime?: string; // "HH:mm", 24h — e.g. "20:00" for someone who never eats dinner before 8pm
+  earliestDinnerTime?: string;
+}
+
+export function parseHourString(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const [h, m] = value.split(':').map(Number);
+  if (Number.isNaN(h)) return fallback;
+  return h + (Number.isNaN(m) ? 0 : m) / 60;
+}
+
+// Single source of truth for the lunch/dinner windows — shifts the *start* by the user's
+// preference (undefined = today's exact defaults, so nobody's behavior changes until they set
+// this) while keeping each window's existing width fixed. Shared by isMealWindow below and by
+// lib/free-time.ts's slot labeling/splitting, so "when is dinner" means the same thing
+// wherever it's asked.
+export function getMealWindows(mealPrefs: MealTimePreferences = {}) {
+  const lunchStart = parseHourString(mealPrefs.earliestLunchTime, 11.5);
+  const dinnerStart = parseHourString(mealPrefs.earliestDinnerTime, 18.5);
+  return {
+    lunchStart, lunchEnd: lunchStart + 2,
+    dinnerStart, dinnerEnd: dinnerStart + 2.5
+  };
+}
+
+export function isMealWindow(startTime: Date, timezone: string, mealPrefs: MealTimePreferences = {}): boolean {
   const start = DateTime.fromJSDate(startTime).setZone(timezone);
   const timeAsDecimal = start.hour + start.minute / 60;
-  const isLunch = timeAsDecimal >= 11.5 && timeAsDecimal <= 13.5;
-  const isDinner = timeAsDecimal >= 18.5 && timeAsDecimal <= 21.0;
+  const { lunchStart, lunchEnd, dinnerStart, dinnerEnd } = getMealWindows(mealPrefs);
+  const isLunch = timeAsDecimal >= lunchStart && timeAsDecimal <= lunchEnd;
+  const isDinner = timeAsDecimal >= dinnerStart && timeAsDecimal <= dinnerEnd;
   return isLunch || isDinner;
 }
 

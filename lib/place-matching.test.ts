@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { isMealWindow, flattenPreferenceTags, buildCategoryFilter, escapeRegExp, computeMatchScore } from './place-matching';
+import { isMealWindow, getMealWindows, flattenPreferenceTags, buildCategoryFilter, escapeRegExp, computeMatchScore } from './place-matching';
 
 describe('isMealWindow', () => {
   test('12:30 in the given timezone is a meal window', () => {
@@ -23,6 +23,41 @@ describe('isMealWindow', () => {
     const instant = new Date('2030-03-04T12:30:00+01:00');
     assert.equal(isMealWindow(instant, 'Europe/Paris'), true);
     assert.equal(isMealWindow(instant, 'America/New_York'), false);
+  });
+
+  test('a user who never eats dinner before 8pm: 19:00 is no longer a dinner window', () => {
+    const mealPrefs = { earliestDinnerTime: '20:00' };
+    assert.equal(isMealWindow(new Date('2030-03-04T19:00:00+01:00'), 'Europe/Paris', mealPrefs), false);
+    assert.equal(isMealWindow(new Date('2030-03-04T20:30:00+01:00'), 'Europe/Paris', mealPrefs), true);
+  });
+
+  test('a Dutch-style early dinner preference shifts the window earlier', () => {
+    const mealPrefs = { earliestDinnerTime: '17:30' };
+    assert.equal(isMealWindow(new Date('2030-03-04T18:00:00+01:00'), 'Europe/Paris', mealPrefs), true);
+    // Old default window (18.5-21.0) would have called this a dinner too — with the shift it
+    // should already be past the (shifted) window's 2.5h width.
+    assert.equal(isMealWindow(new Date('2030-03-04T20:15:00+01:00'), 'Europe/Paris', mealPrefs), false);
+  });
+
+  test('no preference set: identical to today\'s defaults', () => {
+    const instant = new Date('2030-03-04T19:00:00+01:00');
+    assert.equal(isMealWindow(instant, 'Europe/Paris', {}), isMealWindow(instant, 'Europe/Paris'));
+  });
+});
+
+describe('getMealWindows', () => {
+  test('defaults match the original hardcoded isMealWindow boundaries', () => {
+    const windows = getMealWindows();
+    assert.equal(windows.lunchStart, 11.5);
+    assert.equal(windows.lunchEnd, 13.5);
+    assert.equal(windows.dinnerStart, 18.5);
+    assert.equal(windows.dinnerEnd, 21.0);
+  });
+
+  test('preserves each window\'s width when shifted', () => {
+    const windows = getMealWindows({ earliestLunchTime: '13:00', earliestDinnerTime: '21:00' });
+    assert.equal(windows.lunchEnd - windows.lunchStart, 2);
+    assert.equal(windows.dinnerEnd - windows.dinnerStart, 2.5);
   });
 });
 

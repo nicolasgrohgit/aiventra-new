@@ -11,6 +11,12 @@ export interface ITrip extends Document {
   // creation). See models/User.ts's homebaseSharedCircles for the parallel "lives there"
   // signal — these are deliberately separate, since one is date-bound and one isn't.
   sharedWithCircles: string[];
+  // AI Schedule Proposals slots the user has explicitly hidden as not applicable (e.g. a
+  // calendar-derived midday gap while genuinely still at work). Keyed by
+  // `${proposal.startTime.toISOString()}-${proposal.type}` — see POST/DELETE
+  // /api/trips/:tripId/dismissed-slots in server.ts. Purely a display filter; manually adding
+  // something to a dismissed window via Propose/Refine is unaffected.
+  dismissedSlots: string[];
 }
 
 const TripSchema = new Schema<ITrip>({
@@ -19,7 +25,8 @@ const TripSchema = new Schema<ITrip>({
   start_date: { type: Date, required: true },
   end_date: { type: Date, required: true },
   timezone: { type: String },
-  sharedWithCircles: { type: [String], default: [] }
+  sharedWithCircles: { type: [String], default: [] },
+  dismissedSlots: { type: [String], default: [] }
   // Events (created or imported) live in their own collection, queried by trip_id — see
   // models/Event.ts. They used to be embedded here, but an embedded array can't be queried
   // from the invited participant's side ("events I'm invited to") without scanning every

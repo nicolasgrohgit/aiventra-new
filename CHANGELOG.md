@@ -4,6 +4,44 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
+## [0.0.22] - 2026-08-20
+### Added
+- **Meal-time preferences**: Profile now has "Earliest Lunch"/"Earliest Dinner" pickers
+  (`app/(tabs)/profile.tsx`) — a user who never eats dinner before 8pm, or eats at 9-10pm
+  Spanish-style, or 5:30-6pm Dutch-style, gets recommendations timed for them instead of one
+  universal schedule. New `lib/place-matching.ts` `getMealWindows`/`parseHourString` are the
+  single source of truth for the lunch/dinner windows (shifting each window's *start* by the
+  preference, existing widths unchanged) — threaded through `isMealWindow` (both
+  `POST /api/recommendations` and the joint `POST /api/events/:id/recommendations`, which uses
+  the organizer's preference), and through `lib/free-time.ts`'s `getHardcodedFreeSlots`,
+  `labelFreeSlot`, `expandSlotForProposals`, and `getTripDaySchedule` (which also widens the
+  day-end bound passed to `calculateFreeTimeSlots` so a late-dinner preference doesn't get
+  truncated by the old fixed 22:00 boundary before the split logic ever sees it, capped at
+  23:30). New `User.preferences.earliestLunchTime`/`earliestDinnerTime` fields are explicitly
+  declared in the schema (not left to `strict:false`) — undefined means today's exact
+  defaults, so nobody's behavior changes until they set this. Live-verified against the real
+  backend: shifting `earliestDinnerTime` to 21:00 correctly moved what counted as a dinner
+  window for real recommendation queries.
+- **Dismissible AI Schedule Proposal slots**: a "✕" on each slot (e.g. a calendar-derived
+  midday gap while genuinely still at work) hides it; a "N hidden — tap to restore" line per
+  day brings it back. New `Trip.dismissedSlots: string[]` (`models/Trip.ts`), new
+  `POST`/`DELETE /api/trips/:tripId/dismissed-slots(/:slotKey)` endpoints, and a
+  `toggleDismissedSlot` on `TripsContext` (`hooks/useTrips.tsx`) that patches only the
+  affected trip's local state directly rather than routing through `setTrips`'s full
+  create/update sync-diff (this is a server-authoritative toggle, not a user-edited trip
+  field). Purely a display filter — manually adding something to a dismissed window via
+  Propose/Refine is unaffected. Live-verified end-to-end against the real database (dismiss →
+  persists → restore → clears).
+- **Collapsible trip cards and "Current Schedule"** (`app/(tabs)/trips.tsx`, renamed from
+  "Scheduled Sequence"): a frequent traveler with several trips on the list needed a way to
+  shrink one down to just its header — tapping a trip's destination now collapses/expands the
+  whole card. "Current Schedule" independently collapses to its first 2 entries by default
+  with its own "Show all N" toggle, mirroring the existing day-schedule expander.
+
+### Changed
+- AI Schedule Proposals now caps each slot at 3 place cards instead of 4, to cut down on
+  horizontal scrolling.
+
 ## [0.0.21] - 2026-08-20
 ### Fixed
 - **Trip day-schedule now uses the real imported calendar instead of a hardcoded work-day

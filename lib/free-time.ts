@@ -1,12 +1,8 @@
 import { DateTime } from 'luxon';
 import { DEVICE_TIMEZONE } from './timezones';
-import { isMealWindow } from './place-matching';
+import { getMealWindows, parseHourString, MealTimePreferences } from './place-matching';
 
-// Dinner-window boundaries, kept in sync with isMealWindow's own dinner check (18.5-21.0) —
-// duplicated as numbers (rather than re-deriving from isMealWindow) because callers below need
-// the actual start/end instants, not just a boolean.
-const DINNER_WINDOW_START_HOUR = 18.5;
-const DINNER_WINDOW_END_HOUR = 21.0;
+export type { MealTimePreferences };
 
 // Split out of lib/calendar.ts so this pure date/time logic is testable in plain Node
 // (see lib/free-time.test.ts) — lib/calendar.ts transitively imports expo-calendar, which
@@ -132,10 +128,14 @@ export function calculateFreeTimeSlots(
  * lunch/dinner boundaries — so real-calendar-derived slots (getTripDaySchedule, once it has
  * imported events to work with) and hardcoded-fallback slots read consistently in the UI,
  * which already keys icon choice off slot.label === 'Lunch Break'.
+ *
+ * `mealPrefs` (default none, unchanged behavior) shifts the lunch/dinner windows per-user —
+ * see lib/place-matching.ts's getMealWindows, the single source of truth for these boundaries.
  */
-export function labelFreeSlot(slot: FreeTimeSlot, timezone: string = DEVICE_TIMEZONE): string {
+export function labelFreeSlot(slot: FreeTimeSlot, timezone: string = DEVICE_TIMEZONE, mealPrefs: MealTimePreferences = {}): string {
   const start = DateTime.fromJSDate(slot.startTime).setZone(timezone);
   const end = DateTime.fromJSDate(slot.endTime).setZone(timezone);
+  const { lunchStart, lunchEnd, dinnerStart, dinnerEnd } = getMealWindows(mealPrefs);
 
   const overlapMinutes = (windowStartHour: number, windowEndHour: number) => {
     const winStart = start.set({ hour: Math.floor(windowStartHour), minute: (windowStartHour % 1) * 60, second: 0, millisecond: 0 });
@@ -145,8 +145,8 @@ export function labelFreeSlot(slot: FreeTimeSlot, timezone: string = DEVICE_TIME
     return Math.max(0, overlapEnd.diff(overlapStart, 'minutes').minutes);
   };
 
-  const lunchOverlap = overlapMinutes(11.5, 13.5);
-  const dinnerOverlap = overlapMinutes(DINNER_WINDOW_START_HOUR, DINNER_WINDOW_END_HOUR);
+  const lunchOverlap = overlapMinutes(lunchStart, lunchEnd);
+  const dinnerOverlap = overlapMinutes(dinnerStart, dinnerEnd);
 
   if (lunchOverlap >= 30 && lunchOverlap >= dinnerOverlap) return 'Lunch Break';
   if (dinnerOverlap >= 30) return 'Evening';
@@ -175,12 +175,13 @@ export interface SlotProposal {
   durationMinutes: number;
 }
 
-export function expandSlotForProposals(slot: FreeTimeSlot, timezone: string = DEVICE_TIMEZONE): SlotProposal[] {
+export function expandSlotForProposals(slot: FreeTimeSlot, timezone: string = DEVICE_TIMEZONE, mealPrefs: MealTimePreferences = {}): SlotProposal[] {
   const start = DateTime.fromJSDate(slot.startTime).setZone(timezone);
   const end = DateTime.fromJSDate(slot.endTime).setZone(timezone);
+  const { dinnerStart: dinnerStartHour, dinnerEnd: dinnerEndHour } = getMealWindows(mealPrefs);
 
-  const dinnerWindowStart = start.set({ hour: 18, minute: 30, second: 0, millisecond: 0 });
-  const dinnerWindowEnd = start.set({ hour: 21, minute: 0, second: 0, millisecond: 0 });
+  const dinnerWindowStart = start.set({ hour: Math.floor(dinnerStartHour), minute: (dinnerStartHour % 1) * 60, second: 0, millisecond: 0 });
+  const dinnerWindowEnd = start.set({ hour: Math.floor(dinnerEndHour), minute: (dinnerEndHour % 1) * 60, second: 0, millisecond: 0 });
 
   const dinnerStart = start > dinnerWindowStart ? start : dinnerWindowStart;
   const dinnerEnd = end < dinnerWindowEnd ? end : dinnerWindowEnd;
@@ -188,7 +189,7 @@ export function expandSlotForProposals(slot: FreeTimeSlot, timezone: string = DE
 
   const asActivity = (): SlotProposal[] => [{
     type: 'activity',
-    label: slot.label || labelFreeSlot(slot, timezone),
+    label: slot.label || labelFreeSlot(slot, timezone, mealPrefs),
     icon: '🌙',
     startTime: slot.startTime,
     endTime: slot.endTime,
@@ -239,12 +240,25 @@ export function expandSlotForProposals(slot: FreeTimeSlot, timezone: string = DE
  * work-schedule hours mean — pass the trip's destination timezone so a user
  * planning a Paris trip from a New York device gets Paris-local slots, not
  * their phone's local slots. Defaults to the device's own timezone.
+ *
+ * `mealPrefs` (default none, unchanged behavior) shifts the lunch/evening start times per-user
+ * — see lib/place-matching.ts's getMealWindows. Each window's existing *width* is kept fixed
+ * (90min lunch, 240min evening); the evening window is additionally capped at 23:30 so a very
+ * late dinner preference can't push suggestions into the small hours.
  */
-export function getHardcodedFreeSlots(date: Date, timezone: string = DEVICE_TIMEZONE): FreeTimeSlot[] {
+export function getHardcodedFreeSlots(date: Date, timezone: string = DEVICE_TIMEZONE, mealPrefs: MealTimePreferences = {}): FreeTimeSlot[] {
   const zonedDate = DateTime.fromJSDate(date).setZone(timezone);
   const isWeekend = zonedDate.weekday === 6 || zonedDate.weekday === 7; // luxon: 6 = Sat, 7 = Sun
   const now = DateTime.now().setZone(timezone);
   const isToday = zonedDate.hasSame(now, 'day');
+  // Deliberately not reusing getMealWindows' defaults here (11.5/18.5, tuned for
+  // isMealWindow's scoring window) — this function's own historical defaults are 12:00/18:00,
+  // and preserving those exactly (when no preference is set) is what keeps "undefined = no
+  // behavior change" true. When a preference *is* set, both paths land on the same value
+  // anyway, since parseHourString just returns it unchanged.
+  const lunchStartHour = parseHourString(mealPrefs.earliestLunchTime, 12);
+  const dinnerStartHour = parseHourString(mealPrefs.earliestDinnerTime, 18);
+  const atHour = (hour: number) => zonedDate.set({ hour: Math.floor(hour), minute: (hour % 1) * 60, second: 0, millisecond: 0 });
 
   if (isWeekend) {
     let start = zonedDate.set({ hour: 8, minute: 0, second: 0, millisecond: 0 });
@@ -264,8 +278,8 @@ export function getHardcodedFreeSlots(date: Date, timezone: string = DEVICE_TIME
   // Weekday: lunch window + evening window
   const slots: FreeTimeSlot[] = [];
 
-  const lunchStart = zonedDate.set({ hour: 12, minute: 0, second: 0, millisecond: 0 });
-  const lunchEnd = zonedDate.set({ hour: 13, minute: 30, second: 0, millisecond: 0 });
+  const lunchStart = atHour(lunchStartHour);
+  const lunchEnd = lunchStart.plus({ minutes: 90 });
 
   if (!isToday || now < lunchEnd) {
     const start = (isToday && now > lunchStart) ? now : lunchStart;
@@ -275,8 +289,9 @@ export function getHardcodedFreeSlots(date: Date, timezone: string = DEVICE_TIME
     }
   }
 
-  const eveningStart = zonedDate.set({ hour: 18, minute: 0, second: 0, millisecond: 0 });
-  const eveningEnd = zonedDate.set({ hour: 22, minute: 0, second: 0, millisecond: 0 });
+  const eveningStart = atHour(dinnerStartHour);
+  const eveningEndCap = atHour(23.5);
+  const eveningEnd = DateTime.min(eveningStart.plus({ minutes: 240 }), eveningEndCap);
 
   if (!isToday || now < eveningEnd) {
     const start = (isToday && now > eveningStart) ? now : eveningStart;
@@ -304,17 +319,24 @@ export function getHardcodedFreeSlots(date: Date, timezone: string = DEVICE_TIME
  * assumption — a day with real data is a strictly better source of truth than a guess about
  * a "typical" schedule. A day with none (calendar access not granted, or genuinely nothing
  * synced yet) falls back to getHardcodedFreeSlots exactly as before.
+ *
+ * `mealPrefs` (default none, unchanged behavior): passed through to labelFreeSlot and
+ * getHardcodedFreeSlots, and also widens the day-end bound passed to calculateFreeTimeSlots
+ * (fixed at 22 otherwise) so a late dinner preference doesn't get truncated by the real-
+ * calendar path before expandSlotForProposals ever sees it.
  */
 export function getTripDaySchedule(
   startDate: Date,
   endDate: Date,
   maxDays = 5,
   timezone: string = DEVICE_TIMEZONE,
-  importedEvents: CalendarEvent[] = []
+  importedEvents: CalendarEvent[] = [],
+  mealPrefs: MealTimePreferences = {}
 ): DaySchedule[] {
   const days: DaySchedule[] = [];
   let current = DateTime.fromJSDate(startDate).setZone(timezone).startOf('day');
   const end = DateTime.fromJSDate(endDate).setZone(timezone).endOf('day');
+  const dayEndHour = Math.min(23.5, Math.max(22, getMealWindows(mealPrefs).dinnerEnd));
 
   let count = 0;
   while (current <= end && count < maxDays) {
@@ -326,11 +348,11 @@ export function getTripDaySchedule(
     );
 
     const freeSlots = dayEvents.length > 0
-      ? calculateFreeTimeSlots(dayEvents, 8, 22, 60, timezone).map(slot => ({
+      ? calculateFreeTimeSlots(dayEvents, 8, dayEndHour, 60, timezone).map(slot => ({
           ...slot,
-          label: labelFreeSlot(slot, timezone)
+          label: labelFreeSlot(slot, timezone, mealPrefs)
         }))
-      : getHardcodedFreeSlots(current.toJSDate(), timezone);
+      : getHardcodedFreeSlots(current.toJSDate(), timezone, mealPrefs);
 
     days.push({
       date: current.toJSDate(),

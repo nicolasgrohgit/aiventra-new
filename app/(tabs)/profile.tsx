@@ -90,7 +90,13 @@ export default function ProfileScreen() {
   const [currency, setCurrency] = useState(user?.preferences?.currency || 'USD');
   const [dateFormat, setDateFormat] = useState(user?.preferences?.dateFormat || 'MM/DD/YYYY');
   const [activityPace, setActivityPace] = useState(user?.preferences?.activityLevel || 'Medium');
-  
+  // Earliest this user would eat that meal — shifts every dinner/lunch-window calculation
+  // (recommendation category filtering, trip free-slot labeling/splitting) instead of the
+  // one-size-fits-all default. Empty = "no preference set" (today's fixed defaults), not a
+  // pill selection of its own — OptionRow's `current` just won't match any option then.
+  const [earliestLunchTime, setEarliestLunchTime] = useState(user?.preferences?.earliestLunchTime || '');
+  const [earliestDinnerTime, setEarliestDinnerTime] = useState(user?.preferences?.earliestDinnerTime || '');
+
   const [dietary, setDietary] = useState<string[]>(user?.preferences?.dietary || []);
   const [foodGenres, setFoodGenres] = useState<string[]>(user?.preferences?.foodGenres || []);
   const [activityGenres, setActivityGenres] = useState<string[]>(user?.preferences?.activityGenres || []);
@@ -116,7 +122,7 @@ export default function ProfileScreen() {
       dob: dob.toISOString().split('T')[0],
       name: `${firstName} ${lastName}`.trim()
     });
-    updatePreferences({ budget, currency, dateFormat, activityLevel: activityPace, dietary, foodGenres, activityGenres, eventGenres });
+    updatePreferences({ budget, currency, dateFormat, activityLevel: activityPace, dietary, foodGenres, activityGenres, eventGenres, earliestLunchTime, earliestDinnerTime });
     Alert.alert('Saved', 'Your profile has been updated.');
   };
 
@@ -349,7 +355,19 @@ export default function ProfileScreen() {
            <OptionRow label="Budget Range" options={['10-20', '30-50', '70+']} current={budget} onSelect={setBudget} />
            <OptionRow label="Currency" options={['USD', 'EUR', 'GBP']} current={currency} onSelect={setCurrency} />
            <OptionRow label="Date Format" options={['DD/MM/YYYY', 'MM/DD/YYYY']} current={dateFormat} onSelect={setDateFormat} />
-           
+           <OptionRow
+             label="Earliest Lunch"
+             options={['12:00', '12:30', '13:00', '13:30', '14:00']}
+             current={earliestLunchTime}
+             onSelect={setEarliestLunchTime}
+           />
+           <OptionRow
+             label="Earliest Dinner"
+             options={['18:00', '18:30', '19:00', '19:30', '20:00', '20:30', '21:00', '21:30', '22:00']}
+             current={earliestDinnerTime}
+             onSelect={setEarliestDinnerTime}
+           />
+
            <ConfigRowModal title="Dietary Restrictions" arrayString={dietary} openModal={() => setShowDietModal(true)} />
            <ConfigRowModal title="Restaurant Cuisines" arrayString={foodGenres} openModal={() => setShowFoodModal(true)} />
            <ConfigRowModal title="Preferred Activities" arrayString={activityGenres} openModal={() => setShowActivityModal(true)} />

@@ -39,6 +39,7 @@ interface TripMock {
   endDate: Date;
   timezone: string;
   sharedWithCircles: string[];
+  dismissedSlots?: string[];
 }
 
 interface NearbyFriend {
@@ -69,7 +70,8 @@ const toImportedCalendarEvents = (events: TripEvent[]) =>
 
 export default function TripsScreen() {
   const { user } = useAuth();
-  const { trips, setTrips } = useTrips();
+  const { trips, setTrips, toggleDismissedSlot } = useTrips();
+  const mealPrefs = { earliestLunchTime: user?.preferences?.earliestLunchTime, earliestDinnerTime: user?.preferences?.earliestDinnerTime };
   const { contacts, refreshContacts } = useContacts();
   const {
     fetchTripEvents, fetchInvitedEvents, createEvent, importTripEvents, updateEvent, respondToEvent, getJointRecommendations, getRecommendations,
@@ -128,6 +130,13 @@ export default function TripsScreen() {
   }, [selectedPlace]);
 
   const [expandedTripIds, setExpandedTripIds] = useState<Set<string>>(new Set());
+  // Whole-card collapse — separate from expandedTripIds (which only controls how many of a
+  // trip's *days* show in AI Schedule Proposals) since a frequent traveler with several trips
+  // on the list needs to shrink a trip down to just its header, not just see fewer of its days.
+  const [collapsedTripIds, setCollapsedTripIds] = useState<Set<string>>(new Set());
+  // "Current Schedule" (renamed from "Scheduled Sequence") collapse — shows only the first 2
+  // entries by default, same reasoning as above but for that list specifically.
+  const [expandedTimelineIds, setExpandedTimelineIds] = useState<Set<string>>(new Set());
 
   // Events live in their own collection now (not embedded in the trip), so each trip's
   // events are fetched separately and kept in local screen state — same pattern the Home
@@ -222,15 +231,20 @@ export default function TripsScreen() {
   // cached by key so re-renders and re-expanding an already-loaded trip don't refetch.
   useEffect(() => {
     trips.forEach((trip: TripMock) => {
+      // A collapsed card's proposals aren't rendered at all — skip fetching for it entirely
+      // rather than fetching-and-hiding.
+      if (collapsedTripIds.has(trip.id)) return;
       const isExpanded = expandedTripIds.has(trip.id);
       const importedEvents = toImportedCalendarEvents(eventsByTrip[trip.id] || []);
-      const daySchedules = getTripDaySchedule(trip.startDate, trip.endDate, 5, trip.timezone, importedEvents);
+      const daySchedules = getTripDaySchedule(trip.startDate, trip.endDate, 5, trip.timezone, importedEvents, mealPrefs);
       const visibleDays = isExpanded ? daySchedules : daySchedules.slice(0, 1);
+      const dismissedSlots = trip.dismissedSlots || [];
 
       visibleDays.forEach(day => {
         day.freeSlots.forEach(slot => {
-          expandSlotForProposals(slot, trip.timezone).forEach(proposal => {
+          expandSlotForProposals(slot, trip.timezone, mealPrefs).forEach(proposal => {
             const key = `${trip.id}-${proposal.startTime.toISOString()}-${proposal.type}`;
+            if (dismissedSlots.includes(`${proposal.startTime.toISOString()}-${proposal.type}`)) return;
             if (fetchedSlotKeys.current.has(key)) return;
             fetchedSlotKeys.current.add(key);
 
@@ -251,7 +265,7 @@ export default function TripsScreen() {
       });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trips, expandedTripIds, eventsByTrip]);
+  }, [trips, expandedTripIds, eventsByTrip, collapsedTripIds, user?.preferences?.earliestLunchTime, user?.preferences?.earliestDinnerTime]);
 
   // Debounced city lookup for the destination field — warn, don't block: a legitimate city
   // might genuinely not appear in a partial-query top-5 result.
@@ -296,6 +310,24 @@ export default function TripsScreen() {
 
   const toggleTripExpand = (tripId: string) => {
     setExpandedTripIds(prev => {
+      const next = new Set(prev);
+      if (next.has(tripId)) next.delete(tripId);
+      else next.add(tripId);
+      return next;
+    });
+  };
+
+  const toggleTripCollapsed = (tripId: string) => {
+    setCollapsedTripIds(prev => {
+      const next = new Set(prev);
+      if (next.has(tripId)) next.delete(tripId);
+      else next.add(tripId);
+      return next;
+    });
+  };
+
+  const toggleTimelineExpand = (tripId: string) => {
+    setExpandedTimelineIds(prev => {
       const next = new Set(prev);
       if (next.has(tripId)) next.delete(tripId);
       else next.add(tripId);
@@ -632,21 +664,25 @@ export default function TripsScreen() {
           trips.map(trip => {
             const totalTripDays = Math.round((trip.endDate.getTime() - trip.startDate.getTime()) / 86400000) + 1;
             const tripEvents = eventsByTrip[trip.id] || [];
-            const daySchedules = getTripDaySchedule(trip.startDate, trip.endDate, 5, trip.timezone, toImportedCalendarEvents(tripEvents));
+            const daySchedules = getTripDaySchedule(trip.startDate, trip.endDate, 5, trip.timezone, toImportedCalendarEvents(tripEvents), mealPrefs);
+            const isCardCollapsed = collapsedTripIds.has(trip.id);
+            const dismissedSlotKeys = trip.dismissedSlots || [];
 
             return (
               <View key={trip.id} style={styles.tripCard}>
                  <View style={styles.tripHeaderContainer}>
-                   <View style={{flex: 1}}>
-                     <Text style={styles.destinationText}>{trip.destination}</Text>
+                   <TouchableOpacity style={{flex: 1}} activeOpacity={0.7} onPress={() => toggleTripCollapsed(trip.id)}>
+                     <Text style={styles.destinationText}>{isCardCollapsed ? '▶' : '▼'}  {trip.destination}</Text>
                      <Text style={styles.dateText}>{formatTripDate(trip.startDate, trip.timezone)} to {formatTripDate(trip.endDate, trip.timezone)}</Text>
-                   </View>
+                   </TouchableOpacity>
                    <View style={styles.tripActions}>
                      <TouchableOpacity onPress={() => handleOpenEditTarget(trip)} style={styles.iconBtn}><Text style={{fontSize: 18}}>✏️</Text></TouchableOpacity>
                      <TouchableOpacity onPress={() => handleDeleteTrip(trip.id)} style={styles.iconBtnDel}><Text style={{fontSize: 18}}>🗑️</Text></TouchableOpacity>
                    </View>
                  </View>
 
+                 {isCardCollapsed ? null : (
+                 <>
                  {(nearbyFriendsByTrip[trip.id]?.length || 0) > 0 && (
                    <View style={styles.nearbyContainer}>
                      <Text style={styles.nearbyLabel}>Friends nearby</Text>
@@ -673,10 +709,13 @@ export default function TripsScreen() {
                    <Text style={styles.sharedText}>+ Propose an Event</Text>
                  </TouchableOpacity>
 
-                 {tripEvents.length > 0 && (
+                 {tripEvents.length > 0 && (() => {
+                    const timelineExpanded = expandedTimelineIds.has(trip.id);
+                    const visibleEvents = timelineExpanded ? tripEvents : tripEvents.slice(0, 2);
+                    return (
                     <View style={styles.timelineContainer}>
-                      <Text style={styles.timelineHeader}>Scheduled Sequence</Text>
-                      {tripEvents.map((event) => {
+                      <Text style={styles.timelineHeader}>Current Schedule</Text>
+                      {visibleEvents.map((event) => {
                         // Imported events are real calendar meetings synced read-only from the
                         // device — they're busy blocks the schedule routes around, not things
                         // needing a place picked, so they never get the "Proposed…" treatment
@@ -715,8 +754,16 @@ export default function TripsScreen() {
                           </View>
                         );
                       })}
+                      {tripEvents.length > 2 && (
+                        <TouchableOpacity style={styles.expandButton} onPress={() => toggleTimelineExpand(trip.id)}>
+                          <Text style={styles.expandButtonText}>
+                            {timelineExpanded ? '▲  Show less' : `▼  Show all ${tripEvents.length}`}
+                          </Text>
+                        </TouchableOpacity>
+                      )}
                     </View>
-                 )}
+                    );
+                 })()}
 
                   <Text style={styles.proposalsHeader}>AI Schedule Proposals</Text>
                   {(() => {
@@ -724,7 +771,12 @@ export default function TripsScreen() {
                     const visibleDays = isExpanded ? daySchedules : daySchedules.slice(0, 1);
                     return (
                       <>
-                        {visibleDays.map(day => (
+                        {visibleDays.map(day => {
+                          const dayProposals = day.freeSlots.flatMap(slot => expandSlotForProposals(slot, trip.timezone, mealPrefs));
+                          const rawKey = (p: typeof dayProposals[number]) => `${p.startTime.toISOString()}-${p.type}`;
+                          const visibleProposals = dayProposals.filter(p => !dismissedSlotKeys.includes(rawKey(p)));
+                          const dayDismissedKeys = dayProposals.map(rawKey).filter(k => dismissedSlotKeys.includes(k));
+                          return (
                           <View key={day.date.toISOString()} style={styles.dayBlock}>
                             <View style={styles.dayHeaderRow}>
                               <Text style={styles.dayLabelText}>{day.dayLabel}</Text>
@@ -732,7 +784,7 @@ export default function TripsScreen() {
                                 <Text style={styles.dayTypeBadgeText}>{day.isWeekend ? '🎉 Weekend' : '💼 Weekday'}</Text>
                               </View>
                             </View>
-                            {day.freeSlots.flatMap(slot => expandSlotForProposals(slot, trip.timezone)).map(proposal => {
+                            {visibleProposals.map(proposal => {
                               const slotKey = `${trip.id}-${proposal.startTime.toISOString()}-${proposal.type}`;
                               const slotRecs = slotRecommendations[slotKey];
                               const icon = day.isWeekend && proposal.type === 'activity' ? '☀️' : proposal.icon;
@@ -743,6 +795,12 @@ export default function TripsScreen() {
                                     <Text style={styles.slotIcon}>{icon}</Text>
                                     <Text style={styles.slotLabelText}>{proposal.label}</Text>
                                     <Text style={styles.slotTimeRange}>{fmt(proposal.startTime)} – {fmt(proposal.endTime)} · {proposal.durationMinutes}min</Text>
+                                    <TouchableOpacity
+                                      style={styles.slotDismissBtn}
+                                      onPress={() => toggleDismissedSlot(trip.id, rawKey(proposal), true)}
+                                    >
+                                      <Text style={styles.slotDismissBtnText}>✕</Text>
+                                    </TouchableOpacity>
                                   </View>
                                   {slotRecs === undefined ? (
                                     <ActivityIndicator size="small" color="#3B82F6" />
@@ -755,7 +813,7 @@ export default function TripsScreen() {
                                     </>
                                   ) : (
                                     <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.hScroll}>
-                                      {slotRecs.slice(0, 4).map(p => (
+                                      {slotRecs.slice(0, 3).map(p => (
                                         <PlaceCard key={`${proposal.startTime.getTime()}-${p.id}`} place={p} tripId={trip.id} slotStart={proposal.startTime} tripEvents={tripEvents} />
                                       ))}
                                       <RefineSearchCard trip={trip} day={day} />
@@ -764,8 +822,19 @@ export default function TripsScreen() {
                                 </View>
                               );
                             })}
+                            {dayDismissedKeys.length > 0 && (
+                              <TouchableOpacity
+                                style={styles.restoreDismissedBtn}
+                                onPress={() => dayDismissedKeys.forEach(k => toggleDismissedSlot(trip.id, k, false))}
+                              >
+                                <Text style={styles.restoreDismissedBtnText}>
+                                  {dayDismissedKeys.length} hidden — tap to restore
+                                </Text>
+                              </TouchableOpacity>
+                            )}
                           </View>
-                        ))}
+                          );
+                        })}
                         {daySchedules.length > 1 && (
                           <TouchableOpacity style={styles.expandButton} onPress={() => toggleTripExpand(trip.id)}>
                             <Text style={styles.expandButtonText}>
@@ -778,6 +847,8 @@ export default function TripsScreen() {
                       </>
                     );
                   })()}
+                 </>
+                 )}
               </View>
             )
           })
@@ -1234,6 +1305,10 @@ const styles = StyleSheet.create({
   slotIcon: { fontSize: 13 },
   slotLabelText: { color: '#94A3B8', fontSize: 13, fontWeight: '700', flex: 1 },
   slotTimeRange: { color: '#475569', fontSize: 11, fontWeight: '600' },
+  slotDismissBtn: { paddingHorizontal: 8, paddingVertical: 2, marginLeft: 4 },
+  slotDismissBtnText: { color: '#64748B', fontSize: 14, fontWeight: '700' },
+  restoreDismissedBtn: { alignItems: 'center', paddingVertical: 8, marginTop: 2, marginBottom: 4 },
+  restoreDismissedBtnText: { color: '#3B82F6', fontSize: 12, fontWeight: '700' },
   expandButton: { alignItems: 'center', paddingVertical: 14, marginTop: 8, marginBottom: 4, backgroundColor: '#1E293B', borderRadius: 12, borderWidth: 1, borderColor: '#334155' },
   expandButtonText: { color: '#3B82F6', fontSize: 13, fontWeight: '800', letterSpacing: 0.5 },
 

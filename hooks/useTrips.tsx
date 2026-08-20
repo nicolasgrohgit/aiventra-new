@@ -13,11 +13,17 @@ import { useAuth } from './useAuth';
 interface TripsContextType {
   trips: any[];
   setTrips: (trips: any[]) => void;
+  // Server-authoritative, so deliberately NOT routed through setTrips — that triggers the
+  // full create/update sync-diff machinery meant for user-edited fields (destination, dates),
+  // which this isn't. Patches only the one trip's dismissedSlots in local state after the API
+  // call succeeds.
+  toggleDismissedSlot: (tripId: string, slotKey: string, dismissed: boolean) => Promise<void>;
 }
 
 const TripsContext = createContext<TripsContextType>({
   trips: [],
-  setTrips: () => {}
+  setTrips: () => {},
+  toggleDismissedSlot: async () => {}
 });
 
 export const useTrips = () => useContext(TripsContext);
@@ -29,7 +35,8 @@ const parseServerTrips = (tripsData: any[]) =>
     startDate: new Date(t.start_date),
     endDate: new Date(t.end_date),
     timezone: t.timezone || guessTimezoneForCity(t.destination),
-    sharedWithCircles: t.sharedWithCircles || []
+    sharedWithCircles: t.sharedWithCircles || [],
+    dismissedSlots: t.dismissedSlots || []
   }));
 
 export const TripsProvider = ({ children }: { children: ReactNode }) => {
@@ -192,8 +199,29 @@ export const TripsProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
+  const toggleDismissedSlot = async (tripId: string, slotKey: string, dismissed: boolean) => {
+    try {
+      const res = dismissed
+        ? await apiFetch(`${API_URL}/api/trips/${tripId}/dismissed-slots`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ slotKey })
+          })
+        : await apiFetch(`${API_URL}/api/trips/${tripId}/dismissed-slots/${encodeURIComponent(slotKey)}`, { method: 'DELETE' });
+      if (!res.ok) return;
+      const { dismissedSlots } = await res.json();
+      setTripsState(prev => {
+        const updated = prev.map(t => (t.id === tripId || t._id === tripId) ? { ...t, dismissedSlots } : t);
+        AsyncStorage.setItem('@trips', JSON.stringify(updated)).catch((e) => console.error('Failed to save trips', e));
+        return updated;
+      });
+    } catch (err) {
+      console.warn('Failed to toggle dismissed slot:', err);
+    }
+  };
+
   return (
-    <TripsContext.Provider value={{ trips, setTrips }}>
+    <TripsContext.Provider value={{ trips, setTrips, toggleDismissedSlot }}>
       {children}
     </TripsContext.Provider>
   );

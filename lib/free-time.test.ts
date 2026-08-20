@@ -1,5 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { DateTime } from 'luxon';
 import { calculateFreeTimeSlots, getHardcodedFreeSlots, getTripDaySchedule, labelFreeSlot, expandSlotForProposals } from './free-time';
 
 const ZONE = 'Europe/Paris';
@@ -93,6 +94,29 @@ describe('getHardcodedFreeSlots', () => {
     for (const slot of slots) {
       assert.ok(slot.startTime.getTime() >= now - 1000, `slot "${slot.label}" starts before now`);
     }
+  });
+
+  test('mealPrefs shifts the lunch start while keeping its 90min width', () => {
+    const slots = getHardcodedFreeSlots(FUTURE_MONDAY, ZONE, { earliestLunchTime: '13:00' });
+    const lunch = slots.find(s => s.label === 'Lunch Break')!;
+    assert.equal(DateTime.fromJSDate(lunch.startTime).setZone(ZONE).toFormat('HH:mm'), '13:00');
+    assert.equal(lunch.durationMinutes, 90);
+  });
+
+  test('mealPrefs shifts the evening start earlier for an early-dinner preference', () => {
+    const slots = getHardcodedFreeSlots(FUTURE_MONDAY, ZONE, { earliestDinnerTime: '17:30' });
+    const evening = slots.find(s => s.label === 'Evening')!;
+    assert.equal(DateTime.fromJSDate(evening.startTime).setZone(ZONE).toFormat('HH:mm'), '17:30');
+  });
+
+  test('a very late dinner preference caps the evening window at 23:30', () => {
+    const slots = getHardcodedFreeSlots(FUTURE_MONDAY, ZONE, { earliestDinnerTime: '22:00' });
+    const evening = slots.find(s => s.label === 'Evening')!;
+    assert.equal(DateTime.fromJSDate(evening.endTime).setZone(ZONE).toFormat('HH:mm'), '23:30');
+  });
+
+  test('no mealPrefs: identical to today\'s defaults', () => {
+    assert.deepEqual(getHardcodedFreeSlots(FUTURE_MONDAY, ZONE, {}), getHardcodedFreeSlots(FUTURE_MONDAY, ZONE));
   });
 });
 
@@ -195,5 +219,26 @@ describe('expandSlotForProposals', () => {
     assert.equal(proposals.length, 1);
     assert.equal(proposals[0].startTime.getTime(), slot.startTime.getTime());
     assert.equal(proposals[0].durationMinutes, 420);
+  });
+
+  test('a late-dinner preference (Spanish-style) shifts the Dinner split later', () => {
+    const slot = { startTime: new Date('2030-03-04T17:00:00+01:00'), endTime: new Date('2030-03-04T23:00:00+01:00'), durationMinutes: 360, label: 'Evening' };
+    const proposals = expandSlotForProposals(slot, ZONE, { earliestDinnerTime: '21:00' });
+    assert.equal(proposals.length, 2);
+    assert.equal(DateTime.fromJSDate(proposals[1].startTime).setZone(ZONE).toFormat('HH:mm'), '21:00');
+    // Activity now has more room before dinner starts, still capped at 180.
+    assert.ok(proposals[0].durationMinutes <= 180);
+  });
+
+  test('a slot that only reaches dinner time once shifted earlier now splits (Dutch-style)', () => {
+    // 16:00-18:45 only overlaps the default 18:30-21:00 dinner window by 15min (< the 45min
+    // floor), so with no preference this does NOT split — shifting dinner to 17:00 should.
+    const slot = { startTime: new Date('2030-03-04T16:00:00+01:00'), endTime: new Date('2030-03-04T18:45:00+01:00'), durationMinutes: 165, label: 'Evening' };
+    const unshifted = expandSlotForProposals(slot, ZONE);
+    assert.equal(unshifted.length, 1);
+
+    const shifted = expandSlotForProposals(slot, ZONE, { earliestDinnerTime: '17:00' });
+    assert.equal(shifted.length, 2);
+    assert.equal(DateTime.fromJSDate(shifted[1].startTime).setZone(ZONE).toFormat('HH:mm'), '17:00');
   });
 });
