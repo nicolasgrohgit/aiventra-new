@@ -1263,7 +1263,13 @@ export default function TripsScreen() {
       {/* Trip creator */}
       <Modal visible={showCreateModal} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowCreateModal(false)}>
         <View style={styles.modalContainer}>
-          <ScrollView showsVerticalScrollIndicator={false}>
+          {/* keyboardShouldPersistTaps="handled": without it, ScrollView's default ('never')
+              swallows the FIRST tap on a suggestion row (destination city or hotel below) to
+              dismiss the keyboard instead of firing the row's onPress — the tap looks like it
+              did nothing (or just closed the dropdown, since the TextInput's onBlur still
+              fires and hides it), so the selection is silently never captured. This is the
+              root cause of hotel selection appearing to "not take" on save. */}
+          <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>{editTripId ? 'Edit Itinerary Bounds' : 'Plan a New Trip'}</Text>
               <TouchableOpacity onPress={() => setShowCreateModal(false)} style={styles.closeButton}>

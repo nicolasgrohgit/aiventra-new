@@ -4,6 +4,23 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
+## [0.0.28] - 2026-08-23
+### Fixed
+- **Selecting a hotel (or destination city) suggestion silently didn't take.** Reported as:
+  type a hotel name, the dropdown finds it, tap it, but it's never reflected when the trip is
+  saved. Traced end-to-end via the real API (`POST /api/trips` with a `source: 'hotel'`
+  `baseLocations` entry persisted and round-tripped through `resolveAnchorForDate` correctly,
+  preferring hotel over city) — the backend was never the problem. Root cause was purely
+  client-side: the trip-creator modal's `ScrollView` (`app/(tabs)/trips.tsx`) never set
+  `keyboardShouldPersistTaps`, so React Native's default (`"never"`) swallowed the *first* tap
+  on a suggestion row to dismiss the keyboard instead of firing its `onPress` — the input's
+  `onBlur` still fired and hid the dropdown, so the tap looked like it did something, but
+  `newHotelSelected`/the destination coords were never actually set. Fixed by adding
+  `keyboardShouldPersistTaps="handled"` to that ScrollView (covers both the hotel and
+  destination-city dropdowns, which share it). Not live-verified on-device (no
+  device/emulator available in this environment) — reasoned from the real, well-documented RN
+  default-ScrollView-tap-swallowing behavior; worth a real on-device check next test pass.
+
 ## [0.0.27] - 2026-08-23
 ### Fixed
 - **Critical: genuine restaurants leaked into non-meal "Free Time" activity slots.** Found by
