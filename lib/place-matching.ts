@@ -264,3 +264,36 @@ export function shuffled<T>(items: T[]): T[] {
   }
   return arr;
 }
+
+// Mongo aggregation expression: a small (<1) tie-breaking bonus added to matchScore/jointScore
+// before sorting, giving curated → google → generated-filler places a nudge without ever
+// letting source override actual tag relevance (a curated place with a 0-tag match still can't
+// outrank a google place with a 2-tag match — the max bonus gap is 0.9). See
+// docs/ad-monetization.md's "Roadmap: rank curated places above Google-sourced ones".
+export const SOURCE_RANK_BONUS = {
+  $switch: {
+    branches: [
+      { case: { $eq: ['$source', 'curated'] }, then: 0.9 },
+      { case: { $eq: ['$source', 'google'] }, then: 0.4 }
+    ],
+    default: 0
+  }
+};
+
+const SOURCE_TIER_ORDER = ['curated', 'google', 'generated'];
+
+/**
+ * Like shuffled(), but shuffles within each Place.source tier (curated, then google, then
+ * generated) rather than across the whole list — otherwise a plain shuffle of the top-10 pool
+ * would completely erase the source-priority ordering SOURCE_RANK_BONUS establishes the moment
+ * a lower-tier place lands in the same pool. Sources outside the known tiers fall into the
+ * lowest ('generated') bucket rather than jumping ahead of google/curated.
+ */
+export function tieredShuffle<T extends { source?: string }>(items: T[]): T[] {
+  const tiers = new Map<string, T[]>(SOURCE_TIER_ORDER.map(tier => [tier, []]));
+  for (const item of items) {
+    const tier = item.source && tiers.has(item.source) ? item.source : 'generated';
+    tiers.get(tier)!.push(item);
+  }
+  return SOURCE_TIER_ORDER.flatMap(tier => shuffled(tiers.get(tier)!));
+}

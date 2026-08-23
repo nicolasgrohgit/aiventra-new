@@ -8,7 +8,8 @@ import * as Sentry from '@sentry/node';
 import connectToDatabase from './lib/mongodb';
 import {
   isMealWindow, flattenPreferenceTags, buildCityDurationMatchStage, buildCityDurationQuery,
-  buildGeoNearStage, resolveAnchorForDate, escapeRegExp, cityNeedle, shuffled, DEFAULT_MAX_DISTANCE_KM
+  buildGeoNearStage, resolveAnchorForDate, escapeRegExp, cityNeedle, tieredShuffle,
+  SOURCE_RANK_BONUS, DEFAULT_MAX_DISTANCE_KM
 } from './lib/place-matching';
 import { guessTimezoneForCity } from './lib/timezones';
 import User from './models/User';
@@ -670,14 +671,16 @@ app.post('/api/events/:id/recommendations', authenticate, async (req: AuthedRequ
       firstStage,
       { $addFields: scoreFields },
       { $addFields: { jointScore: scoreFieldNames.length > 0 ? { $add: scoreFieldNames } : 0 } },
-      { $sort: { jointScore: -1, rating: -1 } },
+      { $addFields: { rankScore: { $add: ['$jointScore', SOURCE_RANK_BONUS] } } },
+      { $sort: { rankScore: -1, rating: -1 } },
       { $limit: 10 },
-      { $project: { name: 1, city: 1, category: 1, genre: 1, rating: 1, description: 1, estimatedDuration: 1, distanceKm: 1, jointScore: 1 } }
+      { $project: { name: 1, city: 1, category: 1, genre: 1, rating: 1, description: 1, estimatedDuration: 1, distanceKm: 1, jointScore: 1, source: 1 } }
     ]);
 
-    // Shuffled among the top-10 pool so this doesn't always surface the identical place first
-    // for every event proposed on the same trip.
-    res.json(shuffled(places));
+    // Tiered shuffle among the top-10 pool: still varies order within a source tier so this
+    // doesn't always surface the identical place first, but keeps curated/google ahead of
+    // generated filler rather than fully randomizing across the source-priority ordering above.
+    res.json(tieredShuffle(places));
   } catch (error: any) {
     reportError(error, req, 'joint recommendation failed');
     res.status(500).json({ error: error.message });
@@ -728,27 +731,31 @@ app.post('/api/recommendations', authenticate, async (req: AuthedRequest, res: e
       if (trip) anchor = resolveAnchorForDate(trip.baseLocations || [], new Date(startTimeIso));
     }
 
+    const projectStage = { $project: { name: 1, city: 1, category: 1, genre: 1, rating: 1, description: 1, estimatedDuration: 1, distanceKm: 1, matchScore: 1, source: 1 } };
     const pipeline = anchor
       ? [
           buildGeoNearStage(anchor, effectiveMaxDistanceKm, buildCityDurationQuery(city, durationMinutes, mealWindow)),
           { $addFields: { matchScore: { $size: { $setIntersection: ['$tags', tags] } } } },
-          { $sort: { matchScore: -1, rating: -1 } },
+          { $addFields: { rankScore: { $add: ['$matchScore', SOURCE_RANK_BONUS] } } },
+          { $sort: { rankScore: -1, rating: -1 } },
           { $limit: 10 },
-          { $project: { name: 1, city: 1, category: 1, genre: 1, rating: 1, description: 1, estimatedDuration: 1, distanceKm: 1, matchScore: 1 } }
+          projectStage
         ]
       : [
           { $match: buildCityDurationMatchStage(city, durationMinutes, mealWindow, effectiveMaxDistanceKm) },
           { $addFields: { matchScore: { $size: { $setIntersection: ['$tags', tags] } } } },
-          { $sort: { matchScore: -1, rating: -1 } },
+          { $addFields: { rankScore: { $add: ['$matchScore', SOURCE_RANK_BONUS] } } },
+          { $sort: { rankScore: -1, rating: -1 } },
           { $limit: 10 },
-          { $project: { name: 1, city: 1, category: 1, genre: 1, rating: 1, description: 1, estimatedDuration: 1, distanceKm: 1, matchScore: 1 } }
+          projectStage
         ];
 
     const places = await Place.aggregate(pipeline);
 
-    // Shuffled among the top-10 pool — otherwise every slot/day on a trip that shares a
-    // preference profile deterministically surfaces the identical highest-scored place first.
-    res.json(shuffled(places));
+    // Tiered shuffle among the top-10 pool — still varies order within a source tier (so
+    // repeated slots on a trip don't always show the identical top place), but keeps
+    // curated/google ranked ahead of generated filler rather than erasing that ordering.
+    res.json(tieredShuffle(places));
   } catch (error: any) {
     reportError(error, req, 'solo recommendation failed');
     res.status(500).json({ error: error.message });

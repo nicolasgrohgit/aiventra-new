@@ -2,8 +2,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   isMealWindow, getMealWindows, flattenPreferenceTags, buildCategoryFilter, escapeRegExp,
-  computeMatchScore, shuffled, buildGeoNearStage, resolveAnchorForDate, haversineDistanceKm,
-  jitterCoordinates, buildCityDurationQuery
+  computeMatchScore, shuffled, tieredShuffle, buildGeoNearStage, resolveAnchorForDate,
+  haversineDistanceKm, jitterCoordinates, buildCityDurationQuery
 } from './place-matching';
 
 describe('isMealWindow', () => {
@@ -182,6 +182,35 @@ describe('shuffled', () => {
       orders.add(shuffled(items).join(','));
     }
     assert.ok(orders.size > 1, 'expected at least one different ordering across 30 shuffles');
+  });
+});
+
+describe('tieredShuffle', () => {
+  test('keeps curated places ahead of google, ahead of generated, across repeated shuffles', () => {
+    const items = [
+      { name: 'g1', source: 'google' }, { name: 'gen1', source: 'generated' },
+      { name: 'c1', source: 'curated' }, { name: 'g2', source: 'google' },
+      { name: 'c2', source: 'curated' }, { name: 'gen2', source: 'generated' }
+    ];
+    for (let i = 0; i < 10; i++) {
+      const result = tieredShuffle(items).map(p => p.source);
+      const firstGoogle = result.indexOf('google');
+      const firstGenerated = result.indexOf('generated');
+      const lastCurated = result.lastIndexOf('curated');
+      assert.ok(lastCurated < firstGoogle, 'expected every curated place before every google place');
+      assert.ok(firstGoogle < firstGenerated, 'expected google places before generated placeholders');
+    }
+  });
+
+  test('treats an unknown/missing source as lowest tier, not ahead of google/curated', () => {
+    const items = [{ name: 'unknown' }, { name: 'c', source: 'curated' }, { name: 'g', source: 'google' }];
+    const result = tieredShuffle(items).map(p => p.name);
+    assert.equal(result.indexOf('unknown'), 2);
+  });
+
+  test('preserves every element, none added or dropped', () => {
+    const items = [{ source: 'curated' }, { source: 'google' }, { source: 'generated' }];
+    assert.deepEqual(tieredShuffle(items).length, items.length);
   });
 });
 

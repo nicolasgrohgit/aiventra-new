@@ -4,6 +4,30 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
+## [0.0.26] - 2026-08-23
+### Changed
+- **Curated places now rank ahead of Google-sourced/generated ones**, per the roadmap note
+  captured in `docs/ad-monetization.md` while reviewing the Rome trip build. Two-part fix in
+  `lib/place-matching.ts`, deliberately not a single hard sort key (that would let a
+  zero-tag-match curated place bury a genuinely great non-curated match):
+  - `SOURCE_RANK_BONUS` — a small (<1) Mongo aggregation bonus (curated: +0.9, google: +0.4,
+    generated: +0) added to `matchScore`/`jointScore` before the existing `$sort` in both
+    recommendation endpoints (`server.ts`). Small enough to only break ties/near-ties, never
+    enough to outrank a place with a real tag-match advantage — a curated place still can't
+    leapfrog a google place with even one extra matching tag.
+  - `tieredShuffle()` replaces `shuffled()` in both endpoints' response — the existing
+    Fisher-Yates shuffle over the whole top-10 pool (0.0.24) was fully erasing source
+    priority the moment a curated and a non-curated place landed in the same pool, exactly
+    the interaction the roadmap note flagged. `tieredShuffle` buckets by `Place.source`
+    (curated → google → generated, unknown sources fall to the lowest bucket) and shuffles
+    only within each bucket, so curated places reliably display first while still varying
+    order day-to-day within their own tier.
+  - `source` added to both endpoints' `$project` (previously dropped before the response),
+    since `tieredShuffle` needs it client-side.
+  - Live-verified against the real backend/DB: a Paris query returned curated places first
+    (including a matchScore-0 curated place ahead of a matchScore-1 generated one, confirming
+    the tier takes display priority) with generated filler last, as intended.
+
 ## [0.0.25] - 2026-08-20
 ### Added
 - **Real hotel/accommodation-level location precision for "near me" filtering.** "Paris is too
