@@ -36,8 +36,16 @@ export function isMealWindow(startTime: Date, timezone: string, mealPrefs: MealT
   const start = DateTime.fromJSDate(startTime).setZone(timezone);
   const timeAsDecimal = start.hour + start.minute / 60;
   const { lunchStart, lunchEnd, dinnerStart, dinnerEnd } = getMealWindows(mealPrefs);
-  const isLunch = timeAsDecimal >= lunchStart && timeAsDecimal <= lunchEnd;
-  const isDinner = timeAsDecimal >= dinnerStart && timeAsDecimal <= dinnerEnd;
+  // End boundary deliberately exclusive (< not <=) — half-open [start, end), matching the
+  // overlap-based window math in lib/free-time.ts's labelFreeSlot/expandSlotForProposals. An
+  // inclusive end let a slot starting exactly when a meal window ends (e.g. a 14:00-16:45 free
+  // slot with lunchEnd=14:00) get classified as a meal-window query here while free-time.ts's
+  // overlap check (correctly) saw zero overlap and left it labeled/split as plain activity time
+  // — live-verified as a real bug: buildCategoryFilter's mealWindow-but-duration>120 branch
+  // returns no category filter at all, so a genuine restaurant leaked into what displayed as a
+  // "Free Time" activity slot.
+  const isLunch = timeAsDecimal >= lunchStart && timeAsDecimal < lunchEnd;
+  const isDinner = timeAsDecimal >= dinnerStart && timeAsDecimal < dinnerEnd;
   return isLunch || isDinner;
 }
 
@@ -85,7 +93,13 @@ export function buildCategoryFilter(mealWindow: boolean, durationMinutes: number
       ]
     };
   }
-  return {};
+  // mealWindow but longer than a normal meal (>120min, e.g. a long dinner event queried
+  // directly by duration rather than via expandSlotForProposals' 120-cap) — still restaurant
+  // -only rather than no filter at all. An unfiltered fallback here previously meant any
+  // category (including plain Activity places) could surface for a query the caller believes
+  // is meal-scoped; still allows cafes here (unlike the <=120 branch) since there's no meal-
+  // specific reason to exclude them once duration no longer implies a sit-down meal.
+  return { category: 'Restaurant' };
 }
 
 // Default "near me" ceiling for the initial search — chosen against the real spread of

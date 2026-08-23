@@ -4,6 +4,42 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
+## [0.0.27] - 2026-08-23
+### Fixed
+- **Critical: genuine restaurants leaked into non-meal "Free Time" activity slots.** Found by
+  live-tracing a real Rome trip (`earliestLunchTime: "12:00"` → lunch window 12:00-14:00): a
+  free-time slot starting exactly at 14:00 was correctly labeled "Free Time" by
+  `labelFreeSlot`/`expandSlotForProposals` (`lib/free-time.ts`, overlap-based, half-open), but
+  `isMealWindow` (`lib/place-matching.ts`) independently re-checked that same 14:00 instant
+  with an *inclusive* `<=` end boundary and called it a lunch window anyway — the two boundary
+  conventions disagreed on an instant sitting exactly on the line. That misfire then hit a
+  second, worse bug: `buildCategoryFilter`'s "meal window but duration > 120min" branch
+  returned **no category filter at all**, so any category — including a plain, non-cafe
+  restaurant ("Trattoria Da Enzo") — could surface under a slot displayed as "Free Time".
+  Fixed both: `isMealWindow`'s end boundary is now exclusive (half-open, matching
+  `lib/free-time.ts`), and the long-meal-window fallback is now restaurant-only instead of
+  unfiltered. Live-verified against the real trip: the same query now returns only
+  Activities/Events/Cafes, no stray restaurants.
+- **Cafe recommendations during free time read as a labeling bug.** A `Restaurant`/`Cafes`
+  place is deliberately allowed during non-meal free time (a coffee stop is reasonable, not a
+  meal) — but its badge showed the raw "Restaurant" category, reading as a mismatch. New
+  `displayCategory()` (`lib/recommendations.ts`) shows "Cafe" instead, used everywhere a
+  place's category badge renders (`trips.tsx`, `recommendation.tsx`).
+### Added
+- **Recommendations now anchor on the previous slot's activity, not just the trip's static
+  hotel/city location.** Every free-time slot in a day was independently anchored on
+  `Trip.baseLocations`, so a day's proposals had no geographic relationship to each other — a
+  dinner suggestion could be clear across town from where the afternoon activity was, and for
+  a trip with no hotel set at all (confirmed on the real Rome trip used to find this) fell back
+  to the old generic, not-really-distance-aware `distanceKm` fallback entirely regardless of
+  what else was scheduled that day. `trips.tsx`'s recommendation-fetch effect now fetches each
+  day's slots sequentially instead of all-parallel, passing the previous slot's top pick as an
+  explicit `anchorLat`/`anchorLng` override for the next slot's query (the first slot of the
+  day still anchors on the trip location, as before). Required returning `location` from both
+  recommendation endpoints' `$project` (previously dropped before the response). Live-verified:
+  anchoring a dinner query on the Colosseum's real coordinates shifted results to genuinely
+  nearby restaurants (real computed distances) instead of the generic unanchored pool.
+
 ## [0.0.26] - 2026-08-23
 ### Changed
 - **Curated places now rank ahead of Google-sourced/generated ones**, per the roadmap note

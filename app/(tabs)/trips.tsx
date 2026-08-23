@@ -5,7 +5,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { useTrips } from '@/hooks/useTrips';
 import { useContacts } from '@/hooks/useContacts';
 import { useEvents } from '@/hooks/useEvents';
-import { PlaceRecommendation } from '@/lib/recommendations';
+import { PlaceRecommendation, displayCategory } from '@/lib/recommendations';
 import { NativeDatePicker } from '@/components/ui/NativeDatePicker';
 import { getTripDaySchedule, getDeviceEventsForDateRange, expandSlotForProposals } from '@/lib/calendar';
 import { guessTimezoneForCity } from '@/lib/timezones';
@@ -258,6 +258,16 @@ export default function TripsScreen() {
   // Fetches "AI Schedule Proposals" recommendations for each currently-visible day's free
   // slots (day 1 always, all days once a trip is expanded), one real API call per slot,
   // cached by key so re-renders and re-expanding an already-loaded trip don't refetch.
+  //
+  // Fetched sequentially within each day (not all-parallel, as before) so a slot after the
+  // first can anchor its query on the *previous* slot's top pick instead of always anchoring
+  // every slot of the day on the trip's static hotel/city location — otherwise a day's plan
+  // could logically propose dinner clear across town from where the afternoon activity was,
+  // even though the user is realistically still near that activity by dinnertime. The first
+  // slot of each day has no predecessor, so it still anchors on the trip's hotel/city as
+  // before. If a slot's top pick has no geocoded `location` (not every place does — see
+  // models/Place.ts), the chain just breaks there and the next slot falls back to the trip
+  // anchor too, same as today's behavior.
   useEffect(() => {
     trips.forEach((trip: TripMock) => {
       // A collapsed card's proposals aren't rendered at all — skip fetching for it entirely
@@ -270,28 +280,40 @@ export default function TripsScreen() {
       const dismissedSlots = trip.dismissedSlots || [];
 
       visibleDays.forEach(day => {
-        day.freeSlots.forEach(slot => {
-          expandSlotForProposals(slot, trip.timezone, mealPrefs).forEach(proposal => {
-            const key = `${trip.id}-${proposal.startTime.toISOString()}-${proposal.type}`;
-            if (dismissedSlots.includes(`${proposal.startTime.toISOString()}-${proposal.type}`)) return;
-            if (fetchedSlotKeys.current.has(key)) return;
-            fetchedSlotKeys.current.add(key);
+        const dayProposals = day.freeSlots.flatMap(slot => expandSlotForProposals(slot, trip.timezone, mealPrefs));
 
-            getRecommendations({
-              city: trip.destination,
-              durationMinutes: proposal.durationMinutes,
-              startTimeIso: proposal.startTime.toISOString(),
-              timezone: trip.timezone,
-              tripId: trip.id
-            })
-              .then(places => {
-                setSlotRecommendations(prev => ({ ...prev, [key]: places.map((p: any) => ({ ...p, id: p._id })) }));
-              })
-              .catch(() => {
+        (async () => {
+          let previousAnchor: { lat: number; lng: number } | null = null;
+          for (const proposal of dayProposals) {
+            const dismissedKey = `${proposal.startTime.toISOString()}-${proposal.type}`;
+            if (dismissedSlots.includes(dismissedKey)) continue;
+
+            const key = `${trip.id}-${proposal.startTime.toISOString()}-${proposal.type}`;
+            let results: any[] | undefined = slotRecommendations[key];
+
+            if (!results && !fetchedSlotKeys.current.has(key)) {
+              fetchedSlotKeys.current.add(key);
+              try {
+                const places = await getRecommendations({
+                  city: trip.destination,
+                  durationMinutes: proposal.durationMinutes,
+                  startTimeIso: proposal.startTime.toISOString(),
+                  timezone: trip.timezone,
+                  tripId: trip.id,
+                  ...(previousAnchor ? { anchorLat: previousAnchor.lat, anchorLng: previousAnchor.lng } : {})
+                });
+                results = places.map((p: any) => ({ ...p, id: p._id }));
+                setSlotRecommendations(prev => ({ ...prev, [key]: results! }));
+              } catch {
+                results = [];
                 setSlotRecommendations(prev => ({ ...prev, [key]: [] }));
-              });
-          });
-        });
+              }
+            }
+
+            const topPickCoords = results?.[0]?.location?.coordinates;
+            if (topPickCoords) previousAnchor = { lat: topPickCoords[1], lng: topPickCoords[0] };
+          }
+        })();
       });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -673,7 +695,7 @@ export default function TripsScreen() {
           <View style={styles.badge}><Text style={styles.badgeText}>{place.matchScore > 0 ? `${place.matchScore} tag match` : 'New idea'}</Text></View>
         )}
       </View>
-      <Text style={styles.placeCategory}>{place.category} • {place.rating} ★</Text>
+      <Text style={styles.placeCategory}>{displayCategory(place)} • {place.rating} ★</Text>
       <Text style={styles.placeDesc} numberOfLines={2}>{place.description}</Text>
     </TouchableOpacity>
     );
@@ -1081,7 +1103,7 @@ export default function TripsScreen() {
                         <Text style={styles.placeName} numberOfLines={1}>{p.name}</Text>
                         <View style={styles.badge}><Text style={styles.badgeText}>Match {p.jointScore}</Text></View>
                       </View>
-                      <Text style={styles.placeCategory}>{p.category} • {p.rating} ★</Text>
+                      <Text style={styles.placeCategory}>{displayCategory(p)} • {p.rating} ★</Text>
                       <Text style={styles.placeDesc} numberOfLines={2}>{p.description}</Text>
                     </TouchableOpacity>
                   ))
@@ -1104,7 +1126,7 @@ export default function TripsScreen() {
             </View>
 
             <View style={styles.heroDetailsBadge}>
-               <Text style={styles.heroDetailsTarget}>{selectedPlace?.place.category} • {selectedPlace?.place.estimatedDuration}m Length</Text>
+               <Text style={styles.heroDetailsTarget}>{selectedPlace && displayCategory(selectedPlace.place)} • {selectedPlace?.place.estimatedDuration}m Length</Text>
                <Text style={styles.ratingLarge}>{selectedPlace?.place.rating} ★</Text>
             </View>
 
@@ -1225,7 +1247,7 @@ export default function TripsScreen() {
                             <Text style={styles.placeName} numberOfLines={1}>{p.name}</Text>
                             <View style={styles.badge}><Text style={styles.badgeText}>{p.matchScore > 0 ? `${p.matchScore} tag match` : 'New idea'}</Text></View>
                           </View>
-                          <Text style={styles.placeCategory}>{p.category} • {p.rating} ★</Text>
+                          <Text style={styles.placeCategory}>{displayCategory(p)} • {p.rating} ★</Text>
                           <Text style={styles.placeDesc} numberOfLines={2}>{p.description}</Text>
                         </TouchableOpacity>
                       ))

@@ -674,7 +674,7 @@ app.post('/api/events/:id/recommendations', authenticate, async (req: AuthedRequ
       { $addFields: { rankScore: { $add: ['$jointScore', SOURCE_RANK_BONUS] } } },
       { $sort: { rankScore: -1, rating: -1 } },
       { $limit: 10 },
-      { $project: { name: 1, city: 1, category: 1, genre: 1, rating: 1, description: 1, estimatedDuration: 1, distanceKm: 1, jointScore: 1, source: 1 } }
+      { $project: { name: 1, city: 1, category: 1, genre: 1, rating: 1, description: 1, estimatedDuration: 1, distanceKm: 1, jointScore: 1, source: 1, location: 1 } }
     ]);
 
     // Tiered shuffle among the top-10 pool: still varies order within a source tier so this
@@ -731,7 +731,11 @@ app.post('/api/recommendations', authenticate, async (req: AuthedRequest, res: e
       if (trip) anchor = resolveAnchorForDate(trip.baseLocations || [], new Date(startTimeIso));
     }
 
-    const projectStage = { $project: { name: 1, city: 1, category: 1, genre: 1, rating: 1, description: 1, estimatedDuration: 1, distanceKm: 1, matchScore: 1, source: 1 } };
+    // location included so the client can chain the next free-time slot's anchor off this
+    // slot's top pick (trips.tsx) instead of always anchoring every slot on the trip's static
+    // hotel/city location — see the anchor-chaining note in trips.tsx's recommendation-fetch
+    // effect for why (e.g. proposing dinner near the afternoon activity, not just near the hotel).
+    const projectStage = { $project: { name: 1, city: 1, category: 1, genre: 1, rating: 1, description: 1, estimatedDuration: 1, distanceKm: 1, matchScore: 1, source: 1, location: 1 } };
     const pipeline = anchor
       ? [
           buildGeoNearStage(anchor, effectiveMaxDistanceKm, buildCityDurationQuery(city, durationMinutes, mealWindow)),

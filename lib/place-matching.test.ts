@@ -47,6 +47,16 @@ describe('isMealWindow', () => {
     const instant = new Date('2030-03-04T19:00:00+01:00');
     assert.equal(isMealWindow(instant, 'Europe/Paris', {}), isMealWindow(instant, 'Europe/Paris'));
   });
+
+  test('a slot starting exactly at lunchEnd is not a meal window (half-open, not inclusive)', () => {
+    // Regression for a real bug: earliestLunchTime '12:00' -> lunchEnd 14:00. A free-time slot
+    // starting at exactly 14:00 was previously misclassified as still-lunch, which combined
+    // with buildCategoryFilter's mealWindow-but-long-duration fallback let a plain restaurant
+    // leak into what displayed as a non-meal "Free Time" activity slot.
+    const mealPrefs = { earliestLunchTime: '12:00' };
+    assert.equal(isMealWindow(new Date('2030-03-04T14:00:00+01:00'), 'Europe/Paris', mealPrefs), false);
+    assert.equal(isMealWindow(new Date('2030-03-04T13:59:00+01:00'), 'Europe/Paris', mealPrefs), true);
+  });
 });
 
 describe('getMealWindows', () => {
@@ -71,9 +81,9 @@ describe('buildCategoryFilter', () => {
     assert.deepEqual(filter, { category: 'Restaurant', genre: { $ne: 'Cafes' } });
   });
 
-  test('meal window + long duration: no restriction (falls through)', () => {
+  test('meal window + long duration: restaurant-only, but cafes allowed (not the unfiltered fallback it used to be)', () => {
     const filter = buildCategoryFilter(true, 180);
-    assert.deepEqual(filter, {});
+    assert.deepEqual(filter, { category: 'Restaurant' });
   });
 
   test('non-meal window: activities, events, or cafes', () => {

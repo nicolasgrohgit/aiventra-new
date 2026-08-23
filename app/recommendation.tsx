@@ -4,7 +4,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Calendar from 'expo-calendar';
 import { useAuth } from '@/hooks/useAuth';
 import { useEvents } from '@/hooks/useEvents';
-import { PlaceRecommendation } from '@/lib/recommendations';
+import { PlaceRecommendation, displayCategory } from '@/lib/recommendations';
 import { useEffect, useState } from 'react';
 import Animated, { FadeInDown, FadeIn } from 'react-native-reanimated';
 
@@ -142,7 +142,7 @@ export default function SuggestionsScreen() {
                     <Text style={styles.badgeText}>{place.matchScore > 0 ? `${place.matchScore} tag match` : 'New idea'}</Text>
                   </View>
                 </View>
-                <Text style={styles.category}>{place.category} • {place.estimatedDuration} mins • {place.distanceKm}km away • {place.rating} ★</Text>
+                <Text style={styles.category}>{displayCategory(place)} • {place.estimatedDuration} mins • {place.distanceKm}km away • {place.rating} ★</Text>
                 <Text style={styles.description}>{place.description}</Text>
                 <View style={{ marginTop: 12, borderTopWidth: 1, borderColor: '#334155', paddingTop: 12 }}>
                   <Text style={{ color: '#F8FAFC', fontWeight: 'bold' }}>Select this option</Text>

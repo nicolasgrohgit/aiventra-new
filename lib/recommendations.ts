@@ -16,4 +16,16 @@ export interface PlaceRecommendation {
   description: string;
   estimatedDuration: number;
   distanceKm: number;
+  source?: 'curated' | 'generated' | 'google';
+  location?: { type: 'Point'; coordinates: [number, number] }; // [lng, lat]
+}
+
+// A `Restaurant`/`Cafes` place is deliberately included in non-meal-window recommendation
+// queries (see buildCategoryFilter, lib/place-matching.ts) — a coffee stop is a reasonable
+// thing to surface during open "Free Time", not a meal. Showing its raw `category` badge as
+// "Restaurant" there reads as a mismatch (why is a restaurant showing up during free time?)
+// even though it's working as intended — this makes that intent visible instead.
+export function displayCategory(place: { category: string; genre?: string }): string {
+  if (place.category === 'Restaurant' && place.genre === 'Cafes') return 'Cafe';
+  return place.category;
 }
