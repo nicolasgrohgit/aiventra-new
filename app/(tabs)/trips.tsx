@@ -680,11 +680,17 @@ export default function TripsScreen() {
     e.participants.find(p => p.user_id === myUserId)?.status === 'pending'
   ).length;
 
+  // Shared with the slot-proposals render loop below, which uses this same check to collapse
+  // a slot down to just its scheduled pick once one exists (see "keep only the scheduled card"
+  // note at that call site) — one definition of "scheduled" for both.
+  const isPlaceScheduled = (tripEvents: TripEvent[], placeId: string) =>
+    tripEvents.some(e => e.source === 'created' && e.place_id === placeId);
+
   const PlaceCard = ({ place, tripId, slotStart, tripEvents }: { place: PlaceRecommendation, tripId: string, slotStart: Date, tripEvents: TripEvent[] }) => {
     // A place already added to this trip (any day) looks identical to an unscheduled one
     // otherwise, which is exactly why tapping "Add to Itinerary" reads as "nothing happened" —
     // it did work, there's just no visible trace of it back on the card you tapped.
-    const alreadyScheduled = tripEvents.some(e => e.source === 'created' && e.place_id === place.id);
+    const alreadyScheduled = isPlaceScheduled(tripEvents, place.id);
     return (
     <TouchableOpacity style={styles.placeCard} activeOpacity={0.8} onPress={() => { setSelectedPlace({ place, tripId, slotStart }); refreshContacts(); }}>
       <View style={styles.placeHeader}>
@@ -919,14 +925,23 @@ export default function TripsScreen() {
                                         <RefineSearchCard trip={trip} day={day} />
                                       </ScrollView>
                                     </>
-                                  ) : (
-                                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.hScroll}>
-                                      {slotRecs.slice(0, 3).map(p => (
-                                        <PlaceCard key={`${proposal.startTime.getTime()}-${p.id}`} place={p} tripId={trip.id} slotStart={proposal.startTime} tripEvents={tripEvents} />
-                                      ))}
-                                      <RefineSearchCard trip={trip} day={day} />
-                                    </ScrollView>
-                                  )}
+                                  ) : (() => {
+                                    // Once one of this slot's proposals has been scheduled, the
+                                    // remaining unpicked ones are just noise — the choice is
+                                    // made. Collapse down to the scheduled card(s) plus "Looking
+                                    // for something else?", so changing your mind is still one
+                                    // tap away without the other options cluttering the row.
+                                    const scheduledRecs = slotRecs.filter(p => isPlaceScheduled(tripEvents, p.id));
+                                    const displayedRecs = scheduledRecs.length > 0 ? scheduledRecs : slotRecs.slice(0, 3);
+                                    return (
+                                      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.hScroll}>
+                                        {displayedRecs.map(p => (
+                                          <PlaceCard key={`${proposal.startTime.getTime()}-${p.id}`} place={p} tripId={trip.id} slotStart={proposal.startTime} tripEvents={tripEvents} />
+                                        ))}
+                                        <RefineSearchCard trip={trip} day={day} />
+                                      </ScrollView>
+                                    );
+                                  })()}
                                 </View>
                               );
                             })}

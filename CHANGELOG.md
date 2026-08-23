@@ -4,6 +4,16 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
+## [0.0.29] - 2026-08-23
+### Changed
+- **A scheduled slot no longer keeps showing its unpicked alternatives.** Once a proposal card
+  is scheduled (its "✓ Scheduled" badge appears), the slot's other still-unscheduled cards were
+  left cluttering the same row even though the choice was already made. `trips.tsx`'s "AI
+  Schedule Proposals" row now collapses to just the scheduled card(s) plus "Looking for
+  something else?" once one exists, so changing your mind is still one tap away without the
+  noise. New shared `isPlaceScheduled()` helper (previously inlined only in `PlaceCard`) keeps
+  both the badge and this collapse using the same definition of "scheduled".
+
 ## [0.0.28] - 2026-08-23
 ### Fixed
 - **Selecting a hotel (or destination city) suggestion silently didn't take.** Reported as:
