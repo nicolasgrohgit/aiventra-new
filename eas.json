@@ -4,6 +4,9 @@
       "android": {
         "buildType": "apk"
       },
+      "ios": {
+        "simulator": false
+      },
       "env": {
         "EXPO_PUBLIC_API_URL": "https://walks-turbo-international-cds.trycloudflare.com"
       }

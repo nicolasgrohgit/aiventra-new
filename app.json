@@ -2,14 +2,15 @@
   "expo": {
     "name": "Odys.ai",
     "slug": "Odysai",
-    "version": "0.0.30",
+    "version": "0.0.31",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "odysai",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.nicolas.groh.Odysai"
     },
     "android": {
       "adaptiveIcon": {
@@ -49,6 +50,12 @@
         {
           "calendarPermission": "Allow Odys.ai to access your calendar to suggest activities.",
           "calendarFullAccessPermission": true
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow Odys.ai to use your location to suggest nearby restaurants and activities."
         }
       ],
       "@react-native-community/datetimepicker"

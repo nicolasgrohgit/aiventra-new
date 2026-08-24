@@ -4,7 +4,7 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
-## [Unreleased]
+## [0.0.31] - 2026-08-24
 ### Added
 - **Distance, address, tap-to-navigate, and photo thumbnails on recommendation cards.**
   Every card render site (`trips.tsx`'s `PlaceCard`, the joint/blind-matching "propose" flow,
