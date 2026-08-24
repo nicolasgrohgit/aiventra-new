@@ -37,6 +37,15 @@ export interface IPlace extends Document {
   // time, since that search deliberately re-hits Google on every request rather than relying on
   // ensurePlacesForCity's one-time-per-city population.
   googlePlaceId?: string;
+  // Real street address, source: 'google' only (formattedAddress from Places API (New)) —
+  // curated/generated places have none, render "no address" states instead of a broken row.
+  // Drives the tap-to-navigate action on the client (lib/maps-link.ts's buildMapsUrl).
+  address?: string;
+  // Google Photo resource name (`places/xxx/photos/yyy`), NOT a resolved image URL — source:
+  // 'google' only. Resolving this to actual bytes requires GOOGLE_PLACES_API_KEY, which never
+  // leaves the server; see GET /api/places/:id/photo in server.ts, the only place this field's
+  // value is ever used to call out to Google.
+  photoRef?: string;
 }
 
 const PlaceSchema = new Schema<IPlace>({
@@ -62,7 +71,9 @@ const PlaceSchema = new Schema<IPlace>({
   // `default: undefined` (not required) so curated/generated docs simply never have this path
   // at all — a sparse unique index only enforces uniqueness across documents where the field
   // actually exists, which is exactly what's needed here.
-  googlePlaceId: { type: String, default: undefined }
+  googlePlaceId: { type: String, default: undefined },
+  address: { type: String, default: undefined },
+  photoRef: { type: String, default: undefined }
 });
 
 // Supports the city + time-of-day-category filter the joint-recommendation endpoint runs

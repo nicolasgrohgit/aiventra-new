@@ -25,8 +25,11 @@ import { haversineDistanceKm, GeoPoint } from './place-matching';
 const TEXT_SEARCH_URL = 'https://places.googleapis.com/v1/places:searchText';
 // Places API (New) requires an explicit field mask on every request (no "return everything"
 // default) — this also controls which SKU/pricing tier the call falls under, so keep it to
-// only what's actually used below.
-const FIELD_MASK = 'places.id,places.displayName,places.types,places.rating,places.editorialSummary,places.location';
+// only what's actually used below. formattedAddress + photos were added for tap-to-navigate
+// and card thumbnails — `photos` only carries a resource name (`places/xxx/photos/yyy`), never
+// a resolved image URL; see GooglePlaceDraft.photoRef and GET /api/places/:id/photo in
+// server.ts for why the API key never leaves the server to turn that into real image bytes.
+const FIELD_MASK = 'places.id,places.displayName,places.types,places.rating,places.editorialSummary,places.location,places.formattedAddress,places.photos';
 const MAX_RESULTS = 20;
 
 // No real per-visit duration is available from a text search keyed only by city (Places API
@@ -61,6 +64,20 @@ export interface GooglePlaceDraft {
   // Google's own resource id (`places/xxxx`) — see models/Place.ts's googlePlaceId for why this
   // is captured (idempotent upsert on repeated live nearby-search requests).
   googlePlaceId?: string;
+  address?: string;
+  // Photo *resource name* (`places/xxx/photos/yyy`), not a URL — resolving it to actual image
+  // bytes requires the API key, which only ever happens server-side in the
+  // GET /api/places/:id/photo proxy (server.ts). Never expose this turned directly into a
+  // `https://places.googleapis.com/...&key=...` URL anywhere client-reachable.
+  photoRef?: string;
+}
+
+// Picks the first photo's resource `name` off a Places API (New) result, if any — same
+// extraction needed by both searchText and searchNearby below, so it's factored out rather
+// than duplicated.
+function firstPhotoRef(place: any): string | undefined {
+  const name = place.photos?.[0]?.name;
+  return typeof name === 'string' ? name : undefined;
 }
 
 // Deterministic (not random) so the same place gets the same placeholder distance across
@@ -149,6 +166,8 @@ export async function fetchGooglePlacesForCity(
         ? { type: 'Point', coordinates: [lng, lat] }
         : undefined,
       googlePlaceId: typeof place.id === 'string' ? place.id : undefined,
+      address: typeof place.formattedAddress === 'string' ? place.formattedAddress : undefined,
+      photoRef: firstPhotoRef(place),
     });
   }
 
@@ -160,7 +179,7 @@ const NEARBY_SEARCH_URL = 'https://places.googleapis.com/v1/places:searchNearby'
 // identical to searchText's, plus `id` (already implicitly used there via place.id, but not
 // spelled out in that FIELD_MASK since it happened to come back anyway; explicit here since
 // googlePlaceId now depends on it for the upsert-dedup key).
-const NEARBY_FIELD_MASK = 'places.id,places.displayName,places.types,places.rating,places.editorialSummary,places.location';
+const NEARBY_FIELD_MASK = 'places.id,places.displayName,places.types,places.rating,places.editorialSummary,places.location,places.formattedAddress,places.photos';
 // This call sits in the live recommendation-request path (server.ts), unlike searchText above
 // (population-time only, never blocks a user-facing request) — a hung request here would stall
 // someone's actual "what can I do right now" query, so it gets a real timeout searchText never
@@ -242,6 +261,8 @@ export async function searchNearbyPlaces(
       source: 'google',
       location: { type: 'Point', coordinates: [lng, lat] },
       googlePlaceId: typeof place.id === 'string' ? place.id : undefined,
+      address: typeof place.formattedAddress === 'string' ? place.formattedAddress : undefined,
+      photoRef: firstPhotoRef(place),
     });
   }
 

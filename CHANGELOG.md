@@ -4,6 +4,26 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
+## [Unreleased]
+### Added
+- **Distance, address, tap-to-navigate, and photo thumbnails on recommendation cards.**
+  Every card render site (`trips.tsx`'s `PlaceCard`, the joint/blind-matching "propose" flow,
+  "Refine Your Search" results, and `recommendation.tsx`) now shows real distance (already
+  computed server-side via `$geoNear`, just not always rendered) and, for `source: 'google'`
+  places, a real street address and a small photo thumbnail.
+  - `lib/google-places-client.ts`'s field masks now request `formattedAddress` and `photos`;
+    `Place.address`/`Place.photoRef` (`models/Place.ts`) persist them.
+  - New `GET /api/places/:id/photo` server-side proxy: exchanges a place's Google photo
+    resource name for real image bytes via Places API (New)'s Photo Media endpoint, with
+    `GOOGLE_PLACES_API_KEY` attached only on that server-side call — the key never reaches the
+    client, and `photoRef` itself is stripped from every recommendation response (collapsed to
+    a `hasPhoto` boolean) before it crosses the wire.
+  - New `lib/maps-link.ts` (`buildMapsUrl`, unit-tested) builds a Google Maps universal-link
+    directions URL — coordinates when available, else a "name, address"/"name, city" text
+    query — opened via `Linking.openURL`. Wired into `trips.tsx`'s `selectedPlace` detail modal
+    (the single funnel every card tap already goes through) and directly into
+    `recommendation.tsx`'s cards.
+
 ## [0.0.30] - 2026-08-24
 ### Added
 - **Live, anchor-centered nearby search, with a population-sized "near me" radius, replacing

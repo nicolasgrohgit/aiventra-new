@@ -1,12 +1,23 @@
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, View, Text, ScrollView, ActivityIndicator, TouchableOpacity, Alert } from 'react-native';
+import { StyleSheet, View, Text, ScrollView, ActivityIndicator, TouchableOpacity, Alert, Image, Linking } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Calendar from 'expo-calendar';
 import { useAuth } from '@/hooks/useAuth';
 import { useEvents } from '@/hooks/useEvents';
 import { PlaceRecommendation, displayCategory } from '@/lib/recommendations';
+import { buildMapsUrl } from '@/lib/maps-link';
+import { API_URL } from '@/lib/api-client';
 import { useEffect, useState } from 'react';
 import Animated, { FadeInDown, FadeIn } from 'react-native-reanimated';
+
+// Sub-kilometer distances read as more useful in meters — matches the same formatting used on
+// trips.tsx's recommendation cards.
+const formatDistanceLabel = (km: number) => (km < 1 ? `${Math.round(km * 1000)}m` : `${km.toFixed(1)}km`);
+
+// Points at the server-side photo proxy (GET /api/places/:id/photo in server.ts), never at
+// googleapis.com directly — see that route's comment for why (GOOGLE_PLACES_API_KEY never
+// leaves the server). Only call when place.hasPhoto is true.
+const placePhotoUri = (placeId: string) => `${API_URL}/api/places/${placeId}/photo`;
 
 export default function SuggestionsScreen() {
   const { duration, start, end, cityContext, lat, lng } = useLocalSearchParams();
@@ -65,6 +76,16 @@ export default function SuggestionsScreen() {
   // (including one that was already busy, e.g. reached via "Scheduled Conflicts" on the
   // Home tab). A suggestion is something to add alongside your schedule, not something
   // that should silently overwrite a real meeting's title/location/notes.
+  // Google Maps universal link — opens Apple Maps on iOS (OS-level interception), Google Maps
+  // on Android, browser fallback otherwise. Nested inside the card's own TouchableOpacity
+  // (which schedules the suggestion on tap): React Native's touch responder system resolves to
+  // whichever TouchableOpacity is innermost, so this doesn't also fire handleSelectPlace.
+  const handleNavigate = (place: PlaceRecommendation) => {
+    Linking.openURL(buildMapsUrl(place)).catch(() => {
+      Alert.alert('Error', 'Could not open Maps.');
+    });
+  };
+
   const handleSelectPlace = async (place: PlaceRecommendation) => {
     try {
       const calendars = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
@@ -142,8 +163,25 @@ export default function SuggestionsScreen() {
                     <Text style={styles.badgeText}>{place.matchScore > 0 ? `${place.matchScore} tag match` : 'New idea'}</Text>
                   </View>
                 </View>
-                <Text style={styles.category}>{displayCategory(place)} • {place.estimatedDuration} mins • {place.distanceKm}km away • {place.rating} ★</Text>
-                <Text style={styles.description}>{place.description}</Text>
+                <View style={{ flexDirection: 'row' }}>
+                  {place.hasPhoto && (
+                    <Image source={{ uri: placePhotoUri(place.id) }} style={styles.placeThumb} />
+                  )}
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.category}>{displayCategory(place)} • {place.estimatedDuration} mins • {formatDistanceLabel(place.distanceKm)} away • {place.rating} ★</Text>
+                    <Text style={styles.description}>{place.description}</Text>
+                  </View>
+                </View>
+
+                {/* Nested touchable — see handleNavigate's comment on why this doesn't also
+                    trigger the card's own onPress. Always tappable, even with no address:
+                    buildMapsUrl falls back to real coordinates, then a name+city text query. */}
+                <TouchableOpacity style={styles.addressRow} activeOpacity={0.7} onPress={() => handleNavigate(place)}>
+                  <Text style={styles.addressIcon}>📍</Text>
+                  <Text style={styles.addressText} numberOfLines={1}>{place.address || 'Get directions'}</Text>
+                  <Text style={styles.navigateChevron}>Navigate ›</Text>
+                </TouchableOpacity>
+
                 <View style={{ marginTop: 12, borderTopWidth: 1, borderColor: '#334155', paddingTop: 12 }}>
                   <Text style={{ color: '#F8FAFC', fontWeight: 'bold' }}>Select this option</Text>
                 </View>
@@ -179,5 +217,10 @@ const styles = StyleSheet.create({
   badge: { backgroundColor: '#10B981', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 },
   badgeText: { color: '#FFF', fontSize: 12, fontWeight: 'bold' },
   category: { color: '#3B82F6', fontWeight: '600', fontSize: 13, marginBottom: 8 },
-  description: { color: '#CBD5E1', fontSize: 14, lineHeight: 20 }
+  description: { color: '#CBD5E1', fontSize: 14, lineHeight: 20 },
+  placeThumb: { width: 56, height: 56, borderRadius: 10, marginRight: 12, backgroundColor: '#334155' },
+  addressRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#0F172A', borderRadius: 10, paddingVertical: 10, paddingHorizontal: 12, marginTop: 12, borderWidth: 1, borderColor: '#334155' },
+  addressIcon: { fontSize: 14, marginRight: 6 },
+  addressText: { color: '#94A3B8', fontSize: 12, flex: 1 },
+  navigateChevron: { color: '#3B82F6', fontSize: 12, fontWeight: '800', marginLeft: 8 }
 });

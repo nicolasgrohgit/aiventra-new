@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, View, Text, Platform, ScrollView, TouchableOpacity, Modal, TextInput, ActivityIndicator, Alert } from 'react-native';
+import { StyleSheet, View, Text, Platform, ScrollView, TouchableOpacity, Modal, TextInput, ActivityIndicator, Alert, Image, Linking } from 'react-native';
 import { ThemedText } from '@/components/themed-text';
 import { useAuth } from '@/hooks/useAuth';
 import { useTrips } from '@/hooks/useTrips';
@@ -13,6 +13,8 @@ import { searchCities, CityResult } from '@/lib/geocoding';
 import { searchHotelLocation, HotelLocationResult } from '@/lib/hotel-geocoding';
 import { CircleShareSelector } from '@/components/ui/circle-share-selector';
 import { FOOD_GENRES_CATEGORIZED, ACTIVITY_GENRES_CATEGORIZED, EVENT_GENRES_CATEGORIZED } from '@/constants/preferences';
+import { buildMapsUrl } from '@/lib/maps-link';
+import { API_URL } from '@/lib/api-client';
 
 interface EventParticipant {
   user_id: string;
@@ -69,6 +71,16 @@ const DURATION_OPTIONS = [60, 90, 120, 180];
 const REFINE_TAG_GROUPS = [...FOOD_GENRES_CATEGORIZED, ...ACTIVITY_GENRES_CATEGORIZED, ...EVENT_GENRES_CATEGORIZED];
 
 const formatTripDate = (d: Date, tz: string) => d.toLocaleDateString('en-CA', { timeZone: tz });
+
+// Sub-kilometer distances read as more useful in meters ("450m away" vs "0.5km away") — matches
+// how a "near your hotel" walkable distance is actually judged.
+const formatDistanceLabel = (km: number) => (km < 1 ? `${Math.round(km * 1000)}m` : `${km.toFixed(1)}km`);
+
+// Every card/detail-modal thumbnail points at this same server-side proxy (never at
+// googleapis.com directly) — see GET /api/places/:id/photo in server.ts for why: resolving a
+// Google photoRef into real image bytes needs GOOGLE_PLACES_API_KEY, which must never leave
+// the server. Only call this when place.hasPhoto is true — the endpoint 404s otherwise.
+const placePhotoUri = (placeId: string) => `${API_URL}/api/places/${placeId}/photo`;
 
 // getTripDaySchedule's real-calendar path (vs. its hardcoded weekday/weekend fallback) needs
 // imported events in CalendarEvent shape — only 'imported' events represent an actual busy
@@ -496,6 +508,17 @@ export default function TripsScreen() {
     setShowCreateModal(false);
   };
 
+  // The one navigate action every card render funnels through via the selectedPlace modal
+  // (see the "Single integration point" comment there). Google Maps universal link: Apple Maps
+  // intercepts it at the OS level on iOS, Google Maps opens it directly on Android, and a
+  // browser is the fallback either way if neither app is installed — no Platform.OS branching
+  // needed.
+  const handleNavigate = (place: PlaceRecommendation) => {
+    Linking.openURL(buildMapsUrl(place)).catch(() => {
+      Alert.alert('Error', 'Could not open Maps.');
+    });
+  };
+
   const handleAddToItinerary = async () => {
     if (!selectedPlace) return;
     const finalStart = new Date(scheduleDate);
@@ -701,8 +724,15 @@ export default function TripsScreen() {
           <View style={styles.badge}><Text style={styles.badgeText}>{place.matchScore > 0 ? `${place.matchScore} tag match` : 'New idea'}</Text></View>
         )}
       </View>
-      <Text style={styles.placeCategory}>{displayCategory(place)} • {place.rating} ★</Text>
-      <Text style={styles.placeDesc} numberOfLines={2}>{place.description}</Text>
+      <View style={{ flexDirection: 'row' }}>
+        {place.hasPhoto && (
+          <Image source={{ uri: placePhotoUri(place.id) }} style={styles.placeThumb} />
+        )}
+        <View style={{ flex: 1 }}>
+          <Text style={styles.placeCategory}>{displayCategory(place)} • {place.rating} ★ • {formatDistanceLabel(place.distanceKm)}</Text>
+          <Text style={styles.placeDesc} numberOfLines={2}>{place.description}</Text>
+        </View>
+      </View>
     </TouchableOpacity>
     );
   };
@@ -1118,8 +1148,13 @@ export default function TripsScreen() {
                         <Text style={styles.placeName} numberOfLines={1}>{p.name}</Text>
                         <View style={styles.badge}><Text style={styles.badgeText}>Match {p.jointScore}</Text></View>
                       </View>
-                      <Text style={styles.placeCategory}>{displayCategory(p)} • {p.rating} ★</Text>
-                      <Text style={styles.placeDesc} numberOfLines={2}>{p.description}</Text>
+                      <View style={{ flexDirection: 'row' }}>
+                        {p.hasPhoto && <Image source={{ uri: placePhotoUri(p._id) }} style={styles.placeThumb} />}
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.placeCategory}>{displayCategory(p)} • {p.rating} ★ • {formatDistanceLabel(p.distanceKm)}</Text>
+                          <Text style={styles.placeDesc} numberOfLines={2}>{p.description}</Text>
+                        </View>
+                      </View>
                     </TouchableOpacity>
                   ))
                 )}
@@ -1140,12 +1175,37 @@ export default function TripsScreen() {
               </TouchableOpacity>
             </View>
 
+            {selectedPlace?.place.hasPhoto && (
+              <Image source={{ uri: placePhotoUri(selectedPlace.place.id) }} style={styles.detailPhoto} />
+            )}
+
             <View style={styles.heroDetailsBadge}>
-               <Text style={styles.heroDetailsTarget}>{selectedPlace && displayCategory(selectedPlace.place)} • {selectedPlace?.place.estimatedDuration}m Length</Text>
+               <Text style={styles.heroDetailsTarget}>
+                 {selectedPlace && displayCategory(selectedPlace.place)} • {selectedPlace?.place.estimatedDuration}m Length
+                 {selectedPlace ? ` • ${formatDistanceLabel(selectedPlace.place.distanceKm)}` : ''}
+               </Text>
                <Text style={styles.ratingLarge}>{selectedPlace?.place.rating} ★</Text>
             </View>
 
             <Text style={styles.detailedDescText}>{selectedPlace?.place.description}</Text>
+
+            {/* Single integration point for tap-to-navigate — every card render (proposals,
+                joint-match propose flow, refine-search results) funnels through this same
+                selectedPlace modal, so wiring it up here covers all of them at once. Always
+                tappable, even with no address on curated/generated places: buildMapsUrl
+                (lib/maps-link.ts) falls back to real coordinates when available, then to a
+                name+city text query — never a dead end. */}
+            <TouchableOpacity
+              style={styles.addressRow}
+              activeOpacity={0.7}
+              onPress={() => selectedPlace && handleNavigate(selectedPlace.place)}
+            >
+              <Text style={styles.addressIcon}>📍</Text>
+              <Text style={styles.placeAddressText} numberOfLines={2}>
+                {selectedPlace?.place.address || 'Get directions'}
+              </Text>
+              <Text style={styles.navigateChevron}>Navigate ›</Text>
+            </TouchableOpacity>
 
             <View style={styles.separator} />
             <Text style={styles.proposalsHeader}>Schedule It</Text>
@@ -1262,8 +1322,13 @@ export default function TripsScreen() {
                             <Text style={styles.placeName} numberOfLines={1}>{p.name}</Text>
                             <View style={styles.badge}><Text style={styles.badgeText}>{p.matchScore > 0 ? `${p.matchScore} tag match` : 'New idea'}</Text></View>
                           </View>
-                          <Text style={styles.placeCategory}>{displayCategory(p)} • {p.rating} ★</Text>
-                          <Text style={styles.placeDesc} numberOfLines={2}>{p.description}</Text>
+                          <View style={{ flexDirection: 'row' }}>
+                            {p.hasPhoto && <Image source={{ uri: placePhotoUri(p.id) }} style={styles.placeThumb} />}
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.placeCategory}>{displayCategory(p)} • {p.rating} ★ • {formatDistanceLabel(p.distanceKm)}</Text>
+                              <Text style={styles.placeDesc} numberOfLines={2}>{p.description}</Text>
+                            </View>
+                          </View>
                         </TouchableOpacity>
                       ))
                     )}
@@ -1450,6 +1515,8 @@ const styles = StyleSheet.create({
   badgeText: { color: '#FFF', fontSize: 11, fontWeight: '800' },
   placeCategory: { color: '#3B82F6', fontWeight: '700', fontSize: 13, marginBottom: 10 },
   placeDesc: { color: '#94A3B8', fontSize: 14, lineHeight: 22 },
+  placeThumb: { width: 56, height: 56, borderRadius: 12, marginRight: 12, backgroundColor: '#334155' },
+  placeAddressText: { color: '#CBD5E1', fontSize: 13, flex: 1 },
 
   refineCard: { backgroundColor: '#1E293B', padding: 20, borderRadius: 20, width: 140, marginRight: 16, borderWidth: 1, borderColor: '#334155', borderStyle: 'dashed', alignItems: 'center', justifyContent: 'center' },
   refineCardIcon: { fontSize: 24, marginBottom: 10 },
@@ -1483,6 +1550,10 @@ const styles = StyleSheet.create({
   heroDetailsTarget: { color: '#3B82F6', fontSize: 14, fontWeight: '800' },
   ratingLarge: { color: '#FCD34D', fontSize: 14, fontWeight: '900' },
   detailedDescText: { color: '#F8FAFC', fontSize: 16, lineHeight: 24 },
+  detailPhoto: { width: '100%', height: 160, borderRadius: 16, marginBottom: 16, backgroundColor: '#1E293B' },
+  addressRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1E293B', borderRadius: 14, paddingVertical: 14, paddingHorizontal: 16, marginTop: 16, borderWidth: 1, borderColor: '#334155' },
+  addressIcon: { fontSize: 16, marginRight: 8 },
+  navigateChevron: { color: '#3B82F6', fontSize: 13, fontWeight: '800', marginLeft: 10 },
 
   modalContainer: { flex: 1, backgroundColor: '#0F172A', padding: 24, paddingTop: Platform.OS === 'ios' ? 40 : 24 },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },

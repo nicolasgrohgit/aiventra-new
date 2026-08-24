@@ -88,6 +88,18 @@ function reportError(err: unknown, req: AuthedRequest, message: string) {
   }
 }
 
+// Places carry `photoRef` (a Google Photo resource name, e.g. "places/xxx/photos/yyy") through
+// the aggregation project stages above so GET /api/places/:id/photo below can look it up — but
+// the raw resource name has no legitimate client use (only "does a photo exist, so is it worth
+// requesting the proxy thumbnail" does), so this is the one place it gets collapsed to a
+// boolean before crossing the wire, on every recommendation response.
+function stripPhotoRef(places: any[]): any[] {
+  return places.map((p: any) => {
+    const { photoRef, ...rest } = p.toObject ? p.toObject() : p;
+    return { ...rest, hasPhoto: !!photoRef };
+  });
+}
+
 app.get('/health', (_req: express.Request, res: express.Response) => {
   res.status(200).json({ status: 'ok', uptime: process.uptime(), timestamp: new Date().toISOString() });
 });
@@ -712,13 +724,13 @@ app.post('/api/events/:id/recommendations', authenticate, async (req: AuthedRequ
       { $addFields: { rankScore: { $add: ['$jointScore', SOURCE_RANK_BONUS] } } },
       { $sort: { rankScore: -1, rating: -1 } },
       { $limit: 10 },
-      { $project: { name: 1, city: 1, category: 1, genre: 1, rating: 1, description: 1, estimatedDuration: 1, distanceKm: 1, jointScore: 1, source: 1, location: 1 } }
+      { $project: { name: 1, city: 1, category: 1, genre: 1, rating: 1, description: 1, estimatedDuration: 1, distanceKm: 1, jointScore: 1, source: 1, location: 1, address: 1, photoRef: 1 } }
     ]);
 
     // Tiered shuffle among the top-10 pool: still varies order within a source tier so this
     // doesn't always surface the identical place first, but keeps curated/google ahead of
     // generated filler rather than fully randomizing across the source-priority ordering above.
-    res.json(tieredShuffle(places));
+    res.json(stripPhotoRef(tieredShuffle(places)));
   } catch (error: any) {
     reportError(error, req, 'joint recommendation failed');
     res.status(500).json({ error: error.message });
@@ -784,7 +796,7 @@ app.post('/api/recommendations', authenticate, async (req: AuthedRequest, res: e
     // slot's top pick (trips.tsx) instead of always anchoring every slot on the trip's static
     // hotel/city location — see the anchor-chaining note in trips.tsx's recommendation-fetch
     // effect for why (e.g. proposing dinner near the afternoon activity, not just near the hotel).
-    const projectStage = { $project: { name: 1, city: 1, category: 1, genre: 1, rating: 1, description: 1, estimatedDuration: 1, distanceKm: 1, matchScore: 1, source: 1, location: 1 } };
+    const projectStage = { $project: { name: 1, city: 1, category: 1, genre: 1, rating: 1, description: 1, estimatedDuration: 1, distanceKm: 1, matchScore: 1, source: 1, location: 1, address: 1, photoRef: 1 } };
     const pipeline = anchor
       ? [
           buildGeoNearStage(anchor, effectiveMaxDistanceKm, buildCityDurationQuery(city, durationMinutes, mealWindow)),
@@ -808,9 +820,56 @@ app.post('/api/recommendations', authenticate, async (req: AuthedRequest, res: e
     // Tiered shuffle among the top-10 pool — still varies order within a source tier (so
     // repeated slots on a trip don't always show the identical top place), but keeps
     // curated/google ranked ahead of generated filler rather than erasing that ordering.
-    res.json(tieredShuffle(places));
+    res.json(stripPhotoRef(tieredShuffle(places)));
   } catch (error: any) {
     reportError(error, req, 'solo recommendation failed');
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Server-side photo proxy: GOOGLE_PLACES_API_KEY lives only in this process's env and is never
+// sent to the client. Places API (New) has no direct image URL — a place's photoRef (a resource
+// name, see models/Place.ts) has to be exchanged for actual bytes via Google's Photo Media
+// endpoint, which requires the key as a query param. Building that URL client-side (or handing
+// the client a pre-built one) would leak the key into the app's own network traffic, so this
+// route does the exchange here and streams the result back instead — the client only ever sees
+// `${API_URL}/api/places/:id/photo`, never googleapis.com.
+//
+// Deliberately no `authenticate` here (unlike every other /api route): it's keyed by an opaque
+// Mongo ObjectId, serves nothing more sensitive than a tourist-attraction photo Google already
+// serves publicly, and React Native's <Image> doesn't attach custom headers without extra
+// plumbing — not worth the complexity for content that was never secret to begin with. The
+// actual secret (the API key) never reaches this response either way.
+app.get('/api/places/:id/photo', async (req: AuthedRequest, res: express.Response) => {
+  try {
+    const place = await Place.findById(req.params.id);
+    if (!place || !place.photoRef) {
+      return res.status(404).json({ error: 'No photo available for this place' });
+    }
+    const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+    if (!apiKey) {
+      return res.status(404).json({ error: 'Photos are not configured' });
+    }
+
+    // maxWidthPx=480 is plenty for a card thumbnail (rendered well under 100px in trips.tsx/
+    // recommendation.tsx) while keeping the proxied payload small — Places API bills/sizes by
+    // the requested width, not the original asset.
+    const photoUrl = `https://places.googleapis.com/v1/${place.photoRef}/media?maxWidthPx=480&key=${apiKey}`;
+    const photoRes = await fetch(photoUrl, { signal: AbortSignal.timeout(8000) });
+    if (!photoRes.ok || !photoRes.body) {
+      req.log.warn({ status: photoRes.status }, 'place photo fetch from Google failed');
+      return res.status(502).json({ error: 'Failed to fetch photo' });
+    }
+
+    res.set('Content-Type', photoRes.headers.get('content-type') || 'image/jpeg');
+    // Google's own photo bytes for a given photoRef don't change on any timescale that matters
+    // here — safe to let clients/CDNs cache this aggressively instead of re-proxying on every
+    // card render.
+    res.set('Cache-Control', 'public, max-age=86400');
+    const buffer = Buffer.from(await photoRes.arrayBuffer());
+    res.send(buffer);
+  } catch (error: any) {
+    reportError(error, req, 'place photo proxy failed');
     res.status(500).json({ error: error.message });
   }
 });

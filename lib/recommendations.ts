@@ -18,6 +18,16 @@ export interface PlaceRecommendation {
   distanceKm: number;
   source?: 'curated' | 'generated' | 'google';
   location?: { type: 'Point'; coordinates: [number, number] }; // [lng, lat]
+  // Real street address — source: 'google' only, absent on curated/generated places (see
+  // Place.address in models/Place.ts). Drives the tap-to-navigate action in trips.tsx's
+  // selectedPlace detail modal via lib/maps-link.ts's buildMapsUrl.
+  address?: string;
+  // Presence-only flag: whether this place has a Google photo available. NOT a URL — the
+  // resolved image is only ever fetched through GET /api/places/:id/photo (server.ts), which
+  // is the one place GOOGLE_PLACES_API_KEY is used to turn Place.photoRef into real bytes.
+  // Deliberately not the raw photoRef itself: the client has no legitimate use for the Google
+  // resource name, only for whether to attempt loading the proxy thumbnail.
+  hasPhoto?: boolean;
 }
 
 // A `Restaurant`/`Cafes` place is deliberately included in non-meal-window recommendation
