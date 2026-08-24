@@ -363,7 +363,23 @@ this is still pre-release/beta.
   recommendations, friends-nearby). Fix is a one-line `JSON.parse` on the read side to match
   how the token is written.
 
-## [0.0.19] - 2026-08-20
+- **Onboarding redesign: "Pick your vibe" circle picker + capped swipe-refine deck.**
+  Replaces `app/onboarding.tsx`'s old 6-step linear form (three repeated 15-chip grids for
+  food/activity/event tastes) with the 4-screen flow from `docs/onboarding-redesign.md`: Home
+  city (unchanged) → Pick your vibe → Anything else? → Essentials (dietary + pace combined).
+  The vibe screen (`components/ui/vibe-picker.tsx`) renders 8 literal overlapping circles
+  (`docs/circles-visual-language.md`'s motif, built from plain RN `View`s — no
+  `react-native-svg`/Skia, per the current EAS build-quota constraint) — tapping an unselected
+  circle seeds a curated, cross-taxonomy bundle of real leaf tags (new `VIBE_PRESETS` in
+  `constants/preferences.ts`, reasoning documented per-vibe); tapping it again drills into its
+  own tags as individually-toggleable sub-circles, generically at any depth
+  (`lib/onboarding-taste.ts`). The refine screen (`components/ui/swipe-deck.tsx`) is a
+  Tinder-style, hard-capped (10 cards), skippable deck drawn only from the taxonomy gap the
+  vibes didn't cover. New `TASTE_DOMAINS` registry generalizes the three existing genre
+  taxonomies so a future fourth one plugs into the swipe deck automatically. No new
+  dependencies, no server/schema changes — reuses the existing `completeOnboarding()`
+  persistence path.
+
 ### Fixed
 - **Critical: curated places were invisible to real trip-based recommendation queries.**
   `buildCityDurationMatchStage`'s city regex only matched when the *stored* `city` field

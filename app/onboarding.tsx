@@ -3,12 +3,18 @@ import { StyleSheet, View, Text, TouchableOpacity, SafeAreaView, TextInput, Scro
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/hooks/useAuth';
 import { searchCities, CityResult } from '@/lib/geocoding';
-import { FOOD_GENRES_CATEGORIZED, ACTIVITY_GENRES_CATEGORIZED, EVENT_GENRES_CATEGORIZED } from '@/constants/preferences';
-import { CategorizedPicker } from '@/components/ui/categorized-picker';
+import { VibePicker } from '@/components/ui/vibe-picker';
+import { SwipeDeck } from '@/components/ui/swipe-deck';
+import { buildSwipeCandidatePool, splitTagsByDomain } from '@/lib/onboarding-taste';
 
 export const COMMON_DIETS = ['Vegetarian', 'Vegan', 'Halal', 'Kosher', 'Gluten-Free', 'Keto', 'Nut-Free'];
 
-const TOTAL_STEPS = 6;
+// Replaces the old 6-step linear form (Home city, Dietary, Pace, Food, Activity, Event tastes
+// as three separate 15-chip grids) with the 4-screen flow from docs/onboarding-redesign.md:
+// Home city (unchanged) -> Pick your vibe (circle picker) -> Anything else? (capped, skippable
+// swipe deck) -> Essentials (dietary + pace combined). See docs/circles-visual-language.md for
+// the circle motif and lib/onboarding-taste.ts for the pure tag/state logic behind steps 2-3.
+const TOTAL_STEPS = 4;
 
 export default function OnboardingScreen() {
   const router = useRouter();
@@ -18,9 +24,20 @@ export default function OnboardingScreen() {
   const [homebase, setHomebase] = useState('');
   const [dietary, setDietary] = useState<string[]>([]);
   const [activity, setActivity] = useState<string>('Medium');
-  const [foodGenres, setFoodGenres] = useState<string[]>([]);
-  const [activityGenres, setActivityGenres] = useState<string[]>([]);
-  const [eventGenres, setEventGenres] = useState<string[]>([]);
+
+  // The single cross-taxonomy tag pool steps 2 and 3 both read/write — per the task spec,
+  // the vibe picker and swipe deck treat foodGenres/activityGenres/eventGenres as one flat
+  // pool, only split back into the three separate buckets completeOnboarding() expects at
+  // the very end (see handleNext's step 4 branch below).
+  const [tasteTags, setTasteTags] = useState<string[]>([]);
+  // Which vibe circles the user has explicitly selected/drilled into — tracked separately
+  // from tasteTags because the same real tag can be seeded by more than one vibe (see
+  // lib/onboarding-taste.ts's isNodeActive doc comment for why this matters).
+  const [engagedVibeKeys, setEngagedVibeKeys] = useState<string[]>([]);
+
+  // Computed once when entering step 3, not recomputed on every render, so swiping through
+  // the deck doesn't shuffle the remaining cards' order out from under the user.
+  const [swipeCandidates, setSwipeCandidates] = useState<string[]>([]);
 
   // Home city validation/autocomplete — soft warning only, never blocks proceeding, since a
   // legitimate city might not appear in a partial-query top-5 from the geocoder.
@@ -56,33 +73,46 @@ export default function OnboardingScreen() {
     setJustPickedCity(true);
   };
 
+  const finishOnboarding = (finalTasteTags: string[]) => {
+    const { foodGenres, activityGenres, eventGenres } = splitTagsByDomain(finalTasteTags);
+    completeOnboarding({
+      dietary,
+      activityLevel: activity || 'Medium',
+      foodGenres,
+      activityGenres,
+      eventGenres,
+    });
+    router.replace('/(tabs)' as any);
+  };
+
   const handleNext = () => {
     if (step === 1) {
       if (!homebase) { Alert.alert('Missing Info', 'Please enter your home city.'); return; }
       updateUser({ homebase });
       setStep(2);
-    } else if (step < TOTAL_STEPS) {
-      setStep(step + 1);
+    } else if (step === 2) {
+      setSwipeCandidates(buildSwipeCandidatePool(tasteTags, 10));
+      setStep(3);
     } else {
-      completeOnboarding({
-        dietary,
-        activityLevel: activity || 'Medium',
-        foodGenres,
-        activityGenres,
-        eventGenres,
-      });
-      router.replace('/(tabs)' as any);
+      // step 3 (the swipe deck) has no bottom Next button — it advances itself via
+      // handleSwipeDeckComplete (its own "Skip — use my picks" button or the last card
+      // resolving), so the only step that reaches here via the bottom button is step 4.
+      finishOnboarding(tasteTags);
     }
+  };
+
+  const handleSwipeDeckComplete = (acceptedTags: string[]) => {
+    setTasteTags(prev => {
+      const merged = [...prev];
+      for (const tag of acceptedTags) if (!merged.includes(tag)) merged.push(tag);
+      return merged;
+    });
+    setStep(4);
   };
 
   const toggleDiet = (diet: string) => {
     if (dietary.includes(diet)) setDietary(dietary.filter(d => d !== diet));
     else setDietary([...dietary, diet]);
-  };
-
-  const toggleInArray = (item: string, arr: string[], setArr: (next: string[]) => void) => {
-    if (arr.includes(item)) setArr(arr.filter(i => i !== item));
-    else setArr([...arr, item]);
   };
 
   return (
@@ -123,9 +153,30 @@ export default function OnboardingScreen() {
 
         {step === 2 && (
           <View style={styles.stepContainer}>
-            <Text style={styles.title}>Dietary Restrictions</Text>
-            <Text style={styles.subtitle}>Select any diet restrictions that the suggestion engine should respect.</Text>
+            <Text style={styles.title}>Pick your vibe.</Text>
+            <Text style={styles.subtitle}>Tap a circle to add it — tap it again to fine-tune what it covers. Pick as many as feel right.</Text>
+            <VibePicker
+              selectedTags={tasteTags}
+              engagedKeys={engagedVibeKeys}
+              onChange={(next) => { setTasteTags(next.selectedTags); setEngagedVibeKeys(next.engagedKeys); }}
+            />
+          </View>
+        )}
 
+        {step === 3 && (
+          <View style={styles.stepContainer}>
+            <Text style={styles.title}>Anything else?</Text>
+            <Text style={styles.subtitle}>A few more, if you&apos;re up for it — swipe right to add, left to skip. Totally optional.</Text>
+            <SwipeDeck candidates={swipeCandidates} onComplete={handleSwipeDeckComplete} />
+          </View>
+        )}
+
+        {step === 4 && (
+          <View style={styles.stepContainer}>
+            <Text style={styles.title}>Essentials</Text>
+            <Text style={styles.subtitle}>Medium pace, no restrictions — you can change either of these anytime in Profile.</Text>
+
+            <Text style={styles.sectionLabel}>Dietary Restrictions</Text>
             <View style={styles.optionsGrid}>
               {COMMON_DIETS.map(diet => (
                 <TouchableOpacity
@@ -137,14 +188,8 @@ export default function OnboardingScreen() {
                 </TouchableOpacity>
               ))}
             </View>
-          </View>
-        )}
 
-        {step === 3 && (
-          <View style={styles.stepContainer}>
-            <Text style={styles.title}>Travel Pace</Text>
-            <Text style={styles.subtitle}>How active do you want your scheduled trip itineraries to be?</Text>
-
+            <Text style={[styles.sectionLabel, { marginTop: 12 }]}>Travel Pace</Text>
             {['Low', 'Medium', 'High'].map(level => (
               <TouchableOpacity
                  key={level}
@@ -156,35 +201,13 @@ export default function OnboardingScreen() {
             ))}
           </View>
         )}
-
-        {step === 4 && (
-          <View style={styles.stepContainer}>
-            <Text style={styles.title}>Food Tastes</Text>
-            <Text style={styles.subtitle}>Pick a few cuisines you enjoy — this is what both your own suggestions and shared-event matching with friends are based on. Optional, and you can always refine it later in Profile.</Text>
-            <CategorizedPicker groupedOptions={FOOD_GENRES_CATEGORIZED} selected={foodGenres} onToggle={(opt) => toggleInArray(opt, foodGenres, setFoodGenres)} category="Restaurant" />
-          </View>
-        )}
-
-        {step === 5 && (
-          <View style={styles.stepContainer}>
-            <Text style={styles.title}>Activity Tastes</Text>
-            <Text style={styles.subtitle}>What kinds of things do you like doing when you have free time in a new city? Optional, refine anytime in Profile.</Text>
-            <CategorizedPicker groupedOptions={ACTIVITY_GENRES_CATEGORIZED} selected={activityGenres} onToggle={(opt) => toggleInArray(opt, activityGenres, setActivityGenres)} category="Activity" />
-          </View>
-        )}
-
-        {step === 6 && (
-          <View style={styles.stepContainer}>
-            <Text style={styles.title}>Event Tastes</Text>
-            <Text style={styles.subtitle}>Concerts, shows, sports — pick what you&apos;re into. Optional, refine anytime in Profile.</Text>
-            <CategorizedPicker groupedOptions={EVENT_GENRES_CATEGORIZED} selected={eventGenres} onToggle={(opt) => toggleInArray(opt, eventGenres, setEventGenres)} category="Event" />
-          </View>
-        )}
       </ScrollView>
 
-      <TouchableOpacity style={styles.nextButton} onPress={handleNext}>
-        <Text style={styles.nextText}>{step === TOTAL_STEPS ? 'Complete Setup' : 'Next'}</Text>
-      </TouchableOpacity>
+      {step !== 3 && (
+        <TouchableOpacity style={styles.nextButton} onPress={handleNext}>
+          <Text style={styles.nextText}>{step === TOTAL_STEPS ? 'Complete Setup' : 'Next'}</Text>
+        </TouchableOpacity>
+      )}
     </SafeAreaView>
   );
 }
@@ -196,6 +219,7 @@ const styles = StyleSheet.create({
   stepContainer: { marginBottom: 40 },
   title: { color: '#FFF', fontSize: 32, fontWeight: 'bold', marginBottom: 12 },
   subtitle: { color: '#64748B', fontSize: 16, lineHeight: 24, marginBottom: 32 },
+  sectionLabel: { color: '#F8FAFC', fontSize: 14, fontWeight: '700', marginBottom: 12, textTransform: 'uppercase', letterSpacing: 0.5 },
 
   stepDots: { flexDirection: 'row', justifyContent: 'center', gap: 8, marginBottom: 8, marginTop: 8 },
   dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#1E293B' },
