@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, ScrollView, TouchableOpacity, Text, Platform, TextInput, Modal, Alert } from 'react-native';
+import { StyleSheet, View, ScrollView, TouchableOpacity, Text, Platform, TextInput, Modal, Alert, ActivityIndicator } from 'react-native';
 import { Image } from 'expo-image';
 import Constants from 'expo-constants';
+import * as ImagePicker from 'expo-image-picker';
+import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { ThemedText } from '@/components/themed-text';
 import { useAuth } from '@/hooks/useAuth';
 import { NativeDatePicker } from '@/components/ui/NativeDatePicker';
@@ -9,6 +11,7 @@ import { searchCities, CityResult } from '@/lib/geocoding';
 import { FOOD_GENRES_CATEGORIZED, ACTIVITY_GENRES_CATEGORIZED, EVENT_GENRES_CATEGORIZED } from '@/constants/preferences';
 import { CircleShareSelector } from '@/components/ui/circle-share-selector';
 import { hasGoogleMatch } from '@/lib/google-places-types';
+import { getAvatarResizeActions, AVATAR_JPEG_QUALITY, isAvatarBase64SizeAcceptable, toAvatarDataUri } from '@/lib/avatar';
 
 export const COMMON_DIETS = ['Vegetarian', 'Vegan', 'Halal', 'Kosher', 'Gluten-Free', 'Keto', 'Nut-Free'];
 
@@ -107,9 +110,81 @@ export default function ProfileScreen() {
   const [showActivityModal, setShowActivityModal] = useState(false);
   const [showEventModal, setShowEventModal] = useState(false);
   const [showVersionModal, setShowVersionModal] = useState(false);
+  // Disables the avatar tap target and swaps in a spinner while the pick -> crop -> resize ->
+  // compress pipeline runs, so a slow device/large source photo can't be tapped again mid-flight
+  // (which would kick off a second concurrent updateUser call).
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
 
   const toggleHomebaseCircle = (circle: string) => {
     setHomebaseSharedCircles(prev => prev.includes(circle) ? prev.filter(c => c !== circle) : [...prev, circle]);
+  };
+
+  // Shared by both the camera and library sources: crops+resizes+compresses whatever the
+  // picker returned down to a small, bounded avatar (see lib/avatar.ts for why — no object
+  // storage in this stack, so this becomes a base64 data URI stored directly on the user doc),
+  // then persists it through the existing offline-first updateUser path.
+  const applyPickedAvatar = async (sourceUri: string) => {
+    setIsUploadingAvatar(true);
+    try {
+      const manipulated = await manipulateAsync(sourceUri, getAvatarResizeActions(), {
+        compress: AVATAR_JPEG_QUALITY,
+        format: SaveFormat.JPEG,
+        base64: true
+      });
+      if (!manipulated.base64) {
+        throw new Error('Image processing did not return base64 data');
+      }
+      if (!isAvatarBase64SizeAcceptable(manipulated.base64)) {
+        Alert.alert('Image too large', 'That photo is too large to use as a profile picture. Please try a different one.');
+        return;
+      }
+      updateUser({ avatarUrl: toAvatarDataUri(manipulated.base64) });
+    } catch (err) {
+      console.warn('Failed to process picked avatar image:', err);
+      Alert.alert('Something went wrong', 'We could not update your profile picture. Please try again.');
+    } finally {
+      setIsUploadingAvatar(false);
+    }
+  };
+
+  const pickAvatarFromLibrary = async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Permission needed', 'Odys.ai needs access to your photos to set a profile picture.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 1
+    });
+    if (result.canceled || !result.assets?.[0]?.uri) return;
+    await applyPickedAvatar(result.assets[0].uri);
+  };
+
+  const pickAvatarFromCamera = async () => {
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Permission needed', 'Odys.ai needs camera access to take a profile picture.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 1
+    });
+    if (result.canceled || !result.assets?.[0]?.uri) return;
+    await applyPickedAvatar(result.assets[0].uri);
+  };
+
+  const handleChangeAvatar = () => {
+    if (isUploadingAvatar) return;
+    Alert.alert('Change Profile Picture', undefined, [
+      { text: 'Take Photo', onPress: pickAvatarFromCamera },
+      { text: 'Choose from Library', onPress: pickAvatarFromLibrary },
+      { text: 'Cancel', style: 'cancel' }
+    ]);
   };
 
   const handleSave = () => {
@@ -282,11 +357,23 @@ export default function ProfileScreen() {
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
-          {user?.avatarUrl ? (
-            <Image source={{ uri: user.avatarUrl }} style={styles.avatarImage} />
-          ) : (
-            <View style={styles.avatarHolder}><Text style={styles.avatarText}>{firstName ? firstName.charAt(0) : 'U'}</Text></View>
-          )}
+          <TouchableOpacity
+            style={styles.avatarWrapper}
+            onPress={handleChangeAvatar}
+            activeOpacity={0.7}
+            disabled={isUploadingAvatar}
+          >
+            {user?.avatarUrl ? (
+              <Image source={{ uri: user.avatarUrl }} style={styles.avatarImage} />
+            ) : (
+              <View style={styles.avatarHolder}><Text style={styles.avatarText}>{firstName ? firstName.charAt(0) : 'U'}</Text></View>
+            )}
+            {isUploadingAvatar ? (
+              <View style={styles.avatarOverlay}><ActivityIndicator color="#FFF" /></View>
+            ) : (
+              <View style={styles.avatarEditBadge}><Text style={styles.avatarEditBadgeText}>✎</Text></View>
+            )}
+          </TouchableOpacity>
           <View>
             <ThemedText style={styles.title}>{firstName} {lastName}</ThemedText>
             <ThemedText style={styles.subtitle}>{email}</ThemedText>
@@ -412,9 +499,13 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0A0A0A' },
   scrollContent: { padding: 24, paddingTop: Platform.OS === 'ios' ? 60 : 60, paddingBottom: 100 },
   header: { flexDirection: 'row', alignItems: 'center', marginBottom: 32 },
-  avatarHolder: { width: 70, height: 70, borderRadius: 35, backgroundColor: '#3B82F6', justifyContent: 'center', alignItems: 'center', marginRight: 16 },
+  avatarWrapper: { width: 70, height: 70, marginRight: 16 },
+  avatarHolder: { width: 70, height: 70, borderRadius: 35, backgroundColor: '#3B82F6', justifyContent: 'center', alignItems: 'center' },
   avatarText: { color: '#FFF', fontSize: 32, fontWeight: 'bold' },
-  avatarImage: { width: 70, height: 70, borderRadius: 35, marginRight: 16 },
+  avatarImage: { width: 70, height: 70, borderRadius: 35 },
+  avatarOverlay: { position: 'absolute', top: 0, left: 0, width: 70, height: 70, borderRadius: 35, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+  avatarEditBadge: { position: 'absolute', bottom: -2, right: -2, width: 26, height: 26, borderRadius: 13, backgroundColor: '#3B82F6', justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: '#0A0A0A' },
+  avatarEditBadgeText: { color: '#FFF', fontSize: 12, fontWeight: 'bold' },
   title: { color: '#FFF', fontSize: 26, fontWeight: '800' },
   subtitle: { color: '#94A3B8', fontSize: 16 },
   engineConfigCard: { backgroundColor: '#0F172A', padding: 24, borderRadius: 20, borderWidth: 1, borderColor: '#1E293B', marginBottom: 32 },

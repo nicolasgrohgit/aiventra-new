@@ -58,6 +58,14 @@
           "locationWhenInUsePermission": "Allow Odys.ai to use your location to suggest nearby restaurants and activities."
         }
       ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Odys.ai to access your photos to set a profile picture.",
+          "cameraPermission": "Allow Odys.ai to access your camera to take a profile picture.",
+          "microphonePermission": false
+        }
+      ],
       "@react-native-community/datetimepicker"
     ],
     "experiments": {

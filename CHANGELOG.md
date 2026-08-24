@@ -4,6 +4,23 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
+## [Unreleased]
+### Added
+- **Profile picture picker** (`app/(tabs)/profile.tsx`): tap the avatar to take a photo or
+  choose one from the library (`expo-image-picker`, `allowsEditing`/`aspect: [1,1]` square
+  crop) and set it as your profile picture. No object storage exists anywhere in this stack
+  (no S3/Cloudinary/multer — just MongoDB), so consistent with how `lib/weather.ts`/
+  `lib/geocoding.ts` deliberately picked no-key providers instead of new infra, the picked
+  photo is downscaled to 300x300 and JPEG-compressed at quality 0.5 client-side
+  (`expo-image-manipulator`, params centralized in new `lib/avatar.ts`) and stored as a base64
+  data URI directly in `avatarUrl` via the existing `updateUser` path — no new backend route,
+  since `PUT /api/users/:id` already does `$set: req.body` against the `strict: false` `User`
+  schema. A `lib/avatar.ts` size guard (200KB base64 ceiling) rejects outsized payloads before
+  they'd ever reach the User document, which is returned on every login/profile sync.
+  Live-verified end-to-end against the real backend: logged in, `PUT /api/users/:id` with a
+  real base64 JPEG data URI, confirmed via a follow-up `GET` that it persists.
+  Onboarding (`app/onboarding.tsx`) is untouched — out of scope, being redesigned separately.
+
 ## [0.0.31] - 2026-08-24
 ### Added
 - **Distance, address, tap-to-navigate, and photo thumbnails on recommendation cards.**
