@@ -102,11 +102,34 @@ export function buildCategoryFilter(mealWindow: boolean, durationMinutes: number
   return { category: 'Restaurant' };
 }
 
-// Default "near me" ceiling for the initial search — chosen against the real spread of
-// distanceKm values across curated Paris/Rome/London data (roughly 0.3-7.2km), so this
-// genuinely excludes a meaningful tail of farther-out places rather than being a no-op cap.
-// "Expand Search Radius" (recommendation.tsx) re-queries with this ceiling raised/removed.
+// Fallback "near me" ceiling for when the destination's population can't be resolved (a
+// geocoding miss/failure) — the same flat value every request used before resolveSearchRadiusKm
+// existed. "Expand Search Radius" (recommendation.tsx) re-queries with this ceiling raised/
+// removed regardless of which radius produced the original result.
 export const DEFAULT_MAX_DISTANCE_KM = 5;
+
+// "Near me" means something completely different in a 10M-person metro than a 8,000-person
+// town — a flat radius either misses everything walkable in a dense city center (ten
+// restaurants within 500m of a central Paris hotel) or returns nothing at all in a small town
+// (nothing within even 5km). Tiers chosen directly against the case that surfaced this: a
+// central Paris hotel (pop. ~2.1M) with genuine walking-distance restaurant coverage that a
+// flat 5km radius was diluting with far-flung options carrying no real advantage over a
+// 30m-away place.
+//
+// Restaurant and Activity get separate (wider, for Activity) tiers rather than sharing one:
+// live-tested against the same Paris hotel, a 500m Activity search returned mostly spas and
+// hotels — real points of interest (museums, viewpoints, landmarks) are structurally sparser
+// than restaurants, so the radius that's exactly right for "walk to lunch" is too tight for
+// "something worth doing nearby."
+export function resolveSearchRadiusKm(population: number | null, category: 'Restaurant' | 'Activity'): number {
+  if (population === null) return DEFAULT_MAX_DISTANCE_KM;
+  const tiers = category === 'Restaurant'
+    ? { dense: 0.5, mid: 2, sparse: 5 }
+    : { dense: 2, mid: 5, sparse: 25 };
+  if (population >= 100_000) return tiers.dense;
+  if (population >= 10_000) return tiers.mid;
+  return tiers.sparse;
+}
 
 // The city/duration/category conditions shared by both the static-field fallback match stage
 // below and buildGeoNearStage's `query` sub-option — split out so the two paths can't drift

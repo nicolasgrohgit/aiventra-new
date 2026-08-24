@@ -1,6 +1,6 @@
 import Place from '../models/Place';
 import { escapeRegExp, cityNeedle, jitterCoordinates, GeoPoint } from './place-matching';
-import { fetchGooglePlacesForCity } from './google-places-client';
+import { fetchGooglePlacesForCity, searchNearbyPlaces } from './google-places-client';
 import { searchCities } from './geocoding';
 
 const MIN_PLACES_PER_CITY = 5;
@@ -109,4 +109,59 @@ export async function ensurePlacesForCity(city: string): Promise<void> {
   if (filledCount >= MIN_PLACES_PER_CITY) return;
   const cityCenter = await resolveCityCenter(displayCity);
   await Place.insertMany(buildSyntheticPlaces(normalized, displayCity, cityCenter));
+}
+
+/**
+ * Live, anchor-centered top-up — distinct from (and a deliberate exception to) ensurePlacesForCity
+ * above, which only fires once a city's *total* place count runs thin and is blind to *where*
+ * in the city it's thin. A city can clear that bar city-wide (Paris: 18+ curated places) while a
+ * specific hotel still has nothing genuinely walkable nearby, which is exactly the real case
+ * this exists for. Called on every recommendation request that has a real anchor point (see
+ * server.ts), not gated on existing coverage — deliberately re-hits Google each time rather than
+ * checking "is there already enough nearby" first, so early usage gives a true read on live-query
+ * latency before any caching/skip-if-fresh-enough logic gets added on top of that data. Timing
+ * is logged specifically so that decision has real numbers behind it later.
+ *
+ * Best-effort like every other external-API call in this file: a failure (network, timeout,
+ * quota, missing key) is caught and logged, never thrown — recommendation requests must keep
+ * working off whatever's already in the Place collection (curated/generated/previously-cached
+ * google) exactly as they did before this existed.
+ */
+export async function refreshNearbyPlacesLive(
+  city: string,
+  anchor: GeoPoint,
+  radiusKm: number,
+  category: 'Restaurant' | 'Activity'
+): Promise<void> {
+  if (!process.env.GOOGLE_PLACES_API_KEY) return;
+
+  const startedAt = Date.now();
+  try {
+    const drafts = await searchNearbyPlaces(anchor, radiusKm * 1000, category, 10);
+    const durationMs = Date.now() - startedAt;
+    console.info(
+      `[places-population] live nearby search: city="${city}" category=${category} ` +
+      `radiusKm=${radiusKm} results=${drafts.length} durationMs=${durationMs}`
+    );
+    if (drafts.length === 0) return;
+
+    // Upsert keyed on googlePlaceId (sparse-unique on Place, see models/Place.ts) so
+    // re-querying the same anchor on a later request refreshes these documents instead of
+    // inserting duplicates — every field except city/googlePlaceId can legitimately change
+    // between fetches (rating, tags if Google's own classification shifts), so this replaces
+    // the whole document rather than patching individual fields.
+    await Promise.all(
+      drafts
+        .filter(d => d.googlePlaceId)
+        .map(d => Place.findOneAndUpdate(
+          { googlePlaceId: d.googlePlaceId },
+          { ...d, city },
+          { upsert: true, setDefaultsOnInsert: true }
+        ))
+    );
+  } catch (err) {
+    console.warn(
+      `[places-population] live nearby search failed (city="${city}", category=${category}):`, err
+    );
+  }
 }

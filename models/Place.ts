@@ -30,6 +30,13 @@ export interface IPlace extends Document {
     type: 'Point';
     coordinates: [number, number]; // [lng, lat]
   };
+  // Google's own resource id (`places/xxxx`), source: 'google' only. Lets the live per-request
+  // nearby search (server.ts's recommendation endpoints, via lib/google-places-client.ts's
+  // searchNearbyPlaces) upsert instead of insert — re-querying the same hotel/anchor on a later
+  // request refreshes this document (rating, tags) rather than creating a duplicate Place every
+  // time, since that search deliberately re-hits Google on every request rather than relying on
+  // ensurePlacesForCity's one-time-per-city population.
+  googlePlaceId?: string;
 }
 
 const PlaceSchema = new Schema<IPlace>({
@@ -51,7 +58,11 @@ const PlaceSchema = new Schema<IPlace>({
   location: {
     type: { type: String, enum: ['Point'] },
     coordinates: { type: [Number], default: undefined }
-  }
+  },
+  // `default: undefined` (not required) so curated/generated docs simply never have this path
+  // at all — a sparse unique index only enforces uniqueness across documents where the field
+  // actually exists, which is exactly what's needed here.
+  googlePlaceId: { type: String, default: undefined }
 });
 
 // Supports the city + time-of-day-category filter the joint-recommendation endpoint runs
@@ -60,5 +71,11 @@ PlaceSchema.index({ city: 1, category: 1 });
 // Required for $geoNear (buildGeoNearStage, lib/place-matching.ts) — a 2dsphere index is a
 // hard prerequisite for any geospatial query against this field, not just a perf nicety.
 PlaceSchema.index({ location: '2dsphere' });
+// Sparse + unique: makes the live nearby-search upsert (server.ts's recommendation endpoints)
+// idempotent per Google place, without constraining curated/generated docs that never set this
+// field at all (a plain unique index would reject every second document with no googlePlaceId,
+// since Mongo treats "field absent" as equal to itself for uniqueness purposes — sparse exempts
+// absent-field documents from the constraint entirely).
+PlaceSchema.index({ googlePlaceId: 1 }, { unique: true, sparse: true });
 
 export default mongoose.models.Place || mongoose.model<IPlace>('Place', PlaceSchema);

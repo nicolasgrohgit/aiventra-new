@@ -8,6 +8,7 @@ import {
   hasGoogleMatch,
   tagsForPlaceTypes,
   supportsScheduleData,
+  getPlaceTypesForCategory,
 } from './google-places-types';
 
 describe('taxonomy coverage', () => {
@@ -50,6 +51,30 @@ describe('getPlaceTypesForTag / getMatchQuality / hasGoogleMatch', () => {
     assert.deepEqual(getPlaceTypesForTag('Not A Real Tag'), []);
     assert.equal(getMatchQualityForTag('Not A Real Tag'), 'none');
     assert.equal(hasGoogleMatch('Not A Real Tag'), false);
+  });
+});
+
+describe('getPlaceTypesForCategory', () => {
+  test('includes every Restaurant tag\'s place types, deduped', () => {
+    const types = getPlaceTypesForCategory('Restaurant');
+    assert.ok(types.includes('italian_restaurant'));
+    assert.ok(types.includes('cafe'));
+    // 'Street Food' and other Restaurant tags share meal_takeaway/food_court with nothing else
+    // in this category, but the important property is no duplicates regardless of source tag.
+    assert.equal(new Set(types).size, types.length);
+  });
+
+  test('excludes types belonging to a different category', () => {
+    const restaurantTypes = getPlaceTypesForCategory('Restaurant');
+    assert.ok(!restaurantTypes.includes('museum'));
+  });
+
+  test('a category with only "none"-quality tags would return no types (sanity check via a real quality-mixed category)', () => {
+    // Activity has a mix of direct/broad/none tags — the "none" ones (Walking Tours, Bus Tours,
+    // etc.) contribute nothing, but the category as a whole still isn't empty.
+    const types = getPlaceTypesForCategory('Activity');
+    assert.ok(types.length > 0);
+    assert.ok(types.includes('museum'));
   });
 });
 

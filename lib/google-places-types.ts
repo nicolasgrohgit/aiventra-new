@@ -185,6 +185,19 @@ export function getPlaceTypesForTag(tag: string): string[] {
   return MAPPING_BY_TAG.get(tag)?.placeTypes ?? [];
 }
 
+// All distinct Google place types across a whole category's tags, deduped — used as
+// `includedTypes` for a category-scoped Nearby Search request (lib/google-places-client.ts's
+// searchNearbyPlaces) rather than fetching everything nearby and discarding the unclassified
+// majority, the way the city-wide text search (fetchGooglePlacesForCity) has to.
+export function getPlaceTypesForCategory(category: 'Restaurant' | 'Activity' | 'Event'): string[] {
+  const types = new Set<string>();
+  for (const mapping of PLACES_TYPE_MAPPINGS) {
+    if (mapping.category !== category) continue;
+    for (const t of mapping.placeTypes) types.add(t);
+  }
+  return Array.from(types);
+}
+
 export function getMatchQualityForTag(tag: string): PlacesMatchQuality {
   return MAPPING_BY_TAG.get(tag)?.quality ?? 'none';
 }

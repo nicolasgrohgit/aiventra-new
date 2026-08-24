@@ -4,6 +4,51 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
+## [0.0.30] - 2026-08-24
+### Added
+- **Live, anchor-centered nearby search, with a population-sized "near me" radius, replacing
+  the flat 5km cutoff.** Surfaced by a real case: a hotel with genuine walking-distance
+  restaurant coverage (confirmed via a direct Places API probe: real restaurants 30-150m away)
+  that never showed up, because the existing Google integration
+  (`fetchGooglePlacesForCity`) is a *city-wide* text search ("restaurants in Paris") with no
+  location bias, and `ensurePlacesForCity` only tops up a city once its *total* place count
+  drops below 5 — both blind to a specific address being under-covered while the city overall
+  looks fine.
+  - New `searchNearbyPlaces()` (`lib/google-places-client.ts`) — Places API (New) Nearby
+    Search, `rankPreference: 'DISTANCE'`, capped to the 10 closest, category-scoped via
+    `includedTypes` (new `getPlaceTypesForCategory()` in `lib/google-places-types.ts`) rather
+    than fetching broadly and discarding. Real distance computed via `haversineDistanceKm`
+    instead of the old deterministic-hash placeholder used for the city-wide search.
+  - New `resolveSearchRadiusKm(population, category)` (`lib/place-matching.ts`) — a flat
+    radius means something different in a 10M-person metro than an 8,000-person town.
+    Restaurant tiers: ≥100k pop. → 500m, 10k-100k → 2km, <10k → 5km. Activity tiers are wider
+    at every level (2km/5km/25km) — live-tested and confirmed landmarks/points of interest are
+    structurally sparser than restaurants (a 500m Activity search near the same dense-city
+    hotel returned mostly spas and hotels, not real points of interest). Population comes from
+    Open-Meteo's geocoder (`lib/geocoding.ts`'s `CityResult`, now carries `population` —
+    already fetched by every city search this app does, previously discarded).
+  - New `refreshNearbyPlacesLive()` (`lib/places-population.ts`) — fires on *every*
+    recommendation request with a real anchor point (not gated on existing coverage, unlike
+    `ensurePlacesForCity`), logs the live call's latency (`durationMs`) so a caching/skip-if-
+    fresh decision later has real numbers behind it, and upserts results into `Place` keyed on
+    a new sparse-unique `googlePlaceId` field (`models/Place.ts`) — idempotent on repeat
+    queries near the same anchor (confirmed via a real repeat-request test: no duplicate
+    documents), rather than either re-inserting forever or needing a separate cache layer yet.
+    Upserting (vs. keeping results ephemeral) also means a live-fetched place flows through the
+    exact same scoring/ranking pipeline (tag match, source bonus, tiered shuffle) as
+    curated/generated content, with no parallel scoring logic to maintain.
+  - Both recommendation endpoints (`server.ts`) now use the resolved radius for their existing
+    `$geoNear`/static-fallback distance filter too, not just the live fetch — one definition of
+    "near" per request. An explicit `maxDistanceKm` override (`recommendation.tsx`'s "Expand
+    Search Radius") still wins over the population tier, and still triggers a live refresh at
+    that radius. No `GOOGLE_PLACES_API_KEY` configured degrades to exactly today's static-DB
+    behavior at the resolved radius, silently, no request failure — confirmed by testing the
+    whole flow with no key present before the key was available.
+  - Live-verified end-to-end against a real Paris hotel with a real key: the exact restaurants
+    seen in a direct API probe (30-150m away) came back through the full recommendation
+    pipeline, correctly tagged `source: 'google'`, ranked and tiered-shuffled alongside
+    curated/generated results, in ~250ms for the live call within a ~750ms total request.
+
 ## [0.0.29] - 2026-08-23
 ### Changed
 - **A scheduled slot no longer keeps showing its unpicked alternatives.** Once a proposal card

@@ -1,4 +1,5 @@
-import { PLACES_TYPE_MAPPINGS, tagsForPlaceTypes, supportsScheduleData } from './google-places-types';
+import { PLACES_TYPE_MAPPINGS, tagsForPlaceTypes, supportsScheduleData, getPlaceTypesForCategory } from './google-places-types';
+import { haversineDistanceKm, GeoPoint } from './place-matching';
 
 // Real Google Places API (New) integration on top of the tag mapping in
 // lib/google-places-types.ts. Wired but a complete no-op until GOOGLE_PLACES_API_KEY is set —
@@ -57,6 +58,9 @@ export interface GooglePlaceDraft {
   distanceKm: number;
   source: 'google';
   location?: { type: 'Point'; coordinates: [number, number] };
+  // Google's own resource id (`places/xxxx`) — see models/Place.ts's googlePlaceId for why this
+  // is captured (idempotent upsert on repeated live nearby-search requests).
+  googlePlaceId?: string;
 }
 
 // Deterministic (not random) so the same place gets the same placeholder distance across
@@ -144,8 +148,106 @@ export async function fetchGooglePlacesForCity(
       location: typeof lat === 'number' && typeof lng === 'number'
         ? { type: 'Point', coordinates: [lng, lat] }
         : undefined,
+      googlePlaceId: typeof place.id === 'string' ? place.id : undefined,
     });
   }
 
+  return drafts;
+}
+
+const NEARBY_SEARCH_URL = 'https://places.googleapis.com/v1/places:searchNearby';
+// Nearby Search bills/returns per place, unlike Text Search's per-query cost — the mask stays
+// identical to searchText's, plus `id` (already implicitly used there via place.id, but not
+// spelled out in that FIELD_MASK since it happened to come back anyway; explicit here since
+// googlePlaceId now depends on it for the upsert-dedup key).
+const NEARBY_FIELD_MASK = 'places.id,places.displayName,places.types,places.rating,places.editorialSummary,places.location';
+// This call sits in the live recommendation-request path (server.ts), unlike searchText above
+// (population-time only, never blocks a user-facing request) — a hung request here would stall
+// someone's actual "what can I do right now" query, so it gets a real timeout searchText never
+// needed.
+const NEARBY_SEARCH_TIMEOUT_MS = 6000;
+
+/**
+ * Live, anchor-centered nearby search via Places API (New) — distinct from
+ * fetchGooglePlacesForCity's city-wide text search above, which is keyed only by city *name*
+ * and therefore has no idea where in the city a request actually needs coverage (the gap that
+ * left a real hotel with zero curated/generated coverage within walking distance, despite
+ * "Paris" overall having plenty). `rankPreference: 'DISTANCE'` + `maxResultCount` does the
+ * "keep to the N closest" work at Google's end rather than fetching broadly and discarding —
+ * cheaper and exactly what a tight radius needs.
+ *
+ * Returns [] (never throws) when no key is configured, matching fetchGooglePlacesForCity's
+ * convention — callers (lib/places-population.ts's refreshNearbyPlacesLive) are expected to
+ * catch genuine failures (network error, timeout, non-2xx) themselves, since this sits in a
+ * live request path where "swallow silently vs. let the caller log it" matters more than at
+ * population time.
+ */
+export async function searchNearbyPlaces(
+  anchor: GeoPoint,
+  radiusMeters: number,
+  category: 'Restaurant' | 'Activity',
+  maxResults: number
+): Promise<Omit<GooglePlaceDraft, 'city'>[]> {
+  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+  if (!apiKey) return [];
+
+  const includedTypes = getPlaceTypesForCategory(category);
+  if (includedTypes.length === 0) return [];
+
+  const res = await fetch(NEARBY_SEARCH_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': apiKey,
+      'X-Goog-FieldMask': NEARBY_FIELD_MASK,
+    },
+    body: JSON.stringify({
+      includedTypes,
+      maxResultCount: Math.min(maxResults, 20), // Places API (New) hard cap
+      rankPreference: 'DISTANCE',
+      locationRestriction: {
+        circle: { center: { latitude: anchor.lat, longitude: anchor.lng }, radius: radiusMeters }
+      }
+    }),
+    signal: AbortSignal.timeout(NEARBY_SEARCH_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Google Places Nearby Search error: ${res.status} ${body}`);
+  }
+  const data = await res.json();
+  const results: any[] = data.places || [];
+
+  const drafts: Omit<GooglePlaceDraft, 'city'>[] = [];
+  for (const place of results) {
+    const types: string[] = place.types || [];
+    const tags = tagsForPlaceTypes(types).filter(
+      tag => PLACES_TYPE_MAPPINGS.find(m => m.tag === tag)?.category === category
+    );
+    if (tags.length === 0) continue; // nothing in our taxonomy matched — drop, don't fabricate
+
+    const lat = place.location?.latitude;
+    const lng = place.location?.longitude;
+    if (typeof lat !== 'number' || typeof lng !== 'number') continue; // can't rank/filter by distance without it
+
+    drafts.push({
+      name: place.displayName?.text || 'Unnamed place',
+      category,
+      genre: tags[0],
+      tags: [category, ...tags],
+      rating: typeof place.rating === 'number' ? place.rating : 4.3,
+      description: place.editorialSummary?.text || `A ${category.toLowerCase()} near you (via Google Places).`,
+      estimatedDuration: DEFAULT_DURATION_MINUTES[category],
+      distanceKm: haversineDistanceKm(anchor, { lat, lng }),
+      source: 'google',
+      location: { type: 'Point', coordinates: [lng, lat] },
+      googlePlaceId: typeof place.id === 'string' ? place.id : undefined,
+    });
+  }
+
+  // rankPreference: 'DISTANCE' already sorts server-side; re-sorting here is defensive, not
+  // load-bearing — cheap insurance against relying on an unstated API guarantee, and dropped
+  // (untagged) results above could otherwise leave a non-monotonic tail.
+  drafts.sort((a, b) => a.distanceKm - b.distanceKm);
   return drafts;
 }

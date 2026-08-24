@@ -9,7 +9,7 @@ import connectToDatabase from './lib/mongodb';
 import {
   isMealWindow, flattenPreferenceTags, buildCityDurationMatchStage, buildCityDurationQuery,
   buildGeoNearStage, resolveAnchorForDate, escapeRegExp, cityNeedle, tieredShuffle,
-  SOURCE_RANK_BONUS, DEFAULT_MAX_DISTANCE_KM
+  SOURCE_RANK_BONUS, DEFAULT_MAX_DISTANCE_KM, resolveSearchRadiusKm, GeoPoint
 } from './lib/place-matching';
 import { guessTimezoneForCity } from './lib/timezones';
 import User from './models/User';
@@ -17,7 +17,8 @@ import Trip from './models/Trip';
 import Contact from './models/Contact';
 import Event from './models/Event';
 import Place from './models/Place';
-import { ensurePlacesForCity } from './lib/places-population';
+import { ensurePlacesForCity, refreshNearbyPlacesLive } from './lib/places-population';
+import { searchCities } from './lib/geocoding';
 
 dotenv.config({ quiet: true });
 
@@ -615,6 +616,42 @@ app.delete('/api/events/:id', authenticate, async (req: AuthedRequest, res: expr
   }
 });
 
+// Shared by both recommendation endpoints below. Resolves how far "near me" should actually
+// reach for this request, then — best-effort, live, every single call, not gated on existing
+// coverage — refreshes the Place collection with genuinely nearby Google results at that radius
+// before the caller's aggregation runs. Exists because a city can look well-covered in
+// aggregate (Paris: 18+ curated places) while a specific hotel has nothing walkable nearby at
+// all; ensurePlacesForCity's city-wide "is there enough, period" check can't see that gap, only
+// an anchor-centered live query can. See docs/ad-monetization.md-adjacent reasoning captured in
+// CHANGELOG.md for the real case (a central Paris hotel) that surfaced this.
+//
+// No anchor -> nothing to search "nearby" of, so this is a no-op returning the flat
+// DEFAULT_MAX_DISTANCE_KM, identical to every request's behavior before this existed.
+async function resolveRadiusAndRefreshLive(
+  city: string,
+  anchor: GeoPoint | null,
+  mealWindow: boolean,
+  req: AuthedRequest
+): Promise<number> {
+  if (!anchor) return DEFAULT_MAX_DISTANCE_KM;
+
+  // Open-Meteo's city geocoder (already used for the destination-search autocomplete) returns
+  // population for free — reused here rather than adding a second provider. A lookup failure
+  // degrades to DEFAULT_MAX_DISTANCE_KM's tier (population: null), not a failed request.
+  let population: number | null = null;
+  try {
+    const results = await searchCities(cityNeedle(city));
+    population = results[0]?.population ?? null;
+  } catch (err) {
+    req.log.warn({ err }, 'city population lookup failed, using default radius tier');
+  }
+
+  const liveCategory = mealWindow ? 'Restaurant' : 'Activity';
+  const radiusKm = resolveSearchRadiusKm(population, liveCategory);
+  await refreshNearbyPlacesLive(city, anchor, radiusKm, liveCategory);
+  return radiusKm;
+}
+
 // The blind joint-matching endpoint: ranks places against every participant's preference
 // tags via a Mongo $setIntersection aggregation, without ever returning a per-participant
 // breakdown — nobody's individual preferences leave this function, only the combined score.
@@ -651,6 +688,7 @@ app.post('/api/events/:id/recommendations', authenticate, async (req: AuthedRequ
     const mealWindow = isMealWindow(event.start_time, timezone, organizer?.preferences);
     const query = buildCityDurationQuery(trip.destination, durationMinutes, mealWindow);
     const anchor = resolveAnchorForDate(trip.baseLocations || [], event.start_time);
+    const radiusKm = await resolveRadiusAndRefreshLive(trip.destination, anchor, mealWindow, req);
 
     // Per-participant intersection-size fields are computed here but deliberately never
     // included in the final $project below — only the combined jointScore leaves this
@@ -664,8 +702,8 @@ app.post('/api/events/:id/recommendations', authenticate, async (req: AuthedRequ
     });
 
     const firstStage = anchor
-      ? buildGeoNearStage(anchor, DEFAULT_MAX_DISTANCE_KM, query)
-      : { $match: { ...query, distanceKm: { $lte: DEFAULT_MAX_DISTANCE_KM } } };
+      ? buildGeoNearStage(anchor, radiusKm, query)
+      : { $match: { ...query, distanceKm: { $lte: radiusKm } } };
 
     const places = await Place.aggregate([
       firstStage,
@@ -718,7 +756,6 @@ app.post('/api/recommendations', authenticate, async (req: AuthedRequest, res: e
     const tags = Array.isArray(tagOverride) && tagOverride.length > 0
       ? tagOverride.filter((t: any) => typeof t === 'string')
       : flattenPreferenceTags(user.preferences);
-    const effectiveMaxDistanceKm = typeof maxDistanceKm === 'number' ? maxDistanceKm : DEFAULT_MAX_DISTANCE_KM;
 
     // Real anchor point resolution, highest-precision first: an explicit override (the Home
     // tab's live device location) beats resolving from a trip's baseLocations, which beats
@@ -729,6 +766,18 @@ app.post('/api/recommendations', authenticate, async (req: AuthedRequest, res: e
     } else if (tripId) {
       const trip = await Trip.findOne({ _id: tripId, user_id: req.userId });
       if (trip) anchor = resolveAnchorForDate(trip.baseLocations || [], new Date(startTimeIso));
+    }
+
+    // An explicit maxDistanceKm (recommendation.tsx's "Expand Search Radius") always wins over
+    // the population-derived tier — still triggers a live refresh, just at the caller's chosen
+    // radius instead of computing one. Otherwise resolveRadiusAndRefreshLive sizes the radius by
+    // how dense the destination actually is and live-refreshes nearby Google results at it.
+    let effectiveMaxDistanceKm: number;
+    if (typeof maxDistanceKm === 'number') {
+      effectiveMaxDistanceKm = maxDistanceKm;
+      if (anchor) await refreshNearbyPlacesLive(city, anchor, maxDistanceKm, mealWindow ? 'Restaurant' : 'Activity');
+    } else {
+      effectiveMaxDistanceKm = await resolveRadiusAndRefreshLive(city, anchor, mealWindow, req);
     }
 
     // location included so the client can chain the next free-time slot's anchor off this

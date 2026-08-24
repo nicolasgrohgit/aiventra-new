@@ -8,6 +8,12 @@ export interface CityResult {
   admin1?: string; // region/state, when available
   latitude: number;
   longitude: number;
+  // Open-Meteo returns this on most real cities/towns for free, already fetched by every
+  // caller of this function — previously discarded. Used by lib/place-matching.ts's
+  // resolveSearchRadiusKm to size the "near me" search radius by how dense the destination
+  // actually is (a fixed radius makes no sense across a 10k-person town and a 10M-person
+  // metro). Absent for the rare geocoding result with no population data.
+  population?: number;
 }
 
 export async function searchCities(query: string): Promise<CityResult[]> {
@@ -28,5 +34,6 @@ export async function searchCities(query: string): Promise<CityResult[]> {
     admin1: r.admin1,
     latitude: r.latitude,
     longitude: r.longitude,
+    population: typeof r.population === 'number' ? r.population : undefined,
   }));
 }

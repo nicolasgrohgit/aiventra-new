@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {
   isMealWindow, getMealWindows, flattenPreferenceTags, buildCategoryFilter, escapeRegExp,
   computeMatchScore, shuffled, tieredShuffle, buildGeoNearStage, resolveAnchorForDate,
-  haversineDistanceKm, jitterCoordinates, buildCityDurationQuery
+  haversineDistanceKm, jitterCoordinates, buildCityDurationQuery, resolveSearchRadiusKm,
+  DEFAULT_MAX_DISTANCE_KM
 } from './place-matching';
 
 describe('isMealWindow', () => {
@@ -221,6 +222,48 @@ describe('tieredShuffle', () => {
   test('preserves every element, none added or dropped', () => {
     const items = [{ source: 'curated' }, { source: 'google' }, { source: 'generated' }];
     assert.deepEqual(tieredShuffle(items).length, items.length);
+  });
+});
+
+describe('resolveSearchRadiusKm', () => {
+  test('Restaurant: a real city (population >= 100k) gets a tight walking-distance radius', () => {
+    assert.equal(resolveSearchRadiusKm(2138551, 'Restaurant'), 0.5); // Paris
+  });
+
+  test('Restaurant: a mid-size town (10k-100k) gets a moderate radius', () => {
+    assert.equal(resolveSearchRadiusKm(50000, 'Restaurant'), 2);
+  });
+
+  test('Restaurant: boundary: exactly 100,000 counts as the dense tier', () => {
+    assert.equal(resolveSearchRadiusKm(100000, 'Restaurant'), 0.5);
+  });
+
+  test('Restaurant: boundary: exactly 10,000 counts as the mid tier, not the small-town tier', () => {
+    assert.equal(resolveSearchRadiusKm(10000, 'Restaurant'), 2);
+  });
+
+  test('Restaurant: a small town (< 10k) gets the widest radius', () => {
+    assert.equal(resolveSearchRadiusKm(4000, 'Restaurant'), 5);
+  });
+
+  // Activity gets wider tiers than Restaurant at every population level — landmarks/points of
+  // interest are structurally sparser than restaurants (live-tested: a 500m Activity search
+  // near a dense-city hotel returned mostly spas/hotels, not real points of interest).
+  test('Activity: a real city (population >= 100k) gets a wider radius than Restaurant would', () => {
+    assert.equal(resolveSearchRadiusKm(2138551, 'Activity'), 2);
+  });
+
+  test('Activity: a mid-size town (10k-100k)', () => {
+    assert.equal(resolveSearchRadiusKm(50000, 'Activity'), 5);
+  });
+
+  test('Activity: a small town (< 10k) gets the widest tier of all', () => {
+    assert.equal(resolveSearchRadiusKm(4000, 'Activity'), 25);
+  });
+
+  test('unknown population (geocoding miss) falls back to the flat default, regardless of category', () => {
+    assert.equal(resolveSearchRadiusKm(null, 'Restaurant'), DEFAULT_MAX_DISTANCE_KM);
+    assert.equal(resolveSearchRadiusKm(null, 'Activity'), DEFAULT_MAX_DISTANCE_KM);
   });
 });
 
