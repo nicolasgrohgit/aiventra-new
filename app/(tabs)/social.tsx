@@ -120,9 +120,10 @@ export default function SocialScreen() {
       >
         <View style={styles.overlay}>
           <View style={styles.actionSheet}>
+            <ScrollView showsVerticalScrollIndicator={false}>
             <Text style={styles.sheetTitle}>Move {selectedContact?.name}</Text>
             <Text style={styles.sheetSubtitle}>Assign them to a new Circle privacy tier.</Text>
-            
+
             <View style={styles.sheetOptionsBounds}>
               {DEFAULT_CIRCLES.map(circle => {
                 // The contact's OWN current circle(s), not the page's active filter tab —
@@ -144,6 +145,7 @@ export default function SocialScreen() {
                 );
               })}
             </View>
+            </ScrollView>
 
             <TouchableOpacity onPress={() => setSelectedContact(null)} style={styles.cancelButton}>
               <Text style={styles.cancelText}>Cancel</Text>
@@ -221,7 +223,10 @@ const styles = StyleSheet.create({
   emptyText: { color: '#64748B', fontStyle: 'italic', textAlign: 'center', marginTop: 20 },
   
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
-  actionSheet: { backgroundColor: '#0F172A', borderTopLeftRadius: 32, borderTopRightRadius: 32, padding: 24, paddingBottom: Platform.OS === 'ios' ? 48 : 24, borderWidth: 1, borderColor: '#1E293B' },
+  // maxHeight caps this the same way trips.tsx's darkActionSheet does — a longer circle list
+  // shouldn't be able to grow this sheet past the point where its content (or Cancel, on a
+  // shorter screen) gets pushed off-screen.
+  actionSheet: { backgroundColor: '#0F172A', borderTopLeftRadius: 32, borderTopRightRadius: 32, padding: 24, paddingBottom: Platform.OS === 'ios' ? 48 : 24, borderWidth: 1, borderColor: '#1E293B', maxHeight: '88%' },
   sheetTitle: { color: '#FFF', fontSize: 22, fontWeight: '800', marginBottom: 6, textAlign: 'center' },
   sheetSubtitle: { color: '#94A3B8', fontSize: 15, marginBottom: 28, textAlign: 'center' },
   sheetOptionsBounds: { backgroundColor: '#1E293B', borderRadius: 16, overflow: 'hidden' },

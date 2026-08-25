@@ -84,9 +84,11 @@ describe('tagsForPlaceTypes (reverse lookup)', () => {
   });
 
   test('a type shared by multiple tags returns all of them', () => {
-    // 'market' is the direct match for both the Activity tag "Local Markets" and the Event
-    // tag "Markets" — a real returned place can satisfy both.
-    const tags = tagsForPlaceTypes(['market']);
+    // 'flea_market' is the direct match for both the Activity tag "Local Markets" and the
+    // Event tag "Markets" — a real returned place can satisfy both. (Plain 'market' is
+    // deliberately NOT mapped to "Local Markets" — Google applies it to ordinary specialty
+    // retail too, e.g. a florist; see the note on that mapping in google-places-types.ts.)
+    const tags = tagsForPlaceTypes(['flea_market']);
     assert.ok(tags.includes('Local Markets'));
     assert.ok(tags.includes('Markets'));
   });

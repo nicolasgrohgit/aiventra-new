@@ -51,6 +51,56 @@ this is still pre-release/beta.
   is back on the original, known-working `PanResponder` implementation. Needs a proper
   on-device pass to fix the perceived slowness without repeating this breakage.
 
+### Added
+- **Trip card hero photo.** Each trip card now shows a real photo of its destination city
+  (`GET /api/places/city-photo`, new `hooks/useEvents.tsx#getCityPhoto`), reusing the same
+  per-city `Place` cache/photo proxy every recommendation query already relies on rather than
+  a dedicated Google call. Tiered selection, not just "highest-rated place with a photo": live-
+  tested against Paris, a flat rating sort surfaced a 5-star spa as the "hero" image, so
+  landmark-ish genres (Monuments, Viewpoints, Museums, Galleries, Parks) are tried first,
+  falling through to any Activity, then anything with a photo, so a city with no landmark
+  coverage yet still gets something rather than a blank card.
+- **Tap-to-navigate directly on trip proposal cards.** `trips.tsx`'s inline `PlaceCard`
+  (AI Schedule Proposals) now has its own address/Navigate row, same as the detail modal —
+  previously getting directions required opening the card first, an extra tap that mattered
+  most for a pick you'd already scheduled and just wanted directions to.
+
+### Fixed
+- **Slot proposals could look "scheduled" in a slot they were never actually scheduled in.**
+  Picking a place for one slot (e.g. a morning activity) could make a *different* slot on the
+  same day (e.g. the evening activity) collapse down to show the same place as "✓ Scheduled"
+  too — reported as "looks like it's pointing to the same thing in the DB." It wasn't: the
+  trip's `Event` collection only ever had the one document. The bug was
+  `trips.tsx`'s slot-collapse check (`isPlaceScheduled`), which matched by `place_id` alone
+  across the whole trip rather than against the specific slot's own time window — and the
+  recommendation engine can legitimately suggest the same well-known place as a candidate for
+  more than one slot in a day. New `isPlaceScheduledInSlot` scopes the check to the proposal's
+  own start/end time; the trip-wide `isPlaceScheduled` is kept as-is for the card's "✓
+  Scheduled" badge, which is intentionally not slot-scoped (see its own comment).
+- **Selecting a suggestion could crash with "CALENDAR permission is required."**
+  `app/recommendation.tsx`'s `handleSelectPlace` called `Calendar.getCalendarsAsync` directly
+  without ever requesting permission first — every other calendar touchpoint in the app
+  (`lib/calendar.ts`, the Home tab) requests permission before touching the device calendar.
+  On a fresh install with no prior grant this threw straight into the error alert. Now requests
+  permission first and falls back to the non-device-calendar "Scheduled!" confirmation if
+  denied, instead of erroring.
+- **A florist could be suggested as an "Activity."** Traced via a live Google Places lookup:
+  Google tags ordinary specialty retail (a flower shop, in the reported case) with the generic
+  `market` type alongside `florist`/`store`, and the "Local Markets" activity mapping
+  (`lib/google-places-types.ts`) included bare `market` as a trigger — far broader than the
+  "farmers market / flea market" sense intended. Removed `market` from that mapping (kept
+  `farmers_market`/`flea_market`); the already-cached stale DB record for the reported florist
+  was deleted directly.
+- **Modal "Cancel" button nearly unreachable behind the status bar.** Two custom
+  transparent/fade bottom-sheet modals (`trips.tsx`'s place-detail sheet, `social.tsx`'s "Move
+  Contact" sheet) had no height cap and no scroll container, so sufficiently long content (a
+  photo, description, address row, schedule form, and invite list, in the reported case) grew
+  the whole sheet until its header — and the Cancel button in it — got pushed up behind the
+  status bar. Every other modal in the app uses the native `pageSheet` presentation style,
+  which doesn't have this failure mode; these two custom sheets were the only ones affected.
+  Both now cap at `maxHeight: '88%'` with the body wrapped in a `ScrollView` (header/Cancel
+  pinned outside it), so the button stays reachable regardless of content length.
+
 ## [0.0.31] - 2026-08-24
 ### Added
 - **Distance, address, tap-to-navigate, and photo thumbnails on recommendation cards.**

@@ -84,7 +84,13 @@ const ACTIVITY_MAPPINGS: PlacesTypeMapping[] = [
     tag: 'Workshops', category: 'Activity', placeTypes: ['art_studio', 'cultural_center'], quality: 'broad',
     note: 'Covers venues that might host workshops, not the scheduled class itself.'
   },
-  { tag: 'Local Markets', category: 'Activity', placeTypes: ['market', 'farmers_market', 'flea_market'], quality: 'direct' },
+  {
+    tag: 'Local Markets', category: 'Activity', placeTypes: ['farmers_market', 'flea_market'], quality: 'direct',
+    note: "Google's bare 'market' type is far broader than the travel-activity sense of "
+      + "\"local market\" — live-verified it also tags plain specialty retail (e.g. a florist) "
+      + "that has nothing to do with browsing a market, so it's deliberately excluded here "
+      + "even though farmers_market/flea_market alone undercount some genuine markets."
+  },
   { tag: 'Spas', category: 'Activity', placeTypes: ['spa', 'massage_spa', 'wellness_center'], quality: 'direct' },
   {
     tag: 'Parks', category: 'Activity',

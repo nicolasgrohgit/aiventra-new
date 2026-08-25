@@ -42,6 +42,11 @@ interface EventsContextType {
   // documented on GET /api/friends-nearby in server.ts. Swallows errors to [] rather than
   // throwing, since this is a "nice to notice" discovery layer, not a blocking action.
   getFriendsNearby: (params: { city: string; startDate?: string; endDate?: string }) => Promise<any[]>;
+  // Hero photo for a trip card — the id of the highest-rated place with a real Google photo
+  // for that city (see GET /api/places/city-photo in server.ts), fed into the existing
+  // placePhotoUri()/photo-proxy pattern. Swallows errors to null, same "background nicety"
+  // reasoning as getFriendsNearby: a trip card missing its photo shouldn't surface an alert.
+  getCityPhoto: (city: string) => Promise<string | null>;
 }
 
 const notReady = () => { throw new Error('EventsProvider not mounted'); };
@@ -56,7 +61,8 @@ const EventsContext = createContext<EventsContextType>({
   deleteEvent: notReady,
   getJointRecommendations: notReady,
   getRecommendations: notReady,
-  getFriendsNearby: async () => []
+  getFriendsNearby: async () => [],
+  getCityPhoto: async () => null
 });
 
 export const useEvents = () => useContext(EventsContext);
@@ -161,6 +167,19 @@ export const EventsProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
+  const getCityPhoto = async (city: string): Promise<string | null> => {
+    try {
+      const query = new URLSearchParams({ city });
+      const res = await apiFetch(`${API_URL}/api/places/city-photo?${query.toString()}`);
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data.placeId ?? null;
+    } catch (err) {
+      console.warn('Failed to fetch city photo:', err);
+      return null;
+    }
+  };
+
   return (
     <EventsContext.Provider value={{
       fetchTripEvents,
@@ -172,7 +191,8 @@ export const EventsProvider = ({ children }: { children: ReactNode }) => {
       deleteEvent,
       getJointRecommendations,
       getRecommendations,
-      getFriendsNearby
+      getFriendsNearby,
+      getCityPhoto
     }}>
       {children}
     </EventsContext.Provider>

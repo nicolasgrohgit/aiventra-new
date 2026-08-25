@@ -98,7 +98,7 @@ export default function TripsScreen() {
   const { contacts, refreshContacts } = useContacts();
   const {
     fetchTripEvents, fetchInvitedEvents, createEvent, importTripEvents, updateEvent, respondToEvent, getJointRecommendations, getRecommendations,
-    getFriendsNearby
+    getFriendsNearby, getCityPhoto
   } = useEvents();
 
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -207,6 +207,12 @@ export default function TripsScreen() {
   // or joint-matching themselves work.
   const [nearbyFriendsByTrip, setNearbyFriendsByTrip] = useState<Record<string, NearbyFriend[]>>({});
 
+  // Trip card hero photo, keyed by trip id — fetched once per trip (see GET /api/places/
+  // city-photo) and cached here for the session; a key absent from this map means "not
+  // fetched yet", an explicit null means "fetched, no photo available for this city".
+  const [cityPhotoByTrip, setCityPhotoByTrip] = useState<Record<string, string | null>>({});
+  const fetchedCityPhotoTripIds = useRef<Set<string>>(new Set());
+
   // "AI Schedule Proposals" recommendations, keyed by `${tripId}-${slotStartIso}` and
   // fetched from the real server-side Place collection (see hooks/useAuth.tsx's
   // getRecommendations) rather than computed synchronously from a local mock array — a key
@@ -264,6 +270,19 @@ export default function TripsScreen() {
     trips.forEach(t => refreshNearbyFriends(t));
     trips.forEach(t => syncDeviceCalendarForTrip(t));
     refreshInvitedEvents();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trips]);
+
+  // One city-photo lookup per trip, cached by trip id so switching tabs/re-rendering doesn't
+  // refetch — same ref-guard shape as fetchedSlotKeys below.
+  useEffect(() => {
+    trips.forEach(trip => {
+      if (fetchedCityPhotoTripIds.current.has(trip.id)) return;
+      fetchedCityPhotoTripIds.current.add(trip.id);
+      getCityPhoto(trip.destination).then(placeId => {
+        setCityPhotoByTrip(prev => ({ ...prev, [trip.id]: placeId }));
+      });
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trips]);
 
@@ -703,11 +722,25 @@ export default function TripsScreen() {
     e.participants.find(p => p.user_id === myUserId)?.status === 'pending'
   ).length;
 
-  // Shared with the slot-proposals render loop below, which uses this same check to collapse
-  // a slot down to just its scheduled pick once one exists (see "keep only the scheduled card"
-  // note at that call site) — one definition of "scheduled" for both.
+  // Used by PlaceCard's "✓ Scheduled" badge — deliberately trip-wide (any day), not slot-scoped:
+  // a place already added anywhere on the trip should read as scheduled wherever its card
+  // reappears, so tapping "Add to Itinerary" doesn't look like a no-op.
   const isPlaceScheduled = (tripEvents: TripEvent[], placeId: string) =>
     tripEvents.some(e => e.source === 'created' && e.place_id === placeId);
+
+  // Used by the slot-collapse logic below — must be scoped to THIS slot's own time window.
+  // The recommendation engine can legitimately suggest the same place (e.g. a major attraction)
+  // as a candidate for more than one slot on the same day (morning activity AND evening
+  // activity). Without the time-window check, scheduling it for one slot made every other
+  // slot that also happened to suggest it collapse down to "✓ Scheduled" too, even though
+  // no event was ever created in that slot's window — reported as "picked it for the morning
+  // and it scheduled the evening too, must be pointing at the same DB record" when in fact
+  // there was only ever one Event document; this was a display bug, not a data bug.
+  const isPlaceScheduledInSlot = (tripEvents: TripEvent[], placeId: string, slotStart: Date, slotEnd: Date) =>
+    tripEvents.some(e =>
+      e.source === 'created' && e.place_id === placeId &&
+      new Date(e.start_time) < slotEnd && new Date(e.end_time) > slotStart
+    );
 
   const PlaceCard = ({ place, tripId, slotStart, tripEvents }: { place: PlaceRecommendation, tripId: string, slotStart: Date, tripEvents: TripEvent[] }) => {
     // A place already added to this trip (any day) looks identical to an unscheduled one
@@ -733,6 +766,22 @@ export default function TripsScreen() {
           <Text style={styles.placeDesc} numberOfLines={2}>{place.description}</Text>
         </View>
       </View>
+      {/* Same tap-to-navigate as the detail modal (buildMapsUrl always resolves, even with no
+          address), but right on the card itself — previously this required opening the detail
+          modal first, an extra tap that mattered most for an already-scheduled pick you just
+          want directions to. Nested TouchableOpacity resolves to this one over the card's own
+          onPress, same pattern as recommendation.tsx's handleNavigate. */}
+      <TouchableOpacity
+        style={styles.addressRow}
+        activeOpacity={0.7}
+        onPress={() => handleNavigate(place)}
+      >
+        <Text style={styles.addressIcon}>📍</Text>
+        <Text style={styles.placeAddressText} numberOfLines={1}>
+          {place.address || 'Get directions'}
+        </Text>
+        <Text style={styles.navigateChevron}>Navigate ›</Text>
+      </TouchableOpacity>
     </TouchableOpacity>
     );
   };
@@ -814,6 +863,13 @@ export default function TripsScreen() {
 
             return (
               <View key={trip.id} style={styles.tripCard}>
+                 {/* Highest-rated place with a real photo for this city — see GET /api/places/
+                     city-photo. Negative margins bleed it past tripCard's own padding so it
+                     spans full-width with rounded top corners matching the card (tripCard's
+                     overflow:'hidden' + borderRadius clip it), rather than sitting inset. */}
+                 {cityPhotoByTrip[trip.id] && (
+                   <Image source={{ uri: placePhotoUri(cityPhotoByTrip[trip.id]!) }} style={styles.tripHeroPhoto} />
+                 )}
                  <View style={styles.tripHeaderContainer}>
                    <TouchableOpacity style={{flex: 1}} activeOpacity={0.7} onPress={() => toggleTripCollapsed(trip.id)}>
                      <Text style={styles.destinationText}>{isCardCollapsed ? '▶' : '▼'}  {trip.destination}</Text>
@@ -961,7 +1017,7 @@ export default function TripsScreen() {
                                     // made. Collapse down to the scheduled card(s) plus "Looking
                                     // for something else?", so changing your mind is still one
                                     // tap away without the other options cluttering the row.
-                                    const scheduledRecs = slotRecs.filter(p => isPlaceScheduled(tripEvents, p.id));
+                                    const scheduledRecs = slotRecs.filter(p => isPlaceScheduledInSlot(tripEvents, p.id, proposal.startTime, proposal.endTime));
                                     const displayedRecs = scheduledRecs.length > 0 ? scheduledRecs : slotRecs.slice(0, 3);
                                     return (
                                       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.hScroll}>
@@ -1175,53 +1231,55 @@ export default function TripsScreen() {
               </TouchableOpacity>
             </View>
 
-            {selectedPlace?.place.hasPhoto && (
-              <Image source={{ uri: placePhotoUri(selectedPlace.place.id) }} style={styles.detailPhoto} />
-            )}
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {selectedPlace?.place.hasPhoto && (
+                <Image source={{ uri: placePhotoUri(selectedPlace.place.id) }} style={styles.detailPhoto} />
+              )}
 
-            <View style={styles.heroDetailsBadge}>
-               <Text style={styles.heroDetailsTarget}>
-                 {selectedPlace && displayCategory(selectedPlace.place)} • {selectedPlace?.place.estimatedDuration}m Length
-                 {selectedPlace ? ` • ${formatDistanceLabel(selectedPlace.place.distanceKm)}` : ''}
-               </Text>
-               <Text style={styles.ratingLarge}>{selectedPlace?.place.rating} ★</Text>
-            </View>
+              <View style={styles.heroDetailsBadge}>
+                 <Text style={styles.heroDetailsTarget}>
+                   {selectedPlace && displayCategory(selectedPlace.place)} • {selectedPlace?.place.estimatedDuration}m Length
+                   {selectedPlace ? ` • ${formatDistanceLabel(selectedPlace.place.distanceKm)}` : ''}
+                 </Text>
+                 <Text style={styles.ratingLarge}>{selectedPlace?.place.rating} ★</Text>
+              </View>
 
-            <Text style={styles.detailedDescText}>{selectedPlace?.place.description}</Text>
+              <Text style={styles.detailedDescText}>{selectedPlace?.place.description}</Text>
 
-            {/* Single integration point for tap-to-navigate — every card render (proposals,
-                joint-match propose flow, refine-search results) funnels through this same
-                selectedPlace modal, so wiring it up here covers all of them at once. Always
-                tappable, even with no address on curated/generated places: buildMapsUrl
-                (lib/maps-link.ts) falls back to real coordinates when available, then to a
-                name+city text query — never a dead end. */}
-            <TouchableOpacity
-              style={styles.addressRow}
-              activeOpacity={0.7}
-              onPress={() => selectedPlace && handleNavigate(selectedPlace.place)}
-            >
-              <Text style={styles.addressIcon}>📍</Text>
-              <Text style={styles.placeAddressText} numberOfLines={2}>
-                {selectedPlace?.place.address || 'Get directions'}
-              </Text>
-              <Text style={styles.navigateChevron}>Navigate ›</Text>
-            </TouchableOpacity>
+              {/* Single integration point for tap-to-navigate — every card render (proposals,
+                  joint-match propose flow, refine-search results) funnels through this same
+                  selectedPlace modal, so wiring it up here covers all of them at once. Always
+                  tappable, even with no address on curated/generated places: buildMapsUrl
+                  (lib/maps-link.ts) falls back to real coordinates when available, then to a
+                  name+city text query — never a dead end. */}
+              <TouchableOpacity
+                style={styles.addressRow}
+                activeOpacity={0.7}
+                onPress={() => selectedPlace && handleNavigate(selectedPlace.place)}
+              >
+                <Text style={styles.addressIcon}>📍</Text>
+                <Text style={styles.placeAddressText} numberOfLines={2}>
+                  {selectedPlace?.place.address || 'Get directions'}
+                </Text>
+                <Text style={styles.navigateChevron}>Navigate ›</Text>
+              </TouchableOpacity>
 
-            <View style={styles.separator} />
-            <Text style={styles.proposalsHeader}>Schedule It</Text>
+              <View style={styles.separator} />
+              <Text style={styles.proposalsHeader}>Schedule It</Text>
 
-            <Text style={styles.inputLabel}>Date</Text>
-            <NativeDatePicker value={scheduleDate} onChange={setScheduleDate} mode="date" format="date" />
+              <Text style={styles.inputLabel}>Date</Text>
+              <NativeDatePicker value={scheduleDate} onChange={setScheduleDate} mode="date" format="date" />
 
-            <Text style={styles.inputLabel}>Time</Text>
-            <NativeDatePicker value={scheduleTime} onChange={setScheduleTime} mode="time" format="time" />
+              <Text style={styles.inputLabel}>Time</Text>
+              <NativeDatePicker value={scheduleTime} onChange={setScheduleTime} mode="time" format="time" />
 
-            <Text style={styles.inputLabel}>Invite someone (optional)</Text>
-            <ContactPicker selectedId={scheduleInviteContactId} onSelect={setScheduleInviteContactId} />
+              <Text style={styles.inputLabel}>Invite someone (optional)</Text>
+              <ContactPicker selectedId={scheduleInviteContactId} onSelect={setScheduleInviteContactId} />
 
-            <TouchableOpacity style={[styles.submitBtn, {backgroundColor: '#3B82F6', marginTop: 20}]} onPress={handleAddToItinerary}>
-               <Text style={styles.submitBtnText}>Add to Itinerary</Text>
-            </TouchableOpacity>
+              <TouchableOpacity style={[styles.submitBtn, {backgroundColor: '#3B82F6', marginTop: 20}]} onPress={handleAddToItinerary}>
+                 <Text style={styles.submitBtnText}>Add to Itinerary</Text>
+              </TouchableOpacity>
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -1471,6 +1529,7 @@ const styles = StyleSheet.create({
   separator: { height: 1, backgroundColor: '#1E293B', marginVertical: 24 },
 
   tripCard: { backgroundColor: '#0F172A', padding: 24, borderRadius: 28, marginBottom: 32, borderWidth: 1, borderColor: '#1E293B', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.3, shadowRadius: 20, elevation: 8, overflow: 'hidden' },
+  tripHeroPhoto: { width: '100%', height: 140, marginTop: -24, marginHorizontal: -24, marginBottom: 16, backgroundColor: '#1E293B' },
   tripHeaderContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 },
   destinationText: { color: '#FFFFFF', fontSize: 32, fontWeight: '800', letterSpacing: -0.5 },
   dateText: { color: '#3B82F6', fontSize: 16, fontWeight: '700', marginTop: 6 },
@@ -1545,7 +1604,12 @@ const styles = StyleSheet.create({
   expandButtonText: { color: '#3B82F6', fontSize: 13, fontWeight: '800', letterSpacing: 0.5 },
 
   darkOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
-  darkActionSheet: { backgroundColor: '#0F172A', borderTopLeftRadius: 32, borderTopRightRadius: 32, padding: 24, paddingBottom: Platform.OS === 'ios' ? 48 : 24, borderWidth: 1, borderColor: '#1E293B' },
+  // maxHeight is load-bearing: without it, long content (photo + description + address +
+  // schedule form + invite list) grows the sheet until its header — and the Cancel button in
+  // it — gets pushed up behind the status bar, nearly untappable. Capped here and the body
+  // wrapped in a ScrollView (see the selectedPlace modal below) so the header stays pinned and
+  // reachable regardless of content length.
+  darkActionSheet: { backgroundColor: '#0F172A', borderTopLeftRadius: 32, borderTopRightRadius: 32, padding: 24, paddingBottom: Platform.OS === 'ios' ? 48 : 24, borderWidth: 1, borderColor: '#1E293B', maxHeight: '88%' },
   heroDetailsBadge: { backgroundColor: 'rgba(59, 130, 246, 0.1)', paddingVertical: 14, borderRadius: 14, flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 18, marginBottom: 20, borderWidth: 1, borderColor: '#3B82F630' },
   heroDetailsTarget: { color: '#3B82F6', fontSize: 14, fontWeight: '800' },
   ratingLarge: { color: '#FCD34D', fontSize: 14, fontWeight: '900' },

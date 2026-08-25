@@ -874,6 +874,43 @@ app.get('/api/places/:id/photo', async (req: AuthedRequest, res: express.Respons
   }
 });
 
+// City hero photo for a trip card: a real Google photo of a landmark in that city (an Eiffel
+// Tower for Paris, in the literal example this was built for) — no dedicated Google call
+// needed, this rides on the same per-city Place cache every recommendation query already fills
+// (ensurePlacesForCity). Tiered rather than a flat "highest-rated place with a photo" query:
+// live-tested against Paris, that flat query's #1 result was a 5-star spa — accurate, but not
+// what a city's hero photo should be. Landmark-ish Activity genres are tried first, sorted by
+// rating; only falls through to "any Activity" then "anything with a photo at all" (a real
+// restaurant/spa photo, worse than nothing? no — still beats a blank card) if the city has no
+// landmark coverage yet. Returns a Place id the client feeds straight into the existing
+// GET /api/places/:id/photo proxy — no new photo plumbing, no API key exposure. No
+// `authenticate`, matching that route's own reasoning: an opaque id, a tourist photo Google
+// already serves publicly, nothing sensitive.
+const CITY_PHOTO_LANDMARK_GENRES = ['Monuments', 'Viewpoints', 'Museums', 'Galleries', 'Parks'];
+
+app.get('/api/places/city-photo', async (req: AuthedRequest, res: express.Response) => {
+  try {
+    const city = typeof req.query.city === 'string' ? req.query.city.trim() : '';
+    if (!city) return res.status(400).json({ error: 'city is required' });
+
+    await ensurePlacesForCity(city).catch((err) => req.log.warn({ err }, 'places population failed'));
+
+    const cityFilter = { city: { $regex: escapeRegExp(cityNeedle(city)), $options: 'i' } };
+    const hasPhotoFilter = { photoRef: { $exists: true, $ne: null } };
+
+    const place =
+      await Place.findOne({ ...cityFilter, ...hasPhotoFilter, genre: { $in: CITY_PHOTO_LANDMARK_GENRES } }).sort({ rating: -1 })
+      ?? await Place.findOne({ ...cityFilter, ...hasPhotoFilter, category: 'Activity' }).sort({ rating: -1 })
+      ?? await Place.findOne({ ...cityFilter, ...hasPhotoFilter }).sort({ rating: -1 });
+
+    if (!place) return res.status(404).json({ error: 'No photo available for this city' });
+    res.json({ placeId: place._id });
+  } catch (error: any) {
+    reportError(error, req, 'city photo lookup failed');
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 4. Contacts
 app.get('/api/contacts', authenticate, async (req: AuthedRequest, res: express.Response) => {
   try {

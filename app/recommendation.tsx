@@ -88,7 +88,10 @@ export default function SuggestionsScreen() {
 
   const handleSelectPlace = async (place: PlaceRecommendation) => {
     try {
-      const calendars = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
+      const { status } = await Calendar.requestCalendarPermissionsAsync();
+      const calendars = status === 'granted'
+        ? await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT)
+        : [];
       const writableCalendars = calendars.filter(c => c.allowsModifications);
 
       if (writableCalendars.length > 0) {
