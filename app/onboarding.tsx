@@ -9,6 +9,15 @@ import { buildSwipeCandidatePool, splitTagsByDomain } from '@/lib/onboarding-tas
 
 export const COMMON_DIETS = ['Vegetarian', 'Vegan', 'Halal', 'Kosher', 'Gluten-Free', 'Keto', 'Nut-Free'];
 
+// `value` is what's actually stored (User.preferences.activityLevel) and matches the plain
+// 'Low'/'Medium'/'High' options the rest of the app already expects — `description` is
+// display-only wording, restored to match the mockup shown to the product owner.
+const PACE_OPTIONS = [
+  { value: 'Low', description: 'plenty of downtime' },
+  { value: 'Medium', description: 'a balanced day' },
+  { value: 'High', description: 'pack it in' },
+];
+
 // Replaces the old 6-step linear form (Home city, Dietary, Pace, Food, Activity, Event tastes
 // as three separate 15-chip grids) with the 4-screen flow from docs/onboarding-redesign.md:
 // Home city (unchanged) -> Pick your vibe (circle picker) -> Anything else? (capped, skippable
@@ -190,13 +199,13 @@ export default function OnboardingScreen() {
             </View>
 
             <Text style={[styles.sectionLabel, { marginTop: 12 }]}>Travel Pace</Text>
-            {['Low', 'Medium', 'High'].map(level => (
+            {PACE_OPTIONS.map(({ value, description }) => (
               <TouchableOpacity
-                 key={level}
-                 style={[styles.optionBtn, activity === level && styles.optionBtnActive]}
-                 onPress={() => setActivity(level)}
+                 key={value}
+                 style={[styles.optionBtn, activity === value && styles.optionBtnActive]}
+                 onPress={() => setActivity(value)}
               >
-                <Text style={[styles.optionText, activity === level && styles.optionTextActive]}>{level}</Text>
+                <Text style={[styles.optionText, activity === value && styles.optionTextActive]}>{value} — {description}</Text>
               </TouchableOpacity>
             ))}
           </View>

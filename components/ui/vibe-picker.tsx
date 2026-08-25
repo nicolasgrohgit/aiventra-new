@@ -218,7 +218,16 @@ export function VibePicker({ selectedTags, engagedKeys, onChange }: VibePickerPr
 const styles = StyleSheet.create({
   // Fixed-aspect-ratio stage — every circle position/size below is a percentage of this box,
   // so the whole cluster scales with device width instead of being tuned to one screen size.
-  stage: { width: '100%', aspectRatio: 0.95, position: 'relative' },
+  // `maxWidth` is load-bearing, not decorative: without it, `width: '100%'` scales the stage
+  // (and every circle's percentage size with it) to the FULL width of whatever container it's
+  // in, uncapped. Live-verified via a real browser render at a 1568px viewport: circles came
+  // out 400-533px in diameter and the cluster's bottom edge landed at ~1317px, far past the
+  // viewport — this is the confirmed root cause of "only saw one giant circle, the rest never
+  // appeared" on a real device. 420 is a generous phone-width ceiling (comfortably covers large
+  // phones like a 428px-wide iPhone Pro Max) that keeps the cluster's absolute size predictable
+  // regardless of the actual screen/container width; `alignSelf: 'center'` keeps it centered on
+  // any screen wider than that cap instead of hugging the left edge.
+  stage: { width: '100%', maxWidth: 420, alignSelf: 'center', aspectRatio: 0.95, position: 'relative' },
   slot: { position: 'absolute', aspectRatio: 1, alignItems: 'center', justifyContent: 'center' },
   dimmedSlot: { opacity: 0.45 },
   aura: { position: 'absolute', width: '130%', height: '130%', borderRadius: 999, opacity: 0.18 },

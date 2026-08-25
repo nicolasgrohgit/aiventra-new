@@ -21,6 +21,36 @@ this is still pre-release/beta.
   real base64 JPEG data URI, confirmed via a follow-up `GET` that it persists.
   Onboarding (`app/onboarding.tsx`) is untouched — out of scope, being redesigned separately.
 
+### Fixed
+- **Onboarding regressions found testing the local build on a real device.** Two bugs from
+  the "Pick your vibe" redesign (see 0.0.31's changelog entry), both live-verified via a
+  browser render of the actual app after fixing:
+  - *Travel Pace lost its mockup wording.* The Essentials screen's pace picker had regressed
+    to rendering the bare `Low`/`Medium`/`High` enum values with no accompanying description,
+    unlike `docs/onboarding-redesign.md`'s mockups. Re-added a `PACE_OPTIONS` list pairing
+    each value with its description ("plenty of downtime" / "a balanced day" / "pack it in")
+    in `app/onboarding.tsx`; only the display text changed, `activity` still stores the plain
+    enum value.
+  - *Vibe picker: only the first circle rendered, the rest never appeared.* Root cause found
+    via live DOM measurement in a browser render at a 1568px viewport:
+    `components/ui/vibe-picker.tsx`'s `stage` style was `width: '100%'` with no cap, so every
+    circle's percentage-based size scaled with the full container width — circles came out
+    400-533px in diameter and the cluster's bottom edge landed around y=1317px, far past the
+    viewport, so only the first (biggest, top-left) circle was ever visible on screen. Fixed
+    with `maxWidth: 420, alignSelf: 'center'` on `stage`, capping the cluster to a sane
+    phone-width size regardless of container width. Re-verified after the fix: all 8 circles
+    render within the viewport, and both tap-to-select and tap-to-drill-in (parent pins,
+    siblings dim, sub-tags appear) work as designed.
+
+### Known issue
+- **Swipe-refine deck feels slow.** Reported alongside the two bugs above. The standard fix —
+  migrating `components/ui/swipe-deck.tsx` from `PanResponder`/`Animated` to
+  `react-native-gesture-handler`'s `Gesture.Pan()` + `react-native-reanimated` — was
+  attempted, but live browser testing showed it broke the ✓/✕ round buttons (deck stopped
+  advancing, no errors thrown). Reverted rather than ship an unverified regression; the deck
+  is back on the original, known-working `PanResponder` implementation. Needs a proper
+  on-device pass to fix the perceived slowness without repeating this breakage.
+
 ## [0.0.31] - 2026-08-24
 ### Added
 - **Distance, address, tap-to-navigate, and photo thumbnails on recommendation cards.**

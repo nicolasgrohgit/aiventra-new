@@ -8,7 +8,7 @@
         "simulator": false
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://walks-turbo-international-cds.trycloudflare.com"
+        "EXPO_PUBLIC_API_URL": "https://dim-heroes-court-brisbane.trycloudflare.com"
       }
     },
     "production": {}
