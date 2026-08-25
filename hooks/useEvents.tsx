@@ -47,6 +47,11 @@ interface EventsContextType {
   // placePhotoUri()/photo-proxy pattern. Swallows errors to null, same "background nicety"
   // reasoning as getFriendsNearby: a trip card missing its photo shouldn't surface an alert.
   getCityPhoto: (city: string) => Promise<string | null>;
+  // Full place details by id (see GET /api/places/:id), same field shape as a
+  // /api/recommendations entry. Lets trips.tsx render a scheduled event's place even when it
+  // isn't already sitting in that slot's cached recommendations — see the fallback effect in
+  // trips.tsx for why that happens. Swallows errors to null, same reasoning as getCityPhoto.
+  getPlaceById: (placeId: string) => Promise<any | null>;
 }
 
 const notReady = () => { throw new Error('EventsProvider not mounted'); };
@@ -62,7 +67,8 @@ const EventsContext = createContext<EventsContextType>({
   getJointRecommendations: notReady,
   getRecommendations: notReady,
   getFriendsNearby: async () => [],
-  getCityPhoto: async () => null
+  getCityPhoto: async () => null,
+  getPlaceById: async () => null
 });
 
 export const useEvents = () => useContext(EventsContext);
@@ -180,6 +186,17 @@ export const EventsProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
+  const getPlaceById = async (placeId: string): Promise<any | null> => {
+    try {
+      const res = await apiFetch(`${API_URL}/api/places/${placeId}`);
+      if (!res.ok) return null;
+      return await res.json();
+    } catch (err) {
+      console.warn('Failed to fetch place by id:', err);
+      return null;
+    }
+  };
+
   return (
     <EventsContext.Provider value={{
       fetchTripEvents,
@@ -192,7 +209,8 @@ export const EventsProvider = ({ children }: { children: ReactNode }) => {
       getJointRecommendations,
       getRecommendations,
       getFriendsNearby,
-      getCityPhoto
+      getCityPhoto,
+      getPlaceById
     }}>
       {children}
     </EventsContext.Provider>

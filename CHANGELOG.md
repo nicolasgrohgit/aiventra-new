@@ -100,6 +100,21 @@ this is still pre-release/beta.
   which doesn't have this failure mode; these two custom sheets were the only ones affected.
   Both now cap at `maxHeight: '88%'` with the body wrapped in a `ScrollView` (header/Cancel
   pinned outside it), so the button stays reachable regardless of content length.
+- **A newly-scheduled place could be invisible in its own AI Schedule Proposals slot.**
+  Reported live: adding a lunch via "Looking for something else?" (refine search) left the
+  "Lunch" slot still showing "No places fit this slot yet," even though the place was really
+  scheduled — confirmed via the DB that only one `Event` existed, so this wasn't a duplicate-
+  record issue like the earlier slot-collapse bug. Root cause: `slotRecommendations` for a slot
+  is only ever populated by that slot's own original query; refine search queries
+  independently and can pick a time the original query never saw, and the render logic checked
+  `slotRecs.length === 0` before ever checking whether something was already scheduled there —
+  so an empty original result always won, regardless. Two-part fix: `handleAddToItinerary` now
+  merges a newly-scheduled place directly into every slot its time window overlaps (immediate,
+  same-session fix), and a new fallback effect covers the same case durably (e.g. after an app
+  restart, when the same in-memory merge is gone) by fetching any scheduled place missing from
+  its slot's results via a new `GET /api/places/:id` — added carefully AFTER the existing
+  literal `/api/places/city-photo` route, since Express matches routes in registration order
+  and this single-segment `:id` wildcard would otherwise have shadowed it.
 
 ## [0.0.31] - 2026-08-24
 ### Added

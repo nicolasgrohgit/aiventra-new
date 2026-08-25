@@ -911,6 +911,28 @@ app.get('/api/places/city-photo', async (req: AuthedRequest, res: express.Respon
   }
 });
 
+// Single place by id, same field shape as a /api/recommendations entry (via stripPhotoRef).
+// Needed so a slot whose OWN recommendation query came back empty can still render a place
+// that got scheduled into its time window through a different path (e.g. "Looking for
+// something else?" refine search, which queries independently) — trips.tsx falls back to this
+// when a scheduled event's place isn't already sitting in that slot's cached recommendations.
+// No `authenticate`, same reasoning as the photo proxy: an opaque id, nothing sensitive.
+//
+// Registered AFTER the literal /api/places/city-photo route above: Express matches routes in
+// registration order, and this single-segment `:id` wildcard would otherwise shadow it
+// (matching id="city-photo" and never reaching the real handler) if it came first.
+app.get('/api/places/:id', async (req: AuthedRequest, res: express.Response) => {
+  try {
+    const place = await Place.findById(req.params.id);
+    if (!place) return res.status(404).json({ error: 'Place not found' });
+    const [result] = stripPhotoRef([place]);
+    res.json({ ...result, matchScore: 0 });
+  } catch (error: any) {
+    reportError(error, req, 'place lookup failed');
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 4. Contacts
 app.get('/api/contacts', authenticate, async (req: AuthedRequest, res: express.Response) => {
   try {

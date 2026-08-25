@@ -98,7 +98,7 @@ export default function TripsScreen() {
   const { contacts, refreshContacts } = useContacts();
   const {
     fetchTripEvents, fetchInvitedEvents, createEvent, importTripEvents, updateEvent, respondToEvent, getJointRecommendations, getRecommendations,
-    getFriendsNearby, getCityPhoto
+    getFriendsNearby, getCityPhoto, getPlaceById
   } = useEvents();
 
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -219,6 +219,9 @@ export default function TripsScreen() {
   // absent from this map means "not fetched yet", an empty array means "fetched, no matches".
   const [slotRecommendations, setSlotRecommendations] = useState<Record<string, PlaceRecommendation[]>>({});
   const fetchedSlotKeys = useRef<Set<string>>(new Set());
+  // Guards the getPlaceById fallback below (keyed by `${slotKey}-${placeId}`) so a scheduled
+  // place missing from its slot's own results is only ever fetched once per slot.
+  const fetchedPlaceForSlot = useRef<Set<string>>(new Set());
 
   const myUserId = user?._id || user?.id;
 
@@ -305,7 +308,8 @@ export default function TripsScreen() {
       // rather than fetching-and-hiding.
       if (collapsedTripIds.has(trip.id)) return;
       const isExpanded = expandedTripIds.has(trip.id);
-      const importedEvents = toImportedCalendarEvents(eventsByTrip[trip.id] || []);
+      const tripEvents = eventsByTrip[trip.id] || [];
+      const importedEvents = toImportedCalendarEvents(tripEvents);
       const daySchedules = getTripDaySchedule(trip.startDate, trip.endDate, 5, trip.timezone, importedEvents, mealPrefs);
       const visibleDays = isExpanded ? daySchedules : daySchedules.slice(0, 1);
       const dismissedSlots = trip.dismissedSlots || [];
@@ -339,6 +343,34 @@ export default function TripsScreen() {
                 results = [];
                 setSlotRecommendations(prev => ({ ...prev, [key]: [] }));
               }
+            }
+
+            // Fallback for a scheduled event whose place isn't in this slot's own recommendation
+            // results — happens when it was scheduled via a path that queries independently
+            // (e.g. "Looking for something else?" refine search) rather than picked from these
+            // exact results. handleAddToItinerary merges same-session picks into
+            // slotRecommendations immediately, but that merge doesn't survive an app restart —
+            // this effect is what makes it durable, fetching the place directly by id so the
+            // slot doesn't fall back to "No places fit this slot yet" despite having a real
+            // scheduled pick. See CHANGELOG for the "just added a lunch and it doesn't show up"
+            // report this fixes.
+            const missingScheduled = tripEvents.filter((e: TripEvent) =>
+              e.source === 'created' && e.place_id &&
+              new Date(e.start_time) < proposal.endTime && new Date(e.end_time) > proposal.startTime &&
+              !(results || []).some(p => p.id === e.place_id)
+            );
+            for (const event of missingScheduled) {
+              const fetchKey = `${key}-${event.place_id}`;
+              if (fetchedPlaceForSlot.current.has(fetchKey)) continue;
+              fetchedPlaceForSlot.current.add(fetchKey);
+              getPlaceById(event.place_id!).then(place => {
+                if (!place) return;
+                setSlotRecommendations(prev => {
+                  const existing = prev[key] || [];
+                  if (existing.some(p => p.id === place._id)) return prev;
+                  return { ...prev, [key]: [{ ...place, id: place._id }, ...existing] };
+                });
+              });
             }
 
             const topPickCoords = results?.[0]?.location?.coordinates;
@@ -553,7 +585,38 @@ export default function TripsScreen() {
         placeName: selectedPlace.place.name,
         participantContactIds: scheduleInviteContactId ? [scheduleInviteContactId] : []
       });
-      await refreshTripEvents(selectedPlace.tripId);
+
+      const tripId = selectedPlace.tripId;
+      const scheduledPlace = selectedPlace.place;
+      const events = await fetchTripEvents(tripId).catch(() => eventsByTrip[tripId] || []);
+      setEventsByTrip(prev => ({ ...prev, [tripId]: events }));
+
+      // Merge the just-scheduled place into whichever AI Schedule Proposals slot(s) its new
+      // time window now overlaps — even if that slot's own original query never surfaced it
+      // (e.g. it was found via "Looking for something else?" refine search instead, which
+      // queries independently and can pick a time the original slot query never saw). Without
+      // this, slotRecommendations for that slot stays whatever it was BEFORE this place
+      // existed — reported live as "just added a lunch and it doesn't show up": the slot kept
+      // rendering "No places fit this slot yet" because that branch runs before the
+      // scheduled-item check ever gets a chance, and slotRecommendations is otherwise only
+      // ever populated by each slot's own original fetch.
+      const trip = trips.find(t => t.id === tripId);
+      if (trip) {
+        const daySchedules = getTripDaySchedule(trip.startDate, trip.endDate, 5, trip.timezone, toImportedCalendarEvents(events), mealPrefs);
+        daySchedules.forEach(day => {
+          day.freeSlots.flatMap(slot => expandSlotForProposals(slot, trip.timezone, mealPrefs)).forEach(proposal => {
+            if (finalStart < proposal.endTime && finalEnd > proposal.startTime) {
+              const key = `${tripId}-${proposal.startTime.toISOString()}-${proposal.type}`;
+              setSlotRecommendations(prev => {
+                const existing = prev[key] || [];
+                if (existing.some(p => p.id === scheduledPlace.id)) return prev;
+                return { ...prev, [key]: [scheduledPlace, ...existing] };
+              });
+            }
+          });
+        });
+      }
+
       const invitedName = scheduleInviteContactId
         ? contacts.find((c: any) => c.id === scheduleInviteContactId)?.name
         : null;
