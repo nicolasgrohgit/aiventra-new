@@ -68,7 +68,13 @@ const DURATION_OPTIONS = [60, 90, 120, 180];
 // solo-recommendation endpoint scores against (see flattenPreferenceTags in
 // lib/place-matching.ts), just offered as an in-the-moment override instead of the user's
 // saved preference profile.
-const REFINE_TAG_GROUPS = [...FOOD_GENRES_CATEGORIZED, ...ACTIVITY_GENRES_CATEGORIZED, ...EVENT_GENRES_CATEGORIZED];
+// Split by the same meal/non-meal dichotomy buildCategoryFilter (lib/place-matching.ts) already
+// applies server-side: a meal-window slot only ever gets Restaurant results back, so showing
+// Activity/Event tags (e.g. "Walking Tours") as options there was always going to search for
+// something the slot could never actually surface — reported live as bubbles that "don't care
+// about" mismatching what was actually being searched for.
+const REFINE_TAG_GROUPS_MEAL = FOOD_GENRES_CATEGORIZED;
+const REFINE_TAG_GROUPS_NON_MEAL = [...ACTIVITY_GENRES_CATEGORIZED, ...EVENT_GENRES_CATEGORIZED];
 
 const formatTripDate = (d: Date, tz: string) => d.toLocaleDateString('en-CA', { timeZone: tz });
 
@@ -152,7 +158,7 @@ export default function TripsScreen() {
   // "Looking for something else?" — a refined-search flow, pre-filled with the day/destination
   // context from wherever it was tapped, letting the user override the time window and/or
   // narrow to specific tags for just this one search (see handleRefineSearch below).
-  const [refineSearchContext, setRefineSearchContext] = useState<{ tripId: string, destination: string, dayLabel: string, date: Date } | null>(null);
+  const [refineSearchContext, setRefineSearchContext] = useState<{ tripId: string, destination: string, dayLabel: string, date: Date, mealWindow: boolean } | null>(null);
   const [refineDuration, setRefineDuration] = useState(90);
   const [refineTime, setRefineTime] = useState(new Date());
   const [refineTags, setRefineTags] = useState<string[]>([]);
@@ -674,8 +680,8 @@ export default function TripsScreen() {
 
   const closeProposeModal = () => setProposeTripId(null);
 
-  const openRefineSearch = (trip: TripMock, day: { dayLabel: string, date: Date }) => {
-    setRefineSearchContext({ tripId: trip.id, destination: trip.destination, dayLabel: day.dayLabel, date: day.date });
+  const openRefineSearch = (trip: TripMock, day: { dayLabel: string, date: Date }, mealWindow: boolean) => {
+    setRefineSearchContext({ tripId: trip.id, destination: trip.destination, dayLabel: day.dayLabel, date: day.date, mealWindow });
     setRefineDuration(90);
     const defaultTime = new Date(day.date);
     defaultTime.setHours(12, 0, 0, 0);
@@ -851,11 +857,11 @@ export default function TripsScreen() {
 
   // "Looking for something else?" — appended after the real suggestions (or shown alone when
   // there are none), opens a placeholder modal pre-filled with this day/destination.
-  const RefineSearchCard = ({ trip, day }: { trip: TripMock, day: { dayLabel: string, date: Date } }) => (
+  const RefineSearchCard = ({ trip, day, mealWindow }: { trip: TripMock, day: { dayLabel: string, date: Date }, mealWindow: boolean }) => (
     <TouchableOpacity
       style={styles.refineCard}
       activeOpacity={0.8}
-      onPress={() => openRefineSearch(trip, day)}
+      onPress={() => openRefineSearch(trip, day, mealWindow)}
     >
       <Text style={styles.refineCardIcon}>🔍</Text>
       <Text style={styles.refineCardText}>Looking for{'\n'}something else?</Text>
@@ -1071,7 +1077,7 @@ export default function TripsScreen() {
                                     <>
                                       <Text style={styles.emptyText}>No places fit this slot yet.</Text>
                                       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.hScroll}>
-                                        <RefineSearchCard trip={trip} day={day} />
+                                        <RefineSearchCard trip={trip} day={day} mealWindow={proposal.type === 'meal'} />
                                       </ScrollView>
                                     </>
                                   ) : (() => {
@@ -1087,7 +1093,7 @@ export default function TripsScreen() {
                                         {displayedRecs.map(p => (
                                           <PlaceCard key={`${proposal.startTime.getTime()}-${p.id}`} place={p} tripId={trip.id} slotStart={proposal.startTime} tripEvents={tripEvents} />
                                         ))}
-                                        <RefineSearchCard trip={trip} day={day} />
+                                        <RefineSearchCard trip={trip} day={day} mealWindow={proposal.type === 'meal'} />
                                       </ScrollView>
                                     );
                                   })()}
@@ -1388,7 +1394,7 @@ export default function TripsScreen() {
                     </View>
 
                     <Text style={styles.inputLabel}>What are you in the mood for? (optional)</Text>
-                    {REFINE_TAG_GROUPS.map(group => (
+                    {(refineSearchContext.mealWindow ? REFINE_TAG_GROUPS_MEAL : REFINE_TAG_GROUPS_NON_MEAL).map(group => (
                       <View key={group.type} style={{ marginBottom: 16 }}>
                         <Text style={styles.tagGroupLabel}>{group.type}</Text>
                         <View style={styles.tagPillRow}>
@@ -1672,7 +1678,11 @@ const styles = StyleSheet.create({
   // it — gets pushed up behind the status bar, nearly untappable. Capped here and the body
   // wrapped in a ScrollView (see the selectedPlace modal below) so the header stays pinned and
   // reachable regardless of content length.
-  darkActionSheet: { backgroundColor: '#0F172A', borderTopLeftRadius: 32, borderTopRightRadius: 32, padding: 24, paddingBottom: Platform.OS === 'ios' ? 48 : 24, borderWidth: 1, borderColor: '#1E293B', maxHeight: '88%' },
+  // paddingTop (36, vs. the 24 every other side uses) and a lower maxHeight cap (82%, down
+  // from 88%) both push the header/Cancel further from the status bar than the first pass at
+  // this fix did — still too close to the top on a real device even with the height cap and
+  // ScrollView in place, reported live.
+  darkActionSheet: { backgroundColor: '#0F172A', borderTopLeftRadius: 32, borderTopRightRadius: 32, paddingHorizontal: 24, paddingTop: 36, paddingBottom: Platform.OS === 'ios' ? 48 : 24, borderWidth: 1, borderColor: '#1E293B', maxHeight: '82%' },
   heroDetailsBadge: { backgroundColor: 'rgba(59, 130, 246, 0.1)', paddingVertical: 14, borderRadius: 14, flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 18, marginBottom: 20, borderWidth: 1, borderColor: '#3B82F630' },
   heroDetailsTarget: { color: '#3B82F6', fontSize: 14, fontWeight: '800' },
   ratingLarge: { color: '#FCD34D', fontSize: 14, fontWeight: '900' },

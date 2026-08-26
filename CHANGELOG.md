@@ -4,8 +4,14 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
-## [Unreleased]
+## [0.0.32] - 2026-08-26
 ### Added
+- **Real app icon.** Replaced the stock Expo template icon/splash/adaptive-icon assets (the
+  blueprint-guide "A" logo, mistaken live for a leftover default) across `icon.png`,
+  `splash-icon.png`, the three `android-icon-*.png` adaptive-icon layers, and `favicon.png`
+  with an actual Odys.ai mark — a map-pin silhouette (blue gradient, `#60A5FA`→`#3B82F6`,
+  matching the app's existing accent color) with a white center dot, on the app's own navy
+  (`#0F172A`). No new dependencies — generated as flat PNGs, no vector/SVG asset introduced.
 - **Profile picture picker** (`app/(tabs)/profile.tsx`): tap the avatar to take a photo or
   choose one from the library (`expo-image-picker`, `allowsEditing`/`aspect: [1,1]` square
   crop) and set it as your profile picture. No object storage exists anywhere in this stack
@@ -115,6 +121,24 @@ this is still pre-release/beta.
   its slot's results via a new `GET /api/places/:id` — added carefully AFTER the existing
   literal `/api/places/city-photo` route, since Express matches routes in registration order
   and this single-segment `:id` wildcard would otherwise have shadowed it.
+- **"Looking for something else?" showed every taxonomy tag regardless of what the slot could
+  actually return.** Reported live against a Paris trip: refining a restaurant search showed
+  Activity/Event tags like "Walking Tours" right alongside Food ones like "Japanese" — options
+  that slot could never surface, since a meal-window slot only ever queries Restaurant places
+  server-side (`buildCategoryFilter` in `lib/place-matching.ts`). `REFINE_TAG_GROUPS` combined
+  all three taxonomies unconditionally, with no notion of which kind of slot opened it. Split
+  into `REFINE_TAG_GROUPS_MEAL` (Food only) and `REFINE_TAG_GROUPS_NON_MEAL` (Activity + Event),
+  threaded a `mealWindow` flag from the originating proposal's `type` through
+  `RefineSearchCard` → `openRefineSearch` → `refineSearchContext`, and picked the matching group
+  at render — the same meal/non-meal dichotomy the server-side filter already uses, just
+  applied to which tags are even offered.
+- **Modal "Cancel"/header still too close to the status bar after yesterday's fix.** The
+  `maxHeight`+`ScrollView` fix (see the entry above under [0.0.31]) capped the sheet's overall
+  height but left the header flush against its own top edge, which could still land close to
+  the status bar on a real device once content pushed the sheet near its cap. Both
+  `trips.tsx`'s `darkActionSheet` and `social.tsx`'s `actionSheet` now use an explicit
+  `paddingTop: 36` (vs. 24 on every other side) and a lower `maxHeight: '82%'` (down from 88%),
+  giving the header more breathing room from the top regardless of content length.
 
 ## [0.0.31] - 2026-08-24
 ### Added
