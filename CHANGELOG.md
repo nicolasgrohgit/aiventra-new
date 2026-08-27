@@ -4,7 +4,7 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
-## [Unreleased]
+## [0.0.33] - 2026-08-27
 ### Added
 - **Real friend-request flow for Circles**, replacing what used to be a purely one-sided
   system. Previously, adding someone as a contact was entirely unilateral (`POST
