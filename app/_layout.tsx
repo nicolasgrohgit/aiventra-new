@@ -10,6 +10,7 @@ import { AuthProvider, useAuth } from '@/hooks/useAuth';
 import { TripsProvider } from '@/hooks/useTrips';
 import { ContactsProvider } from '@/hooks/useContacts';
 import { EventsProvider } from '@/hooks/useEvents';
+import { FriendRequestsProvider } from '@/hooks/useFriendRequests';
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -70,17 +71,21 @@ function RootLayout() {
   const colorScheme = useColorScheme();
 
   return (
-    // AuthProvider wraps the others — Trips/Contacts/Events each react to the current user
-    // from AuthProvider to sync/clear their own data (see docs/useauth-split-plan.md). Order
-    // among Trips/Contacts/Events doesn't matter functionally, none depend on each other.
+    // AuthProvider wraps the others — Trips/Contacts/Events/FriendRequests each react to the
+    // current user from AuthProvider to sync/clear their own data (see
+    // docs/useauth-split-plan.md). Order among them doesn't matter functionally, none depend
+    // on each other. FriendRequestsProvider is stateless like EventsProvider (no local cache
+    // to sync/clear), so it's placed alongside it.
     <AuthProvider>
       <TripsProvider>
         <ContactsProvider>
           <EventsProvider>
-            <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-              <InitialLayout />
-              <StatusBar style="auto" />
-            </ThemeProvider>
+            <FriendRequestsProvider>
+              <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+                <InitialLayout />
+                <StatusBar style="auto" />
+              </ThemeProvider>
+            </FriendRequestsProvider>
           </EventsProvider>
         </ContactsProvider>
       </TripsProvider>

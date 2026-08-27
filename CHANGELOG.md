@@ -5,6 +5,30 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 this is still pre-release/beta.
 
 ## [Unreleased]
+### Added
+- **Real friend-request flow for Circles**, replacing what used to be a purely one-sided
+  system. Previously, adding someone as a contact was entirely unilateral (`POST
+  /api/contacts`) and linking a pending invite to a real account required manually running
+  `npm run link-contact <email>` from a terminal — there was no in-app consent step, and no
+  way for both sides to end up filed under *different* circles automatically. New
+  `FriendRequest` model + endpoints (`POST /api/friend-requests`, `GET /api/friend-requests/
+  incoming`, `GET /api/friend-requests/sent`, `PUT /api/friend-requests/:id/respond`):
+  sending a request requires the recipient to already have an Odys.ai account (looked up by
+  email — the existing invite-by-email flow stays as the tool for someone who hasn't joined
+  yet, unchanged); the sender picks their own circle for the recipient at send time, and the
+  recipient independently picks their own circle for the sender at accept time — accepting
+  creates both `Contact` documents in one transaction. Circles tab now shows a "Friend
+  Requests" section with a count badge (in-app only — no push notification infra exists
+  anywhere in this app, and building real push is a separate, much bigger lift: device
+  tokens, `expo-notifications`, server-side push sending) and Accept/Decline actions, the
+  Accept flow opening a circle picker for the recipient's own choice. New "Add Friend" mode
+  alongside the existing "Invite by Email" in the "+" modal.
+  Live-verified end-to-end against the real backend and MongoDB (not just unit tests): two
+  throwaway accounts, a real request sent, accepted with deliberately different circle tags
+  on each side, confirmed via direct DB query that both reciprocal `Contact` documents exist
+  with the correct, independent `circle_tags` — exactly the "each side files the other under
+  their own circle" case this was built for. Test data cleaned up afterward.
+
 ### Fixed
 - **Switching vibes while drilled in required two taps on a nearly-invisible edge circle.**
   Reported live: after drilling into a vibe (e.g. Foodie), tapping one of the small dimmed

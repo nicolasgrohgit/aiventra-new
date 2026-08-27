@@ -16,6 +16,7 @@ import User from './models/User';
 import Trip from './models/Trip';
 import Contact from './models/Contact';
 import Event from './models/Event';
+import FriendRequest from './models/FriendRequest';
 import Place from './models/Place';
 import { ensurePlacesForCity, refreshNearbyPlacesLive } from './lib/places-population';
 import { searchCities } from './lib/geocoding';
@@ -1001,6 +1002,148 @@ app.delete('/api/contacts/:id', authenticate, async (req: AuthedRequest, res: ex
     res.json({ success: true, message: 'Contact deleted successfully' });
   } catch (error: any) {
     reportError(error, req, 'delete contact failed');
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 4b. Friend requests — real-account-to-real-account consent step for becoming contacts.
+// Deliberately separate from POST /api/contacts (the invite-by-email flow for someone who
+// doesn't have an account yet, see app/(tabs)/social.tsx's Invite modal): a FriendRequest
+// only ever targets an existing User, looked up by email, and requires the recipient to
+// accept before any Contact document is created — invite-by-email stays unilateral by
+// design, this is not.
+app.post('/api/friend-requests', authenticate, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    const { toEmail, circleTag } = req.body;
+    if (!toEmail || !circleTag) {
+      return res.status(400).json({ error: 'toEmail and circleTag are required' });
+    }
+
+    const toUser = await User.findOne({ email: toEmail });
+    if (!toUser) {
+      // Real-account-to-real-account only, by design (see models/FriendRequest.ts) — if
+      // nobody has signed up with this email yet, tell the sender clearly rather than
+      // silently creating a request nobody can ever see. The invite-by-email flow (POST
+      // /api/contacts) is the right tool for that case instead.
+      return res.status(404).json({ error: 'No Odys.ai account exists for that email yet. Invite them by email instead — you can send a friend request once they join.' });
+    }
+    if (toUser._id.toString() === req.userId) {
+      return res.status(400).json({ error: "You can't send a friend request to yourself" });
+    }
+
+    // Block duplicate pending requests in EITHER direction between these two users, rather
+    // than treating an opposite-direction pending request as an implicit accept — accepting
+    // is a deliberate act that also requires the recipient to choose their own circle_tag
+    // (see /respond below), so it shouldn't happen implicitly as a side effect of someone
+    // else also trying to add them.
+    const existing = await FriendRequest.findOne({
+      status: 'pending',
+      $or: [
+        { from_user_id: req.userId, to_user_id: toUser._id },
+        { from_user_id: toUser._id, to_user_id: req.userId }
+      ]
+    });
+    if (existing) {
+      return res.status(400).json({ error: 'You already have a pending friend request with this person' });
+    }
+
+    const request = await FriendRequest.create({
+      from_user_id: req.userId,
+      to_user_id: toUser._id,
+      circle_tag: circleTag,
+      status: 'pending'
+    });
+    req.log.info({ event: 'friend_request_sent', userId: req.userId, toUserId: toUser._id.toString(), requestId: request._id.toString() }, 'friend request sent');
+    res.json(request);
+  } catch (error: any) {
+    reportError(error, req, 'send friend request failed');
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/friend-requests/incoming', authenticate, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    const requests = await FriendRequest.find({ to_user_id: req.userId, status: 'pending' })
+      .populate('from_user_id', 'full_name email avatar_url')
+      .sort({ createdAt: -1 });
+    res.json(requests);
+  } catch (error: any) {
+    reportError(error, req, 'list incoming friend requests failed');
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/friend-requests/sent', authenticate, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    const requests = await FriendRequest.find({ from_user_id: req.userId, status: 'pending' })
+      .populate('to_user_id', 'full_name email avatar_url')
+      .sort({ createdAt: -1 });
+    res.json(requests);
+  } catch (error: any) {
+    reportError(error, req, 'list sent friend requests failed');
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/friend-requests/:id/respond', authenticate, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    const { status, circleTag } = req.body;
+    if (status !== 'accepted' && status !== 'declined') {
+      return res.status(400).json({ error: 'status must be "accepted" or "declined"' });
+    }
+    if (status === 'accepted' && !circleTag) {
+      return res.status(400).json({ error: 'circleTag is required to accept a friend request' });
+    }
+
+    // Scoped to to_user_id so only the recipient can respond — mirrors the participant
+    // scoping on PUT /api/events/:id/respond.
+    const request = await FriendRequest.findOne({ _id: req.params.id, to_user_id: req.userId, status: 'pending' });
+    if (!request) {
+      return res.status(404).json({ error: 'Friend request not found' });
+    }
+
+    if (status === 'declined') {
+      request.status = 'declined';
+      await request.save();
+      return res.json(request);
+    }
+
+    // Accepted: create the reciprocal Contact pair in one go. Each side gets to file the
+    // other under their own choice of circle — the sender already chose theirs when they
+    // sent the request (request.circle_tag), the recipient chooses theirs right now
+    // (circleTag from the request body), independently. This is the one place in the app
+    // that links two real accounts as contacts of each other automatically.
+    const [fromUser, toUser] = await Promise.all([
+      User.findById(request.from_user_id),
+      User.findById(request.to_user_id)
+    ]);
+    if (!fromUser || !toUser) {
+      return res.status(404).json({ error: 'One of the users in this request no longer exists' });
+    }
+
+    await Promise.all([
+      Contact.create({
+        owner_user_id: request.from_user_id,
+        contact_user_id: request.to_user_id,
+        name: toUser.full_name || toUser.email,
+        email: toUser.email,
+        circle_tags: [request.circle_tag]
+      }),
+      Contact.create({
+        owner_user_id: request.to_user_id,
+        contact_user_id: request.from_user_id,
+        name: fromUser.full_name || fromUser.email,
+        email: fromUser.email,
+        circle_tags: [circleTag]
+      })
+    ]);
+
+    request.status = 'accepted';
+    await request.save();
+    req.log.info({ event: 'friend_request_accepted', userId: req.userId, requestId: request._id.toString() }, 'friend request accepted');
+    res.json(request);
+  } catch (error: any) {
+    reportError(error, req, 'respond to friend request failed');
     res.status(500).json({ error: error.message });
   }
 });
