@@ -147,10 +147,9 @@ export function VibePicker({ selectedTags, engagedKeys, onChange }: VibePickerPr
 
   const parent = path.length > 0 ? nodeAtPath(tree, path) : null;
 
-  // A tap on a node found directly in `tree` (top level, or an edge/context circle while
-  // drilled in) always resolves the drill-down path to just that node — these are siblings
-  // of each other, not nested. A tap on one of the current parent's `children` appends to the
-  // path instead. Both call through the same generic tapNode/shouldDrillIn logic either way.
+  // A tap on a node found directly in `tree` (top level) or on one of the current parent's
+  // `children` (isChildOfParent) always resolves the drill-down path by appending/replacing
+  // as appropriate. Both call through the same generic tapNode/shouldDrillIn logic either way.
   const handleTap = (node: CircleNode, isChildOfParent: boolean) => {
     const result = tapNode(node, selectedTags, engagedKeys);
     if (result.selectedTags !== selectedTags || result.engagedKeys !== engagedKeys) {
@@ -162,6 +161,24 @@ export function VibePicker({ selectedTags, engagedKeys, onChange }: VibePickerPr
     } else if (!isNodeActive(node, selectedTags, engagedKeys)) {
       Haptics.selectionAsync().catch(() => {});
     }
+  };
+
+  // The small dimmed circles shown around the edge while already drilled into a vibe are a
+  // "switch to a different one" affordance, not a "browse casually" one — the user has already
+  // committed to explore mode by drilling into the first vibe. Reusing handleTap here would
+  // mean an unselected sibling's first tap only seeds its bundle silently (no visible change
+  // beyond a small dimmed circle's own highlight) while the view stays on the current vibe,
+  // requiring a SECOND tap on that same tiny edge circle to actually switch to it — reported
+  // live as "I can't exit to select more, I can only click next." One tap here always both
+  // selects (if needed — tapNode is a no-op on an already-active node) AND switches the
+  // drilled-in view to that sibling in the same gesture.
+  const handleEdgeSiblingTap = (node: CircleNode) => {
+    const result = tapNode(node, selectedTags, engagedKeys);
+    if (result.selectedTags !== selectedTags || result.engagedKeys !== engagedKeys) {
+      onChange(result);
+    }
+    Haptics.selectionAsync().catch(() => {});
+    setPath([node.key]);
   };
 
   if (!parent) {
@@ -196,7 +213,7 @@ export function VibePicker({ selectedTags, engagedKeys, onChange }: VibePickerPr
           slot={EDGE_LAYOUT[i % EDGE_LAYOUT.length]}
           active={isNodeActive(node, selectedTags, engagedKeys)}
           dimmed
-          onPress={() => handleTap(node, false)}
+          onPress={() => handleEdgeSiblingTap(node)}
         />
       ))}
 

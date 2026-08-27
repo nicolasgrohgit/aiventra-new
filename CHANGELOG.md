@@ -4,6 +4,20 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
+## [Unreleased]
+### Fixed
+- **Switching vibes while drilled in required two taps on a nearly-invisible edge circle.**
+  Reported live: after drilling into a vibe (e.g. Foodie), tapping one of the small dimmed
+  sibling circles around the edge only silently selected it — the view stayed on Foodie, with
+  no visible feedback beyond a faint highlight on a tiny circle, and switching to actually see
+  that sibling's own sub-tags needed a second tap on that same small target. `VibePicker`
+  (`components/ui/vibe-picker.tsx`) reused the top-level `handleTap` (select-then-drill-in-on-
+  next-tap) for these edge circles too, but that two-step dance makes sense for the initial
+  flat browsing grid, not for switching between vibes once already committed to "explore mode."
+  New `handleEdgeSiblingTap` always selects (if needed) AND switches the drilled-in view to
+  that sibling in one tap. Live-verified: tapping "Outdoors & Active" while drilled into Foodie
+  now immediately pins Outdoors and shows its own sub-tags, no second tap needed.
+
 ## [0.0.32] - 2026-08-26
 ### Added
 - **Real app icon.** Replaced the stock Expo template icon/splash/adaptive-icon assets (the
