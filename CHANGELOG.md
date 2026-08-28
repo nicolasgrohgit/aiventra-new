@@ -4,7 +4,7 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
-## [Unreleased]
+## [0.0.34] - 2026-08-28
 ### Changed
 - **Vibe-picker "‹ Back" replaced with tap-anywhere-outside-a-circle.** Reported live: the
   small text link (floating above the stage's own top edge with a 12pt hit-slop) was "really
