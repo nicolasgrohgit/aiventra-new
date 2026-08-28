@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, SafeAreaView, TextInput, ScrollView, Alert } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { StyleSheet, View, Text, TouchableOpacity, Pressable, SafeAreaView, TextInput, ScrollView, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/hooks/useAuth';
 import { searchCities, CityResult } from '@/lib/geocoding';
-import { VibePicker } from '@/components/ui/vibe-picker';
+import { VibePicker, VibePickerHandle } from '@/components/ui/vibe-picker';
 import { SwipeDeck } from '@/components/ui/swipe-deck';
 import { buildSwipeCandidatePool, splitTagsByDomain } from '@/lib/onboarding-taste';
 
@@ -43,6 +43,9 @@ export default function OnboardingScreen() {
   // from tasteTags because the same real tag can be seeded by more than one vibe (see
   // lib/onboarding-taste.ts's isNodeActive doc comment for why this matters).
   const [engagedVibeKeys, setEngagedVibeKeys] = useState<string[]>([]);
+  // Backs the "tap anywhere outside a circle to go back" gesture below — replaces the old
+  // in-picker "‹ Back" text link, reported live as "really badly placed, I almost missed it."
+  const vibePickerRef = useRef<VibePickerHandle>(null);
 
   // Computed once when entering step 3, not recomputed on every render, so swiping through
   // the deck doesn't shuffle the remaining cards' order out from under the user.
@@ -161,15 +164,24 @@ export default function OnboardingScreen() {
         )}
 
         {step === 2 && (
-          <View style={styles.stepContainer}>
+          // Wrapping the whole step in a Pressable — rather than relying on the small
+          // in-picker "‹ Back" link this replaced — means any tap that lands outside an
+          // actual circle (empty space around/between them, or this title/subtitle text)
+          // backs out of a drilled-in vibe. A circle's own Pressable still claims its own
+          // taps first (RN's touch responder system resolves to the most specific view under
+          // the touch), so this never fights with picking/drilling into a circle — it only
+          // ever fires on genuine "outside" taps. goBack() itself no-ops (returns false) at
+          // the top level, so this is always safe to fire regardless of drill state.
+          <Pressable style={styles.stepContainer} onPress={() => vibePickerRef.current?.goBack()}>
             <Text style={styles.title}>Pick your vibe.</Text>
-            <Text style={styles.subtitle}>Tap a circle to add it — tap it again to fine-tune what it covers. Pick as many as feel right.</Text>
+            <Text style={styles.subtitle}>Tap a circle to add it — tap it again to fine-tune what it covers. Tap outside a circle to go back. Pick as many as feel right.</Text>
             <VibePicker
+              ref={vibePickerRef}
               selectedTags={tasteTags}
               engagedKeys={engagedVibeKeys}
               onChange={(next) => { setTasteTags(next.selectedTags); setEngagedVibeKeys(next.engagedKeys); }}
             />
-          </View>
+          </Pressable>
         )}
 
         {step === 3 && (

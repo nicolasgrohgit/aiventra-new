@@ -4,6 +4,22 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
+## [Unreleased]
+### Changed
+- **Vibe-picker "‹ Back" replaced with tap-anywhere-outside-a-circle.** Reported live: the
+  small text link (floating above the stage's own top edge with a 12pt hit-slop) was "really
+  badly placed, I almost missed it." Removed entirely — `VibePicker` now exposes a `goBack()`
+  method via `forwardRef`/`useImperativeHandle`, and `app/onboarding.tsx` wraps the whole step
+  (title, subtitle, and the picker itself) in a `Pressable` that calls it. Any tap that isn't
+  claimed by a circle's own `Pressable` — the gaps between/around circles, or the title/
+  subtitle text — now backs out of a drilled-in vibe; this relies on no special wiring beyond
+  React Native's ordinary touch-responder resolution (the most specific view under a touch
+  always claims it first), the same behavior `Circle`'s own Pressables already depend on.
+  `goBack()` no-ops at the top level, so this is always safe to fire regardless of drill
+  state. Not live-verified in a browser this round (the browser automation tooling was
+  erroring at the CDP level, unrelated to this change) — `tsc`/tests are clean and the pattern
+  is standard, but treat this as needing an on-device pass before considering it fully closed.
+
 ## [0.0.33] - 2026-08-27
 ### Added
 - **Real friend-request flow for Circles**, replacing what used to be a purely one-sided

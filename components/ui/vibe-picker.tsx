@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, forwardRef, useImperativeHandle } from 'react';
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import {
@@ -24,6 +24,19 @@ interface VibePickerProps {
   selectedTags: string[];
   engagedKeys: string[];
   onChange: (next: { selectedTags: string[]; engagedKeys: string[] }) => void;
+}
+
+// Exposes "go back one drill-down level" to the caller (app/onboarding.tsx), which wraps the
+// whole step's content in a Pressable so tapping anywhere that isn't a circle — not just a
+// small text link — backs out. Replaces the old in-component "‹ Back" link: live-reported as
+// "really badly placed, I almost missed it" (a 12pt-hitSlop text link floating above the
+// stage's own top edge). `path` itself stays internal/uncontrolled — this is the minimal surface
+// needed for the caller to trigger a pop, not a full controlled-component conversion.
+export interface VibePickerHandle {
+  // Returns true if it was actually drilled in (and so went back); false if already at the
+  // top level (nothing to do) — lets the caller's background Pressable no-op cleanly rather
+  // than needing to separately track drill state just to decide whether to call this.
+  goBack: () => boolean;
 }
 
 // Percentages as template-literal types so they satisfy RN's DimensionValue (which accepts
@@ -141,11 +154,21 @@ function Circle({
   );
 }
 
-export function VibePicker({ selectedTags, engagedKeys, onChange }: VibePickerProps) {
+export const VibePicker = forwardRef<VibePickerHandle, VibePickerProps>(function VibePicker(
+  { selectedTags, engagedKeys, onChange }, ref
+) {
   const tree = useMemo(() => buildVibeTree(), []);
   const [path, setPath] = useState<string[]>([]);
 
   const parent = path.length > 0 ? nodeAtPath(tree, path) : null;
+
+  useImperativeHandle(ref, () => ({
+    goBack: () => {
+      if (path.length === 0) return false;
+      setPath(p => p.slice(0, -1));
+      return true;
+    }
+  }), [path]);
 
   // A tap on a node found directly in `tree` (top level) or on one of the current parent's
   // `children` (isChildOfParent) always resolves the drill-down path by appending/replacing
@@ -202,10 +225,6 @@ export function VibePicker({ selectedTags, engagedKeys, onChange }: VibePickerPr
 
   return (
     <View style={styles.stage}>
-      <Pressable style={styles.backBtn} onPress={() => setPath(path.slice(0, -1))} hitSlop={12}>
-        <Text style={styles.backText}>‹ Back</Text>
-      </Pressable>
-
       {others.map((node, i) => (
         <Circle
           key={node.key}
@@ -230,7 +249,7 @@ export function VibePicker({ selectedTags, engagedKeys, onChange }: VibePickerPr
       ))}
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   // Fixed-aspect-ratio stage — every circle position/size below is a percentage of this box,
@@ -259,6 +278,4 @@ const styles = StyleSheet.create({
   labelActive: { color: '#0A0A0A' },
   labelDimmed: { color: '#64748B' },
   check: { position: 'absolute', top: 4, right: 10, color: '#0A0A0A', fontWeight: '900', fontSize: 12 },
-  backBtn: { position: 'absolute', top: -36, left: 0, zIndex: 20, padding: 8 },
-  backText: { color: '#3B82F6', fontSize: 16, fontWeight: '700' },
 });
