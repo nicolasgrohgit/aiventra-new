@@ -33,6 +33,17 @@ export interface ITrip extends Document {
     startDate: Date;
     endDate: Date;
   }[];
+  // Set only on a "shadow" trip auto-created for an event participant (see PUT
+  // /api/events/:id/respond in server.ts) — points at the ORGANIZER's trip this was mirrored
+  // from. An Event always requires a trip_id (see models/Event.ts), so a participant who owns
+  // no trip of their own had nowhere for an accepted invite to live: it only ever showed up in
+  // the disconnected "Your Invites" modal, and vanished from view entirely for anyone with zero
+  // trips once they'd responded to everything pending (live-reported as "can't see anything in
+  // the trips"). Exact-id matching here rather than fuzzy destination/date matching, since a
+  // fragile string/date join is worse than an explicit link. GET /api/trips/:tripId/events
+  // resolves a linked trip's events from the ORIGINAL trip_id, filtered to events this
+  // participant is actually invited to — never the organizer's full itinerary.
+  linkedTripId?: mongoose.Types.ObjectId;
 }
 
 const TripSchema = new Schema<ITrip>({
@@ -53,7 +64,8 @@ const TripSchema = new Schema<ITrip>({
       endDate: { type: Date, required: true }
     }],
     default: []
-  }
+  },
+  linkedTripId: { type: Schema.Types.ObjectId, ref: 'Trip' }
   // Events (created or imported) live in their own collection, queried by trip_id — see
   // models/Event.ts. They used to be embedded here, but an embedded array can't be queried
   // from the invited participant's side ("events I'm invited to") without scanning every

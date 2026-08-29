@@ -4,6 +4,33 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
+## [Unreleased]
+### Added
+- **Accepting an event invite now auto-creates a "shadow" trip to hold it, if you don't
+  already have one.** The real fix behind "can't see anything in the trips" for a pure
+  event participant (someone with zero trips of their own — e.g. invited to one lunch and
+  nothing else): `Event.trip_id` is a required field, so an accepted invite always needed
+  *some* trip to live under, but only the organizer ever had one. It only ever showed up in
+  the disconnected "Your Invites" modal, and even that vanished from view once nothing was
+  left pending (see the banner fix below). New `Trip.linkedTripId` field: on accept
+  (`PUT /api/events/:id/respond`), find-or-creates a trip for the participant — mirroring the
+  organizer's destination/dates/timezone/city-level `baseLocations` — linked by exact id to
+  the organizer's trip. `GET /api/trips/:tripId/events` resolves a linked trip's events from
+  the *original* trip_id, filtered to only what this participant is actually invited to
+  (never the organizer's full itinerary, which would leak every other guest's plans).
+  Idempotent — a second accepted invite from the same organizer trip reuses the existing
+  shadow trip rather than multiplying. Live-verified end-to-end against the real backend:
+  re-triggered Toto's existing acceptance, confirmed exactly one shadow trip was created (not
+  duplicated on a second accept), and confirmed `GET /api/trips/:id/events` on it correctly
+  returns the shared lunch event.
+- **"Your Invites" banner now has a calmer fallback once nothing's pending.** The modal
+  already correctly listed every invited event regardless of status, but the banner was its
+  only entry point and only rendered when something was still pending — so responding to
+  your last invite made it disappear with no way back in. Now falls back to a non-urgent
+  "N invites — view your invites" variant whenever `invitedEvents.length > 0`, even with
+  nothing left to act on. A secondary safety net alongside the shadow-trip fix above, not a
+  replacement for it.
+
 ## [0.0.35] - 2026-08-29
 ### Added
 - **Pull-to-refresh on the Trips tab.** Live-suggested after an accepted event invite didn't

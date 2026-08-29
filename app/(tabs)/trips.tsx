@@ -955,13 +955,28 @@ export default function TripsScreen() {
           </TouchableOpacity>
         </View>
 
-        {pendingInviteCount > 0 && (
+        {/* The "Your Invites" modal (below) already correctly lists every invited event
+            regardless of status — accepted/declined ones included, not just pending. But this
+            banner used to be its ONLY entry point, and used to only render when
+            pendingInviteCount > 0 — so the moment you responded to your last pending invite,
+            there was no way back into that modal at all. For someone who owns no trips of
+            their own (a pure event participant, e.g. invited to one lunch and nothing else),
+            that meant the event they'd just accepted effectively vanished from the app —
+            live-reported as "can't see anything in the trips" after accepting. Now falls back
+            to a calmer, non-urgent variant once nothing's pending but something's still here. */}
+        {pendingInviteCount > 0 ? (
           <TouchableOpacity style={styles.inviteBanner} activeOpacity={0.8} onPress={() => setShowInvitedModal(true)}>
             <Text style={styles.inviteBannerText}>
               {pendingInviteCount} pending invite{pendingInviteCount !== 1 ? 's' : ''} — tap to respond
             </Text>
           </TouchableOpacity>
-        )}
+        ) : invitedEvents.length > 0 ? (
+          <TouchableOpacity style={styles.inviteBannerCalm} activeOpacity={0.8} onPress={() => setShowInvitedModal(true)}>
+            <Text style={styles.inviteBannerCalmText}>
+              {invitedEvents.length} invite{invitedEvents.length !== 1 ? 's' : ''} — view your invites
+            </Text>
+          </TouchableOpacity>
+        ) : null}
 
         {trips.length === 0 ? (
           <Text style={styles.emptyText}>{"You haven't added any trips yet."}</Text>
@@ -1636,6 +1651,11 @@ const styles = StyleSheet.create({
 
   inviteBanner: { backgroundColor: 'rgba(16, 185, 129, 0.15)', borderWidth: 1, borderColor: '#10B981', borderRadius: 14, padding: 16, marginBottom: 24 },
   inviteBannerText: { color: '#10B981', fontWeight: '800', fontSize: 14, textAlign: 'center' },
+  // Calmer variant for "nothing pending, but you have invites worth revisiting" — same shape
+  // as inviteBanner, blue (the app's standard informational accent) instead of the pending
+  // banner's more attention-grabbing green, since nothing here needs urgent action.
+  inviteBannerCalm: { backgroundColor: 'rgba(59, 130, 246, 0.12)', borderWidth: 1, borderColor: '#3B82F6', borderRadius: 14, padding: 16, marginBottom: 24 },
+  inviteBannerCalmText: { color: '#3B82F6', fontWeight: '700', fontSize: 14, textAlign: 'center' },
 
   emptyText: { color: '#64748B', fontStyle: 'italic', textAlign: 'center', marginTop: 30 },
   separator: { height: 1, backgroundColor: '#1E293B', marginVertical: 24 },

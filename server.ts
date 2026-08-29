@@ -441,7 +441,19 @@ app.get('/api/trips/:tripId/events', authenticate, async (req: AuthedRequest, re
     if (!trip) {
       return res.status(404).json({ error: 'Trip not found' });
     }
-    const events = await Event.find({ trip_id: trip._id }).sort({ start_time: 1 });
+    // A linked (shadow) trip — see Trip.linkedTripId — has no events of its own by default: its
+    // events actually live under the ORIGINAL organizer's trip_id, filtered to just what this
+    // participant is invited to (never the organizer's full itinerary, which would leak every
+    // other guest's plans). Still unions in trip._id itself in case the participant creates
+    // their own event directly under their shadow trip — that's a normal, independently-owned
+    // event with this trip's own id, unrelated to the organizer's.
+    const query = trip.linkedTripId
+      ? { $or: [
+          { trip_id: trip.linkedTripId, 'participants.user_id': req.userId },
+          { trip_id: trip._id }
+        ] }
+      : { trip_id: trip._id };
+    const events = await Event.find(query).sort({ start_time: 1 });
     res.json(events);
   } catch (error: any) {
     reportError(error, req, 'list trip events failed');
@@ -609,6 +621,32 @@ app.put('/api/events/:id/respond', authenticate, async (req: AuthedRequest, res:
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
     }
+
+    // Find-or-create a "shadow" trip for the accepting participant, linked to the organizer's
+    // trip — see Trip.linkedTripId's doc comment for why this exists (an Event always requires
+    // a trip_id, so a participant who owns no trip of their own had nowhere for an accepted
+    // invite to live). Exact-id lookup, not fuzzy destination/date matching — idempotent, so
+    // accepting a second invite from the same organizer trip reuses the one shadow trip rather
+    // than multiplying. Declining never creates one; there's nothing to hold on the invitee's
+    // side for something they're not attending.
+    if (status === 'accepted') {
+      const existingShadow = await Trip.findOne({ user_id: req.userId, linkedTripId: event.trip_id });
+      if (!existingShadow) {
+        const organizerTrip = await Trip.findById(event.trip_id);
+        if (organizerTrip) {
+          await Trip.create({
+            user_id: req.userId,
+            destination: organizerTrip.destination,
+            start_date: organizerTrip.start_date,
+            end_date: organizerTrip.end_date,
+            timezone: organizerTrip.timezone,
+            baseLocations: organizerTrip.baseLocations,
+            linkedTripId: organizerTrip._id
+          });
+        }
+      }
+    }
+
     res.json(event);
   } catch (error: any) {
     reportError(error, req, 'respond to event failed');
