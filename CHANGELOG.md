@@ -4,7 +4,7 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
-## [Unreleased]
+## [0.0.35] - 2026-08-29
 ### Added
 - **Pull-to-refresh on the Trips tab.** Live-suggested after an accepted event invite didn't
   appear without a full app restart: alongside the `useFocusEffect` fix below (which covers
