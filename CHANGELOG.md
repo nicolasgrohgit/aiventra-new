@@ -4,7 +4,7 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
-## [Unreleased]
+## [0.0.36] - 2026-08-29
 ### Added
 - **Accepting an event invite now auto-creates a "shadow" trip to hold it, if you don't
   already have one.** The real fix behind "can't see anything in the trips" for a pure
