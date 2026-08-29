@@ -5,7 +5,32 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 this is still pre-release/beta.
 
 ## [Unreleased]
+### Added
+- **Pull-to-refresh on the Trips tab.** Live-suggested after an accepted event invite didn't
+  appear without a full app restart: alongside the `useFocusEffect` fix below (which covers
+  the common "returning to this tab" case), pull-to-refresh gives a manual escape hatch for
+  everything else — staying on the tab while someone else accepts/adds something, or just
+  wanting to force a resync. Re-runs the same invited-events/trip-events/nearby-friends
+  refresh the focus effect does.
+
 ### Fixed
+- **Homebase-sharing toggle silently never saved unless you also hit the separate "Save
+  Changes" button.** Live-reported after testing: toggling "Share My Home City With" and
+  assuming it was saved — matching how every toggle/switch elsewhere on a phone behaves — is
+  exactly what happened, and the change silently never reached the server, since it was
+  actually sitting behind the same batched-save button as every text field on the profile
+  form. Now saves immediately on tap (`toggleHomebaseCircle` calls `updateUser` directly),
+  matching the instant-save behavior the control already visually implies. The trip-sharing
+  use of the same `CircleShareSelector` component (in the Create/Edit Trip form) is
+  deliberately unchanged — fields there aren't "live" until the whole trip is submitted, a
+  different context where batching behind one submit button is correct.
+- **Accepting an event invite on another device didn't show up on the inviter's own trip
+  without a full app restart.** Third occurrence of the same root cause as the friend-
+  requests/nearby-friends fixes above: `refreshTripEvents` was still sitting in the old
+  `[trips]`-only `useEffect`, so an invite accepted on the *other* person's device (which
+  updates the Event doc server-side) was never picked up by returning to this tab, only by
+  a `trips` array change or a full restart. Moved into the same `useFocusEffect` as the
+  other two.
 - **Friend requests (and event invites) only ever showed up if you happened to still have the
   app freshly opened when they arrived.** Live-reported during real two-phone testing: a
   friend request sent from another device didn't appear on the Circles tab until force-

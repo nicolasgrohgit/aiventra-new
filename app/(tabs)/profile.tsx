@@ -115,8 +115,21 @@ export default function ProfileScreen() {
   // (which would kick off a second concurrent updateUser call).
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
 
+  // Saves immediately on tap rather than waiting for the form's "Save Changes" button —
+  // deliberately different from every other field on this screen. Live-reported: toggling
+  // this and assuming it was saved (matching how every toggle/switch elsewhere on a phone
+  // behaves — iOS Settings, notification permissions, etc. all save instantly) is exactly
+  // what happened, and the change silently never reached the server since it was actually
+  // sitting behind the separate Save Changes button like every text field. "I indeed
+  // completely forgot about that, and so will our users" — the fix is making this control
+  // actually match the instant-save behavior it already visually implies, not adding a
+  // reminder/blocker for the batched-save button.
   const toggleHomebaseCircle = (circle: string) => {
-    setHomebaseSharedCircles(prev => prev.includes(circle) ? prev.filter(c => c !== circle) : [...prev, circle]);
+    const next = homebaseSharedCircles.includes(circle)
+      ? homebaseSharedCircles.filter(c => c !== circle)
+      : [...homebaseSharedCircles, circle];
+    setHomebaseSharedCircles(next);
+    updateUser({ homebaseSharedCircles: next });
   };
 
   // Shared by both the camera and library sources: crops+resizes+compresses whatever the

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { StyleSheet, View, Text, Platform, ScrollView, TouchableOpacity, Modal, TextInput, ActivityIndicator, Alert, Image, Linking } from 'react-native';
+import { StyleSheet, View, Text, Platform, ScrollView, RefreshControl, TouchableOpacity, Modal, TextInput, ActivityIndicator, Alert, Image, Linking } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { ThemedText } from '@/components/themed-text';
 import { useAuth } from '@/hooks/useAuth';
@@ -276,27 +276,48 @@ export default function TripsScreen() {
   };
 
   useEffect(() => {
-    trips.forEach(t => refreshTripEvents(t.id));
     trips.forEach(t => syncDeviceCalendarForTrip(t));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trips]);
 
   // Split out from the [trips]-dependent effect above and re-polled on every tab FOCUS, not
   // just first mount/whenever `trips` changes: tab screens stay mounted in the background
-  // when you switch tabs, so a mount-only poll only ever saw an invite (or, for nearby
-  // friends, another user's homebase-sharing setting) that existed before this screen's very
-  // first visit. Same underlying gap just fixed on the Circles tab for friend requests
-  // (social.tsx) — live-reported there as "had to force quit to get it to show up." Nearby
-  // friends hits the identical case: a contact enabling "Share My Home City" after this trip
-  // was created wouldn't show up here without a full app restart, since only a `trips`
-  // array change (not returning to this tab) used to re-trigger the fetch.
+  // when you switch tabs, so a mount-only poll only ever saw state (an invite, another
+  // user's homebase-sharing setting, an accepted event) that existed before this screen's
+  // very first visit. Same underlying gap just fixed on the Circles tab for friend requests
+  // (social.tsx) — live-reported there as "had to force quit to get it to show up," then
+  // again here for nearby friends, then a third time for refreshTripEvents itself: accepting
+  // an event invite on the OTHER person's device updates the Event doc server-side, but this
+  // trip's own event list only refetched when the `trips` array changed, not on return to
+  // this tab — so an accepted invite silently never appeared on the inviter's own trip.
   useFocusEffect(
     useCallback(() => {
       refreshInvitedEvents();
+      trips.forEach(t => refreshTripEvents(t.id));
       trips.forEach(t => refreshNearbyFriends(t));
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [trips])
   );
+
+  // Manual escape hatch alongside the automatic useFocusEffect refresh above — live-suggested
+  // ("there is no pull-down resync of the page, maybe something worth adding") after an
+  // accepted event invite didn't appear without a full app restart. useFocusEffect now covers
+  // the common case (returning to this tab), but pull-to-refresh covers everything else: staying
+  // on this tab while someone else accepts/adds something, a flaky sync that focus alone can't
+  // detect, or just wanting to force a resync without waiting.
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+  const handlePullRefresh = async () => {
+    setIsPullRefreshing(true);
+    try {
+      await Promise.all([
+        refreshInvitedEvents(),
+        ...trips.map(t => refreshTripEvents(t.id)),
+        ...trips.map(t => refreshNearbyFriends(t)),
+      ]);
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  };
 
   // One city-photo lookup per trip, cached by trip id so switching tabs/re-rendering doesn't
   // refetch — same ref-guard shape as fetchedSlotKeys below.
@@ -917,7 +938,13 @@ export default function TripsScreen() {
 
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={isPullRefreshing} onRefresh={handlePullRefresh} tintColor="#3B82F6" />
+        }
+      >
         <View style={styles.header}>
           <View style={styles.headerTextContainer}>
             <ThemedText style={styles.title}>Your Trips</ThemedText>
