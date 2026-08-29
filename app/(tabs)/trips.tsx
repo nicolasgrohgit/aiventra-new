@@ -277,22 +277,25 @@ export default function TripsScreen() {
 
   useEffect(() => {
     trips.forEach(t => refreshTripEvents(t.id));
-    trips.forEach(t => refreshNearbyFriends(t));
     trips.forEach(t => syncDeviceCalendarForTrip(t));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trips]);
 
   // Split out from the [trips]-dependent effect above and re-polled on every tab FOCUS, not
   // just first mount/whenever `trips` changes: tab screens stay mounted in the background
-  // when you switch tabs, so a mount-only poll only ever saw an invite that existed before
-  // this screen's very first visit. Same underlying gap just fixed on the Circles tab for
-  // friend requests (social.tsx) — live-reported there as "had to force quit to get it to
-  // show up"; event invites here go through the identical refresh-on-mount-only pattern.
+  // when you switch tabs, so a mount-only poll only ever saw an invite (or, for nearby
+  // friends, another user's homebase-sharing setting) that existed before this screen's very
+  // first visit. Same underlying gap just fixed on the Circles tab for friend requests
+  // (social.tsx) — live-reported there as "had to force quit to get it to show up." Nearby
+  // friends hits the identical case: a contact enabling "Share My Home City" after this trip
+  // was created wouldn't show up here without a full app restart, since only a `trips`
+  // array change (not returning to this tab) used to re-trigger the fetch.
   useFocusEffect(
     useCallback(() => {
       refreshInvitedEvents();
+      trips.forEach(t => refreshNearbyFriends(t));
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [])
+    }, [trips])
   );
 
   // One city-photo lookup per trip, cached by trip id so switching tabs/re-rendering doesn't

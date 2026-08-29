@@ -17,6 +17,15 @@ this is still pre-release/beta.
   fetch. Both now use `useFocusEffect` (`@react-navigation/native`, already a dependency via
   expo-router, previously unused anywhere in this codebase) instead, so returning to either
   tab always re-polls.
+- **"Friends nearby" wouldn't reflect a contact enabling homebase-sharing without a full app
+  restart.** Same root cause as the entry above, extended to `trips.tsx`'s
+  `refreshNearbyFriends`: it was bundled into the same `[trips]`-only `useEffect`, so
+  returning to a trip after a contact turned on "Share My Home City With" for a matching
+  circle wouldn't pick it up — only creating/editing a trip (which changes the `trips` array
+  reference) did. Moved into the same `useFocusEffect` as the invited-events poll. Separately
+  live-verified (via direct `GET /api/friends-nearby` calls) that the underlying data/query
+  logic was already correct — this was purely a client-side "when do we refetch" gap, not a
+  server bug.
 
 ## [0.0.34] - 2026-08-28
 ### Changed
