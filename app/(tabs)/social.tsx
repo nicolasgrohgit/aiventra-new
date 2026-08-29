@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import { StyleSheet, View, ScrollView, TouchableOpacity, Text, Platform, Modal, TextInput, Alert } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { Image } from 'expo-image';
 import { ThemedText } from '@/components/themed-text';
 import { DEFAULT_CIRCLES, getContactsByCircle, Contact } from '@/lib/contacts';
@@ -26,8 +27,12 @@ export default function SocialScreen() {
 
   // Incoming/pending friend requests — this app's closest thing to a "notification" today
   // (see the Friend Requests section below): no real push infra, so discoverability comes
-  // from polling on mount and re-rendering a visible section/count, same pattern trips.tsx
-  // uses for invitedEvents/pendingInviteCount.
+  // from polling and re-rendering a visible section/count. Deliberately re-polls on every
+  // tab FOCUS (useFocusEffect), not just first mount (a plain useEffect) — tab screens stay
+  // mounted in the background when you switch tabs, so a mount-only poll only ever saw a
+  // request sent before this screen's very first visit. Live-reported: a request sent from
+  // another device only showed up after force-quitting and reopening the app, since that was
+  // the only thing that actually remounted this screen.
   const [incomingRequests, setIncomingRequests] = useState<any[]>([]);
   const [sentRequests, setSentRequests] = useState<any[]>([]);
   // The request currently being accepted — drives the circle-picker action sheet below,
@@ -45,11 +50,13 @@ export default function SocialScreen() {
     }
   };
 
-  useEffect(() => {
-    if (!user) return;
-    refreshFriendRequests();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?._id, user?.id]);
+  useFocusEffect(
+    useCallback(() => {
+      if (!user) return;
+      refreshFriendRequests();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [user?._id, user?.id])
+  );
 
   const displayedContacts = activeCircle === 'All' 
     ? contacts 

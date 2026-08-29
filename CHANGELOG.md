@@ -4,6 +4,20 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
+## [Unreleased]
+### Fixed
+- **Friend requests (and event invites) only ever showed up if you happened to still have the
+  app freshly opened when they arrived.** Live-reported during real two-phone testing: a
+  friend request sent from another device didn't appear on the Circles tab until force-
+  quitting and reopening the app. Root cause: both `social.tsx`'s incoming-friend-request
+  poll and `trips.tsx`'s invited-events poll ran in a plain `useEffect` that only fires on
+  first mount (or when specific deps change) — tab screens stay mounted in the background
+  when you switch tabs, so neither ever re-polled just from navigating back to that tab.
+  Force-quitting was the only thing that actually remounted the screen and triggered a fresh
+  fetch. Both now use `useFocusEffect` (`@react-navigation/native`, already a dependency via
+  expo-router, previously unused anywhere in this codebase) instead, so returning to either
+  tab always re-polls.
+
 ## [0.0.34] - 2026-08-28
 ### Changed
 - **Vibe-picker "‹ Back" replaced with tap-anywhere-outside-a-circle.** Reported live: the

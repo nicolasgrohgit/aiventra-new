@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { StyleSheet, View, Text, Platform, ScrollView, TouchableOpacity, Modal, TextInput, ActivityIndicator, Alert, Image, Linking } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { ThemedText } from '@/components/themed-text';
 import { useAuth } from '@/hooks/useAuth';
 import { useTrips } from '@/hooks/useTrips';
@@ -278,9 +279,21 @@ export default function TripsScreen() {
     trips.forEach(t => refreshTripEvents(t.id));
     trips.forEach(t => refreshNearbyFriends(t));
     trips.forEach(t => syncDeviceCalendarForTrip(t));
-    refreshInvitedEvents();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trips]);
+
+  // Split out from the [trips]-dependent effect above and re-polled on every tab FOCUS, not
+  // just first mount/whenever `trips` changes: tab screens stay mounted in the background
+  // when you switch tabs, so a mount-only poll only ever saw an invite that existed before
+  // this screen's very first visit. Same underlying gap just fixed on the Circles tab for
+  // friend requests (social.tsx) — live-reported there as "had to force quit to get it to
+  // show up"; event invites here go through the identical refresh-on-mount-only pattern.
+  useFocusEffect(
+    useCallback(() => {
+      refreshInvitedEvents();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [])
+  );
 
   // One city-photo lookup per trip, cached by trip id so switching tabs/re-rendering doesn't
   // refetch — same ref-guard shape as fetchedSlotKeys below.
