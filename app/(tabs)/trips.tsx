@@ -98,6 +98,19 @@ const toImportedCalendarEvents = (events: TripEvent[]) =>
     .filter(e => e.source === 'imported')
     .map(e => ({ id: e._id, title: e.title, startTime: new Date(e.start_time), endTime: new Date(e.end_time) }));
 
+// A local's own city needs no "what should I do here" AI proposals — they live there, they
+// know it. Same loose city-matching as cityNeedle/buildCityDurationQuery in
+// lib/place-matching.ts (destinations and homebase are both entered via the same
+// geocoding-autocomplete picker, so either can be a bare "Rome" or "Rome, Italy" depending on
+// how it was typed) — duplicated here in miniature rather than imported, since that file is
+// explicitly server-side-only/DB-pure and this is a one-line comparison, not worth crossing
+// that boundary for. Deliberately a render-time check against the *current* user.homebase
+// rather than something stored on the Trip itself, so it stays correct if homebase changes
+// later and needs no migration for trips (including shadow trips — see linkedTripId in
+// models/Trip.ts) that already exist.
+const isHomeTurf = (homebase: string | undefined, destination: string) =>
+  !!homebase && homebase.split(',')[0].trim().toLowerCase() === destination.split(',')[0].trim().toLowerCase();
+
 export default function TripsScreen() {
   const { user } = useAuth();
   const { trips, setTrips, toggleDismissedSlot } = useTrips();
@@ -350,6 +363,10 @@ export default function TripsScreen() {
       // A collapsed card's proposals aren't rendered at all — skip fetching for it entirely
       // rather than fetching-and-hiding.
       if (collapsedTripIds.has(trip.id)) return;
+      // Home-turf trips never render this section (see isHomeTurf above and the render loop
+      // below) — skip the fetch work too, not just the display, same reasoning as the
+      // collapsed-card guard just above.
+      if (isHomeTurf(user?.homebase, trip.destination)) return;
       const isExpanded = expandedTripIds.has(trip.id);
       const tripEvents = eventsByTrip[trip.id] || [];
       const importedEvents = toImportedCalendarEvents(tripEvents);
@@ -423,7 +440,7 @@ export default function TripsScreen() {
       });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trips, expandedTripIds, eventsByTrip, collapsedTripIds, user?.preferences?.earliestLunchTime, user?.preferences?.earliestDinnerTime]);
+  }, [trips, expandedTripIds, eventsByTrip, collapsedTripIds, user?.homebase, user?.preferences?.earliestLunchTime, user?.preferences?.earliestDinnerTime]);
 
   // Debounced city lookup for the destination field — warn, don't block: a legitimate city
   // might genuinely not appear in a partial-query top-5 result.
@@ -987,6 +1004,7 @@ export default function TripsScreen() {
             const daySchedules = getTripDaySchedule(trip.startDate, trip.endDate, 5, trip.timezone, toImportedCalendarEvents(tripEvents), mealPrefs);
             const isCardCollapsed = collapsedTripIds.has(trip.id);
             const dismissedSlotKeys = trip.dismissedSlots || [];
+            const isLocalTrip = isHomeTurf(user?.homebase, trip.destination);
 
             return (
               <View key={trip.id} style={styles.tripCard}>
@@ -1092,6 +1110,17 @@ export default function TripsScreen() {
                     );
                  })()}
 
+                  {isLocalTrip ? (
+                    // Home turf: the viewer's own homebase matches this trip's destination, so
+                    // they already live/know the city — auto-generated restaurant/activity
+                    // proposals are noise here, not help. "+ Propose an Event" above is
+                    // untouched and still the right tool if they want to plan something specific.
+                    // Live-reported case this fixes: inviting a local contact to dinner in their
+                    // home city auto-generated a full day of AI suggestions for a city they
+                    // already know inside out.
+                    <Text style={styles.emptyText}>You're home here — no AI Schedule Proposals for a city you already know. Tap "+ Propose an Event" above if you want to plan something.</Text>
+                  ) : (
+                  <>
                   <Text style={styles.proposalsHeader}>AI Schedule Proposals</Text>
                   {(() => {
                     const isExpanded = expandedTripIds.has(trip.id);
@@ -1183,6 +1212,8 @@ export default function TripsScreen() {
                       </>
                     );
                   })()}
+                  </>
+                  )}
                  </>
                  )}
               </View>
