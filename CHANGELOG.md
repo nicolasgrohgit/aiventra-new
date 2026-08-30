@@ -4,6 +4,20 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
+## [Unreleased]
+### Changed
+- **Real app icon, replacing the stock map-pin mark.** Two rounds of proposals (rendered as
+  comparison pages, not committed to the app) landed on a "crescent O-sail" concept: a hull
+  that sweeps upward at both bow and stern — the classical Greek-vase-galley silhouette,
+  since a hull curved at only one end reads as a modern dinghy, not "Odyssean" — topped by a
+  wide trapezoidal sail with a ring cut into its center as a quiet nod to the "O" in Odys.ai.
+  Same navy/blue palette as the previous icon (`#0F172A` background, `#60A5FA`→`#3B82F6`
+  gradient), so this is a shape change, not a rebrand. A ".ai" wordmark variant was tried and
+  rejected — the shipped assets are the boat mark alone, no text. All six icon/splash/
+  adaptive-icon files regenerated and pixel-verified (transparency, fill colors, safe-zone
+  sizing) via the same production pipeline as the previous icon (Pillow, 4x supersample,
+  LANCZOS downsample — see `scratch/icon-proposals/round2/gen_icons.py`).
+
 ## [0.0.36] - 2026-08-29
 ### Added
 - **Accepting an event invite now auto-creates a "shadow" trip to hold it, if you don't
