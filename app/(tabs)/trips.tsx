@@ -151,7 +151,11 @@ export default function TripsScreen() {
   // slotStart carries the actual day+time of the free-time slot the tapped PlaceCard was
   // shown under — scheduleDate/scheduleTime are synced to it below, rather than defaulting
   // to "now" regardless of which day's slot was actually tapped.
-  const [selectedPlace, setSelectedPlace] = useState<{ place: PlaceRecommendation, tripId: string, slotStart: Date } | null>(null);
+  // existingEvent is set (via findScheduledEventForPlace, computed at tap-time) when a real
+  // Event already exists for this place within this slot's window — it switches the modal
+  // below into a view/edit-existing-event mode instead of always rendering a blank create
+  // form, which previously risked POSTing a second, duplicate Event for the same place.
+  const [selectedPlace, setSelectedPlace] = useState<{ place: PlaceRecommendation, tripId: string, slotStart: Date, existingEvent: TripEvent | null } | null>(null);
   const [scheduleDate, setScheduleDate] = useState(new Date());
   const [scheduleTime, setScheduleTime] = useState(new Date());
   const [scheduleInviteContactId, setScheduleInviteContactId] = useState<string | null>(null);
@@ -172,9 +176,22 @@ export default function TripsScreen() {
 
   useEffect(() => {
     if (selectedPlace) {
-      setScheduleDate(new Date(selectedPlace.slotStart));
-      setScheduleTime(new Date(selectedPlace.slotStart));
+      if (selectedPlace.existingEvent) {
+        // Editing a real, already-scheduled event — prefill from what's actually booked
+        // (see findScheduledEventForPlace) instead of the slot's original instant, and
+        // prefill the invitee from the event's real participants rather than leaving the
+        // picker blank (or worse, carrying over whoever was picked for a previous card).
+        setScheduleDate(new Date(selectedPlace.existingEvent.start_time));
+        setScheduleTime(new Date(selectedPlace.existingEvent.start_time));
+        const firstParticipant = selectedPlace.existingEvent.participants[0];
+        setScheduleInviteContactId(firstParticipant ? contactIdForParticipant(firstParticipant.user_id) : null);
+      } else {
+        setScheduleDate(new Date(selectedPlace.slotStart));
+        setScheduleTime(new Date(selectedPlace.slotStart));
+        setScheduleInviteContactId(null);
+      }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPlace]);
 
   const [expandedTripIds, setExpandedTripIds] = useState<Set<string>>(new Set());
@@ -487,6 +504,28 @@ export default function TripsScreen() {
     return contact?.name || 'Someone';
   };
 
+  // Same lookup as getParticipantLabel above, but resolving to the Contact._id ContactPicker
+  // actually deals in (see its own comment) rather than a display name — used to prefill the
+  // "Schedule It" modal's invitee when reopening an already-scheduled place.
+  const contactIdForParticipant = (participantUserId: string): string | null => {
+    const contact = contacts.find((c: any) => c.contact_user_id === participantUserId);
+    return contact?.id || null;
+  };
+
+  // Finds the real Event (if any) already booked for this exact place within this slot's
+  // time window — lets a PlaceCard tap detect "this was already scheduled" instead of always
+  // treating it as a fresh recommendation, which would let "Add to Itinerary" create a second,
+  // duplicate Event for the same place. Matched by place_id within this trip, using the
+  // place's own estimated duration as the window width (the same duration handleAddToItinerary
+  // uses to compute end_time when an event is first created) and an overlap check rather than
+  // exact-instant equality, so a still-pending edit to the time doesn't break detection.
+  const findScheduledEventForPlace = (tripId: string, placeId: string, windowStart: Date, durationMinutes: number): TripEvent | undefined => {
+    const windowEnd = new Date(windowStart.getTime() + durationMinutes * 60000);
+    return (eventsByTrip[tripId] || []).find(e =>
+      e.place_id === placeId && new Date(e.start_time) < windowEnd && new Date(e.end_time) > windowStart
+    );
+  };
+
   const toggleTripExpand = (tripId: string) => {
     setExpandedTripIds(prev => {
       const next = new Set(prev);
@@ -681,6 +720,33 @@ export default function TripsScreen() {
     }
   };
 
+  // Counterpart to handleAddToItinerary for the "this place is already scheduled" case
+  // (selectedPlace.existingEvent set — see findScheduledEventForPlace): saves changes onto
+  // the real event via PUT /api/events/:id instead of POSTing a new one, so re-opening an
+  // already-scheduled card and tweaking the time/invitee can't create a duplicate booking.
+  const handleUpdateScheduledEvent = async () => {
+    if (!selectedPlace?.existingEvent) return;
+    const finalStart = new Date(scheduleDate);
+    finalStart.setHours(scheduleTime.getHours(), scheduleTime.getMinutes(), 0, 0);
+    const finalEnd = new Date(finalStart.getTime() + selectedPlace.place.estimatedDuration * 60000);
+
+    try {
+      await updateEvent(selectedPlace.existingEvent._id, {
+        startTime: finalStart.toISOString(),
+        endTime: finalEnd.toISOString(),
+        participantContactIds: scheduleInviteContactId ? [scheduleInviteContactId] : []
+      });
+      await refreshTripEvents(selectedPlace.tripId);
+      setSelectedPlace(null);
+      setScheduleInviteContactId(null);
+      // Same harmless no-op as handleAddToItinerary — only closes the refine modal if it's
+      // actually open (an already-scheduled place can still surface from a refine search).
+      closeRefineSearch();
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Could not save your changes.');
+    }
+  };
+
   const openProposeModal = (tripId: string, preselectContactId?: string) => {
     setProposeTripId(tripId);
     setProposeTitle('');
@@ -854,7 +920,15 @@ export default function TripsScreen() {
     // it did work, there's just no visible trace of it back on the card you tapped.
     const alreadyScheduled = isPlaceScheduled(tripEvents, place.id);
     return (
-    <TouchableOpacity style={styles.placeCard} activeOpacity={0.8} onPress={() => { setSelectedPlace({ place, tripId, slotStart }); refreshContacts(); }}>
+    <TouchableOpacity
+      style={styles.placeCard}
+      activeOpacity={0.8}
+      onPress={() => {
+        const scheduledEvent = findScheduledEventForPlace(tripId, place.id, slotStart, place.estimatedDuration);
+        setSelectedPlace({ place, tripId, slotStart, existingEvent: scheduledEvent || null });
+        refreshContacts();
+      }}
+    >
       <View style={styles.placeHeader}>
         <Text style={styles.placeName} numberOfLines={1}>{place.name}</Text>
         {alreadyScheduled ? (
@@ -1359,6 +1433,12 @@ export default function TripsScreen() {
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false}>
+              {selectedPlace?.existingEvent && (
+                <View style={styles.editingBadge}>
+                  <Text style={styles.editingBadgeText}>✎ Editing an existing plan</Text>
+                </View>
+              )}
+
               {selectedPlace?.place.hasPhoto && (
                 <Image source={{ uri: placePhotoUri(selectedPlace.place.id) }} style={styles.detailPhoto} />
               )}
@@ -1392,7 +1472,7 @@ export default function TripsScreen() {
               </TouchableOpacity>
 
               <View style={styles.separator} />
-              <Text style={styles.proposalsHeader}>Schedule It</Text>
+              <Text style={styles.proposalsHeader}>{selectedPlace?.existingEvent ? 'Update This Plan' : 'Schedule It'}</Text>
 
               <Text style={styles.inputLabel}>Date</Text>
               <NativeDatePicker value={scheduleDate} onChange={setScheduleDate} mode="date" format="date" />
@@ -1403,8 +1483,11 @@ export default function TripsScreen() {
               <Text style={styles.inputLabel}>Invite someone (optional)</Text>
               <ContactPicker selectedId={scheduleInviteContactId} onSelect={setScheduleInviteContactId} />
 
-              <TouchableOpacity style={[styles.submitBtn, {backgroundColor: '#3B82F6', marginTop: 20}]} onPress={handleAddToItinerary}>
-                 <Text style={styles.submitBtnText}>Add to Itinerary</Text>
+              <TouchableOpacity
+                style={[styles.submitBtn, {backgroundColor: '#3B82F6', marginTop: 20}]}
+                onPress={selectedPlace?.existingEvent ? handleUpdateScheduledEvent : handleAddToItinerary}
+              >
+                 <Text style={styles.submitBtnText}>{selectedPlace?.existingEvent ? 'Save Changes' : 'Add to Itinerary'}</Text>
               </TouchableOpacity>
             </ScrollView>
           </View>
@@ -1499,7 +1582,9 @@ export default function TripsScreen() {
                           style={styles.placeCardWide}
                           activeOpacity={0.8}
                           onPress={() => {
-                            setSelectedPlace({ place: p, tripId: refineSearchContext.tripId, slotStart: refineStartInstant || refineSearchContext.date });
+                            const slotStart = refineStartInstant || refineSearchContext.date;
+                            const scheduledEvent = findScheduledEventForPlace(refineSearchContext.tripId, p.id, slotStart, p.estimatedDuration);
+                            setSelectedPlace({ place: p, tripId: refineSearchContext.tripId, slotStart, existingEvent: scheduledEvent || null });
                             refreshContacts();
                           }}
                         >
@@ -1734,6 +1819,9 @@ const styles = StyleSheet.create({
   restoreDismissedBtnText: { color: '#3B82F6', fontSize: 12, fontWeight: '700' },
   expandButton: { alignItems: 'center', paddingVertical: 14, marginTop: 8, marginBottom: 4, backgroundColor: '#1E293B', borderRadius: 12, borderWidth: 1, borderColor: '#334155' },
   expandButtonText: { color: '#3B82F6', fontSize: 13, fontWeight: '800', letterSpacing: 0.5 },
+
+  editingBadge: { backgroundColor: 'rgba(16, 185, 129, 0.15)', borderWidth: 1, borderColor: '#10B981', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, marginBottom: 16, alignSelf: 'flex-start' },
+  editingBadgeText: { color: '#10B981', fontWeight: '800', fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.3 },
 
   darkOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
   // maxHeight is load-bearing: without it, long content (photo + description + address +

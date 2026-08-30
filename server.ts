@@ -575,27 +575,58 @@ app.post('/api/trips/:tripId/events/import', authenticate, async (req: AuthedReq
 
 app.put('/api/events/:id', authenticate, async (req: AuthedRequest, res: express.Response) => {
   try {
-    const { title, startTime, endTime, placeId, placeName, location } = req.body;
-    const updateData: any = {};
-    if (title !== undefined) updateData.title = title;
-    if (startTime !== undefined) updateData.start_time = new Date(startTime);
-    if (endTime !== undefined) updateData.end_time = new Date(endTime);
-    if (placeId !== undefined) updateData.place_id = placeId;
-    if (placeName !== undefined) updateData.place_name = placeName;
-    if (location !== undefined) updateData.location = location;
+    const { title, startTime, endTime, placeId, placeName, location, participantContactIds } = req.body;
 
     // Organizer-only: scoping to created_by (not just _id) is what stops an invited
     // participant from editing the event — they can only respond to it (see /respond).
-    // Not-found is returned for both "doesn't exist" and "exists but isn't yours", same
-    // ownership-scoping pattern used throughout this file, so existence isn't leaked.
-    const event = await Event.findOneAndUpdate(
-      { _id: req.params.id, created_by: req.userId },
-      { $set: updateData },
-      { new: true }
-    );
+    // Loaded (rather than updated in one shot like before) because rebuilding the
+    // participants list below needs to see the event's *current* list, to preserve each
+    // existing invitee's accepted/declined status instead of resetting everyone back to
+    // pending just because the organizer re-saved the event. Not-found is returned for
+    // both "doesn't exist" and "exists but isn't yours", same ownership-scoping pattern
+    // used throughout this file, so existence isn't leaked.
+    const event = await Event.findOne({ _id: req.params.id, created_by: req.userId });
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
     }
+
+    if (title !== undefined) event.title = title;
+    if (startTime !== undefined) event.start_time = new Date(startTime);
+    if (endTime !== undefined) event.end_time = new Date(endTime);
+    if (placeId !== undefined) event.place_id = placeId;
+    if (placeName !== undefined) event.place_name = placeName;
+    if (location !== undefined) event.location = location;
+
+    // participantContactIds, when present, replaces the invite list wholesale — same
+    // Contact -> User resolution (and the same "must be a joined, linked contact" rule) as
+    // POST /api/trips/:tripId/events. Existing invitees who are still in the new list keep
+    // their current accepted/declined status rather than being bounced back to pending;
+    // anyone dropped from the list is simply removed.
+    if (Array.isArray(participantContactIds)) {
+      const contacts = await Contact.find({
+        _id: { $in: participantContactIds },
+        owner_user_id: req.userId
+      });
+      if (contacts.length !== participantContactIds.length) {
+        return res.status(400).json({ error: 'One or more contacts not found in your circle' });
+      }
+      const unlinked = contacts.filter(c => !c.contact_user_id);
+      if (unlinked.length > 0) {
+        return res.status(400).json({
+          error: `These contacts haven't joined Odys.ai yet, so they can't be invited to an event: ${unlinked.map(c => c.name).join(', ')}`
+        });
+      }
+      event.participants = contacts.map(c => {
+        const existing = event.participants.find((p: any) => p.user_id.toString() === c.contact_user_id!.toString());
+        return {
+          user_id: c.contact_user_id!,
+          invited_by: existing ? existing.invited_by : (req.userId as any),
+          status: existing ? existing.status : 'pending'
+        };
+      }) as any;
+    }
+
+    await event.save();
     res.json(event);
   } catch (error: any) {
     reportError(error, req, 'update event failed');
