@@ -4,8 +4,27 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
-## [Unreleased]
+## [0.0.37] - 2026-08-30
+### Added
+- **The "Schedule It" modal now has a real edit mode for already-scheduled places.** Tapping
+  a place that already has a real Event booked within the tapped slot now detects it
+  (`findScheduledEventForPlace`, matched by place + slot time window) and switches the modal
+  into "Update This Plan" / "Save Changes", prefilled from the actual event's date/time/
+  invitee, instead of always showing a blank "Schedule It" create form that risked POSTing a
+  second, duplicate Event for the same place. `PUT /api/events/:id` now also accepts
+  `participantContactIds` and preserves each remaining invitee's accepted/declined status
+  instead of resetting everyone back to pending just because the organizer re-saved the
+  event. Live-verified against the real backend: time updates persist, an already-accepted
+  participant stays accepted, and a non-organizer's PUT correctly 404s.
+
 ### Changed
+- **AI Schedule Proposals no longer appear on a trip where you're the local.** When a trip
+  owner's own homebase matches the trip's destination (`isHomeTurf`), the auto-generated
+  restaurant/activity proposals section is skipped entirely (no fetch, no render) — a local
+  already knows their own city, so a full day of AI suggestions was noise, not help.
+  "+ Propose an Event" is unaffected and still the right tool to plan something specific.
+  Fixes the live case of inviting a local contact to dinner generating a full day of unwanted
+  AI suggestions for a city they already know inside out.
 - **Real app icon, replacing the stock map-pin mark.** Two rounds of proposals (rendered as
   comparison pages, not committed to the app) landed on a "crescent O-sail" concept: a hull
   that sweeps upward at both bow and stern — the classical Greek-vase-galley silhouette,
