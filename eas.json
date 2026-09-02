@@ -8,7 +8,7 @@
         "simulator": false
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://investor-controversy-observation-signal.trycloudflare.com"
+        "EXPO_PUBLIC_API_URL": "https://stickers-sons-transcription-pod.trycloudflare.com"
       }
     },
     "production": {}
