@@ -20,6 +20,7 @@ import FriendRequest from './models/FriendRequest';
 import Place from './models/Place';
 import { ensurePlacesForCity, refreshNearbyPlacesLive } from './lib/places-population';
 import { searchCities } from './lib/geocoding';
+import { sendPushNotification } from './lib/push-notifications';
 
 dotenv.config({ quiet: true });
 
@@ -181,6 +182,27 @@ app.put('/api/users/:id', authenticate, async (req: AuthedRequest, res: express.
     res.json(user);
   } catch (error: any) {
     reportError(error, req, 'update user failed');
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Stores this user's Expo push token (see lib/push-token.ts client-side, lib/push-
+// notifications.ts server-side). Deliberately its own endpoint rather than folded into PUT
+// /api/users/:id above — that route does an unscoped `$set: req.body` against a
+// strict:false schema (flagged in this changelog's security audit as needing a field
+// allowlist) and is being locked down independently elsewhere; adding push-token storage
+// here instead avoids touching it. Scoped to req.userId (never a client-supplied id), same
+// as every other authenticated route in this file.
+app.post('/api/users/me/push-token', authenticate, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    const { token } = req.body;
+    if (!token || typeof token !== 'string') {
+      return res.status(400).json({ error: 'token is required' });
+    }
+    await User.findByIdAndUpdate(req.userId, { $set: { expoPushToken: token } });
+    res.json({ success: true });
+  } catch (error: any) {
+    reportError(error, req, 'save push token failed');
     res.status(500).json({ error: error.message });
   }
 });
@@ -515,6 +537,31 @@ app.post('/api/trips/:tripId/events', authenticate, async (req: AuthedRequest, r
       { event: 'event_created', userId: req.userId, tripId: trip._id.toString(), eventId: event._id.toString(), participantCount: participants.length },
       'event created'
     );
+
+    // Best-effort push notifications to invited participants — never blocks/fails event
+    // creation. Same defense-in-depth wrapping as the friend-request push send above:
+    // sendPushNotification (lib/push-notifications.ts) already never throws on its own, this
+    // try/catch just covers the User lookups around it.
+    if (participants.length > 0) {
+      try {
+        const participantUsers = await User.find({
+          _id: { $in: participants.map(p => p.user_id) },
+          expoPushToken: { $exists: true, $ne: null }
+        }).select('expoPushToken');
+        if (participantUsers.length > 0) {
+          const organizer = await User.findById(req.userId).select('full_name');
+          await Promise.all(participantUsers.map(u => sendPushNotification(
+            u.expoPushToken as string,
+            'New event invite',
+            `${organizer?.full_name || 'Someone'} invited you to "${title}"`,
+            { type: 'event_invite', eventId: event._id.toString(), tripId: trip._id.toString() }
+          )));
+        }
+      } catch (err) {
+        req.log.warn({ err }, 'event invite push send failed');
+      }
+    }
+
     res.json(event);
   } catch (error: any) {
     reportError(error, req, 'create event failed');
@@ -1123,6 +1170,25 @@ app.post('/api/friend-requests', authenticate, async (req: AuthedRequest, res: e
       status: 'pending'
     });
     req.log.info({ event: 'friend_request_sent', userId: req.userId, toUserId: toUser._id.toString(), requestId: request._id.toString() }, 'friend request sent');
+
+    // Best-effort push notification — never blocks/fails the friend request itself. See
+    // lib/push-notifications.ts; failure (missing token, network error, bad token) is
+    // caught and logged there already, but this is wrapped again here for defense in depth,
+    // same as every ensurePlacesForCity call site in this file.
+    try {
+      if (toUser.expoPushToken) {
+        const fromUser = await User.findById(req.userId).select('full_name');
+        await sendPushNotification(
+          toUser.expoPushToken,
+          'New friend request',
+          `${fromUser?.full_name || 'Someone'} wants to connect with you on Odys.ai`,
+          { type: 'friend_request', requestId: request._id.toString() }
+        );
+      }
+    } catch (err) {
+      req.log.warn({ err }, 'friend request push send failed');
+    }
+
     res.json(request);
   } catch (error: any) {
     reportError(error, req, 'send friend request failed');
