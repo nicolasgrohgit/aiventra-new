@@ -28,6 +28,25 @@ this is still pre-release/beta.
   existing verification-ceiling notes elsewhere in this changelog).
 
 ### Roadmap noted
+- **No database backup strategy — a real incident during this sprint, not a hypothetical.**
+  Block 04's encryption-at-rest work live-verified its migration script
+  (`scripts/migrate-encrypt-events.ts`) against the actual shared local MongoDB (not an
+  isolated copy), encrypting all 28 real `Event` documents in place. The systemd-managed
+  server actually serving the live beta tunnel was still running the pre-merge code with no
+  decryption logic, so the live app broke immediately — every event's title/location came back
+  as ciphertext. No backup existed, anywhere, to restore from. Since the data was all test
+  data, the fix was to delete the `Event` collection outright rather than reconstruct it — but
+  that was a lucky out, not a plan; the same incident against real user data would have meant
+  genuine, permanent loss. Not built here — needs: (1) an actual backup mechanism for the local
+  MongoDB (even a simple scheduled `mongodump` to a local path would beat what exists today,
+  which is nothing), and (2) a hard rule, not just a guideline, that **any migration script
+  touching existing data must take a verified backup immediately before writing anything** —
+  the migration script pattern this project already has (`migrate-encrypt-events.ts`'s own
+  `--dry-run` flag) is a good start but dry-run alone doesn't protect against exactly what
+  happened here (a real, non-dry-run execution against shared data with nothing to fall back
+  to). Worth revisiting once GCP migration (Block 05) lands, since Atlas's built-in
+  point-in-time backups would make this a non-issue — but shouldn't wait until then, since
+  local dev/beta work touching real data continues in the meantime.
 - **A participant's shadow trip is never cleaned up when the organizer's trip (or its events)
   is deleted, leaving a permanently empty trip behind.** Reported live: Toto (an event
   participant) saw two trips to Rome — one with the actual accepted restaurant, one showing
