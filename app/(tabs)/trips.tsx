@@ -15,46 +15,11 @@ import { searchHotelLocation, HotelLocationResult } from '@/lib/hotel-geocoding'
 import { CircleShareSelector } from '@/components/ui/circle-share-selector';
 import { FOOD_GENRES_CATEGORIZED, ACTIVITY_GENRES_CATEGORIZED, EVENT_GENRES_CATEGORIZED } from '@/constants/preferences';
 import { buildMapsUrl } from '@/lib/maps-link';
-import { API_URL } from '@/lib/api-client';
-
-interface EventParticipant {
-  user_id: string;
-  invited_by: string;
-  status: 'pending' | 'accepted' | 'declined';
-}
-
-interface TripEvent {
-  _id: string;
-  trip_id: string;
-  created_by: string;
-  source: 'created' | 'imported';
-  title: string;
-  start_time: string;
-  end_time: string;
-  place_id?: string;
-  place_name?: string;
-  participants: EventParticipant[];
-}
-
-interface TripBaseLocation {
-  label: string;
-  lat: number;
-  lng: number;
-  source: 'hotel' | 'city';
-  startDate: string;
-  endDate: string;
-}
-
-interface TripMock {
-  id: string;
-  destination: string;
-  startDate: Date;
-  endDate: Date;
-  timezone: string;
-  sharedWithCircles: string[];
-  dismissedSlots?: string[];
-  baseLocations?: TripBaseLocation[];
-}
+import { TripEvent, TripBaseLocation, TripMock, formatDistanceLabel, placePhotoUri } from '@/lib/trip-types';
+import { PlaceCard } from '@/components/trips/place-card';
+import { RefineSearchCard } from '@/components/trips/refine-search-card';
+import { ContactPicker } from '@/components/trips/contact-picker';
+import { darkActionSheetStyle } from '@/components/ui/dark-action-sheet-style';
 
 interface NearbyFriend {
   userId: string;
@@ -79,15 +44,8 @@ const REFINE_TAG_GROUPS_NON_MEAL = [...ACTIVITY_GENRES_CATEGORIZED, ...EVENT_GEN
 
 const formatTripDate = (d: Date, tz: string) => d.toLocaleDateString('en-CA', { timeZone: tz });
 
-// Sub-kilometer distances read as more useful in meters ("450m away" vs "0.5km away") — matches
-// how a "near your hotel" walkable distance is actually judged.
-const formatDistanceLabel = (km: number) => (km < 1 ? `${Math.round(km * 1000)}m` : `${km.toFixed(1)}km`);
-
-// Every card/detail-modal thumbnail points at this same server-side proxy (never at
-// googleapis.com directly) — see GET /api/places/:id/photo in server.ts for why: resolving a
-// Google photoRef into real image bytes needs GOOGLE_PLACES_API_KEY, which must never leave
-// the server. Only call this when place.hasPhoto is true — the endpoint 404s otherwise.
-const placePhotoUri = (placeId: string) => `${API_URL}/api/places/${placeId}/photo`;
+// formatDistanceLabel/placePhotoUri now live in lib/trip-types.ts (shared with
+// components/trips/place-card.tsx, which needs them too).
 
 // getTripDaySchedule's real-calendar path (vs. its hardcoded weekday/weekend fallback) needs
 // imported events in CalendarEvent shape — only 'imported' events represent an actual busy
@@ -1009,116 +967,21 @@ export default function TripsScreen() {
       new Date(e.start_time) < slotEnd && new Date(e.end_time) > slotStart
     );
 
-  // `existingEvent` (optional): when the caller already knows exactly which Event this card
-  // represents — the "Current Schedule" timeline below does, since it's rendering directly
-  // from a real Event doc — pass it directly instead of re-deriving it via
-  // findScheduledEventForPlace's time-window overlap match. That match is a slot-proposal-only
-  // concern (the AI Schedule Proposals flow only knows a place + a slot instant until the user
-  // taps, not yet an event id); it's unnecessary indirection for a caller that already has the
-  // real event, and event.end_time may not exactly equal place.estimatedDuration.
+  // PlaceCard, RefineSearchCard, and ContactPicker used to be defined inline here (re-created
+  // every render) — extracted to components/trips/{place-card,refine-search-card,
+  // contact-picker}.tsx. See CHANGELOG.md's cleanliness-audit entry.
   //
-  // `fullWidth` (optional): the AI Schedule Proposals flow renders these in a horizontal
-  // ScrollView, sized (`placeCard`'s fixed `width: 280`) to sit alongside siblings; the
-  // Current Schedule timeline is a single vertical column with no siblings to scroll past, so
-  // this swaps in `placeCardWide` instead (already used by the joint-recommendation and
-  // refine-search results lists for the same "single-column, no horizontal scroll" shape) —
-  // same card, same fields, same tap behavior, just not scroll-sized for a context with
-  // nothing to scroll.
-  const PlaceCard = ({ place, tripId, slotStart, tripEvents, existingEvent, fullWidth }: { place: PlaceRecommendation, tripId: string, slotStart: Date, tripEvents: TripEvent[], existingEvent?: TripEvent, fullWidth?: boolean }) => {
-    // A place already added to this trip (any day) looks identical to an unscheduled one
-    // otherwise, which is exactly why tapping "Add to Itinerary" reads as "nothing happened" —
-    // it did work, there's just no visible trace of it back on the card you tapped.
-    const alreadyScheduled = isPlaceScheduled(tripEvents, place.id);
-    return (
-    <TouchableOpacity
-      style={fullWidth ? styles.placeCardWide : styles.placeCard}
-      activeOpacity={0.8}
-      onPress={() => {
-        const scheduledEvent = existingEvent ?? findScheduledEventForPlace(tripId, place.id, slotStart, place.estimatedDuration);
-        setSelectedPlace({ place, tripId, slotStart, existingEvent: scheduledEvent || null });
-        refreshContacts();
-      }}
-    >
-      <View style={styles.placeHeader}>
-        <Text style={styles.placeName} numberOfLines={1}>{place.name}</Text>
-        {alreadyScheduled ? (
-          <View style={styles.badgeScheduled}><Text style={styles.badgeText}>✓ Scheduled</Text></View>
-        ) : (
-          <View style={styles.badge}><Text style={styles.badgeText}>{place.matchScore > 0 ? `${place.matchScore} tag match` : 'New idea'}</Text></View>
-        )}
-      </View>
-      <View style={{ flexDirection: 'row' }}>
-        {place.hasPhoto && (
-          <Image source={{ uri: placePhotoUri(place.id) }} style={styles.placeThumb} />
-        )}
-        <View style={{ flex: 1 }}>
-          <Text style={styles.placeCategory}>{displayCategory(place)} • {place.rating} ★ • {formatDistanceLabel(place.distanceKm)}</Text>
-          <Text style={styles.placeDesc} numberOfLines={2}>{place.description}</Text>
-        </View>
-      </View>
-      {/* Same tap-to-navigate as the detail modal (buildMapsUrl always resolves, even with no
-          address), but right on the card itself — previously this required opening the detail
-          modal first, an extra tap that mattered most for an already-scheduled pick you just
-          want directions to. Nested TouchableOpacity resolves to this one over the card's own
-          onPress, same pattern as recommendation.tsx's handleNavigate. */}
-      <TouchableOpacity
-        style={styles.addressRow}
-        activeOpacity={0.7}
-        onPress={() => handleNavigate(place)}
-      >
-        <Text style={styles.addressIcon}>📍</Text>
-        <Text style={styles.placeAddressText} numberOfLines={1}>
-          {place.address || 'Get directions'}
-        </Text>
-        <Text style={styles.navigateChevron}>Navigate ›</Text>
-      </TouchableOpacity>
-    </TouchableOpacity>
-    );
+  // `existingEvent` (optional): when the caller already knows exactly which Event this card
+  // represents — the "Current Schedule" timeline does, since it's rendering directly from a
+  // real Event doc — it's passed through instead of re-deriving it via
+  // findScheduledEventForPlace's time-window overlap match, which is a slot-proposal-only
+  // concern (the AI Schedule Proposals flow only knows a place + a slot instant until the user
+  // taps, not yet an event id).
+  const handlePlaceCardPress = (place: PlaceRecommendation, tripId: string, slotStart: Date, existingEvent?: TripEvent) => {
+    const scheduledEvent = existingEvent ?? findScheduledEventForPlace(tripId, place.id, slotStart, place.estimatedDuration);
+    setSelectedPlace({ place, tripId, slotStart, existingEvent: scheduledEvent || null });
+    refreshContacts();
   };
-
-  // "Looking for something else?" — appended after the real suggestions (or shown alone when
-  // there are none), opens a placeholder modal pre-filled with this day/destination.
-  const RefineSearchCard = ({ trip, day, mealWindow }: { trip: TripMock, day: { dayLabel: string, date: Date }, mealWindow: boolean }) => (
-    <TouchableOpacity
-      style={styles.refineCard}
-      activeOpacity={0.8}
-      onPress={() => openRefineSearch(trip, day, mealWindow)}
-    >
-      <Text style={styles.refineCardIcon}>🔍</Text>
-      <Text style={styles.refineCardText}>Looking for{'\n'}something else?</Text>
-    </TouchableOpacity>
-  );
-
-  // selectedId/onSelect deal in Contact._id (c.id) — what participantContactIds actually
-  // needs server-side (see POST /api/trips/:tripId/events). Previously this picked
-  // c.contact_user_id (the linked User's id) instead, which would have made every real
-  // invite fail with "not found in your circle" — never caught because nothing in this
-  // session could actually run the RN UI, only the API directly.
-  const ContactPicker = ({ selectedId, onSelect }: { selectedId: string | null, onSelect: (id: string | null) => void }) => (
-    eligibleContacts.length === 0 ? (
-      <Text style={styles.emptyText}>
-        No linked friends yet — invite someone from the Circles tab, and once they join Odys.ai they&apos;ll show up here.
-      </Text>
-    ) : (
-      <View style={{ gap: 10 }}>
-        {eligibleContacts.map((c: any) => {
-          const selected = selectedId === c.id;
-          return (
-            <TouchableOpacity
-              key={c.id}
-              style={[styles.eventSelectRow, selected && styles.eventSelectRowActive]}
-              onPress={() => onSelect(selected ? null : c.id)}
-            >
-              <View style={[styles.checkboxNative, selected && styles.checkboxNativeActive]}>
-                <Text style={styles.checkboxText}>{selected ? '✓' : ''}</Text>
-              </View>
-              <Text style={[styles.eventSelectName, selected && styles.eventSelectNameActive]}>{c.name}</Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-    )
-  );
 
   return (
     <View style={styles.container}>
@@ -1270,6 +1133,9 @@ export default function TripsScreen() {
                                     tripEvents={tripEvents}
                                     existingEvent={event}
                                     fullWidth
+                                    isPlaceScheduled={isPlaceScheduled}
+                                    onPress={handlePlaceCardPress}
+                                    onNavigate={handleNavigate}
                                   />
                                 ) : (
                                   <Text style={styles.timelineEventName}>{event.place_name}</Text>
@@ -1357,7 +1223,7 @@ export default function TripsScreen() {
                                     <>
                                       <Text style={styles.emptyText}>No places fit this slot yet.</Text>
                                       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.hScroll}>
-                                        <RefineSearchCard trip={trip} day={day} mealWindow={proposal.type === 'meal'} />
+                                        <RefineSearchCard trip={trip} day={day} mealWindow={proposal.type === 'meal'} onPress={openRefineSearch} />
                                       </ScrollView>
                                     </>
                                   ) : (() => {
@@ -1371,9 +1237,9 @@ export default function TripsScreen() {
                                     return (
                                       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.hScroll}>
                                         {displayedRecs.map(p => (
-                                          <PlaceCard key={`${proposal.startTime.getTime()}-${p.id}`} place={p} tripId={trip.id} slotStart={proposal.startTime} tripEvents={tripEvents} />
+                                          <PlaceCard key={`${proposal.startTime.getTime()}-${p.id}`} place={p} tripId={trip.id} slotStart={proposal.startTime} tripEvents={tripEvents} isPlaceScheduled={isPlaceScheduled} onPress={handlePlaceCardPress} onNavigate={handleNavigate} />
                                         ))}
-                                        <RefineSearchCard trip={trip} day={day} mealWindow={proposal.type === 'meal'} />
+                                        <RefineSearchCard trip={trip} day={day} mealWindow={proposal.type === 'meal'} onPress={openRefineSearch} />
                                       </ScrollView>
                                     );
                                   })()}
@@ -1522,7 +1388,7 @@ export default function TripsScreen() {
                         Tip: friends already surfaced on this trip&apos;s card are the easiest picks — tap their bubble instead to jump straight here pre-filled.
                       </Text>
                     )}
-                    <ContactPicker selectedId={proposeContactId} onSelect={setProposeContactId} />
+                    <ContactPicker contacts={eligibleContacts} selectedId={proposeContactId} onSelect={setProposeContactId} />
                   </View>
                 )}
 
@@ -1631,7 +1497,7 @@ export default function TripsScreen() {
               <NativeDatePicker value={scheduleTime} onChange={setScheduleTime} mode="time" format="time" />
 
               <Text style={styles.inputLabel}>Invite someone (optional)</Text>
-              <ContactPicker selectedId={scheduleInviteContactId} onSelect={setScheduleInviteContactId} />
+              <ContactPicker contacts={eligibleContacts} selectedId={scheduleInviteContactId} onSelect={setScheduleInviteContactId} />
 
               <TouchableOpacity
                 style={[styles.submitBtn, {backgroundColor: '#3B82F6', marginTop: 20}]}
@@ -1932,21 +1798,19 @@ const styles = StyleSheet.create({
 
   proposalsHeader: { color: '#E2E8F0', fontSize: 16, fontWeight: '800', marginBottom: 14, textTransform: 'uppercase' },
   hScroll: { marginHorizontal: -24, paddingHorizontal: 24 },
-  placeCard: { backgroundColor: '#1E293B', padding: 20, borderRadius: 20, width: 280, marginRight: 16, borderWidth: 1, borderColor: '#334155' },
   placeCardWide: { backgroundColor: '#1E293B', padding: 20, borderRadius: 20, marginBottom: 16, borderWidth: 1, borderColor: '#334155' },
   placeHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   placeName: { color: '#F8FAFC', fontSize: 18, fontWeight: '800', flex: 1 },
   badge: { backgroundColor: '#10B981', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
-  badgeScheduled: { backgroundColor: '#3B82F6', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
   badgeText: { color: '#FFF', fontSize: 11, fontWeight: '800' },
   placeCategory: { color: '#3B82F6', fontWeight: '700', fontSize: 13, marginBottom: 10 },
   placeDesc: { color: '#94A3B8', fontSize: 14, lineHeight: 22 },
   placeThumb: { width: 56, height: 56, borderRadius: 12, marginRight: 12, backgroundColor: '#334155' },
   placeAddressText: { color: '#CBD5E1', fontSize: 13, flex: 1 },
 
-  refineCard: { backgroundColor: '#1E293B', padding: 20, borderRadius: 20, width: 140, marginRight: 16, borderWidth: 1, borderColor: '#334155', borderStyle: 'dashed', alignItems: 'center', justifyContent: 'center' },
-  refineCardIcon: { fontSize: 24, marginBottom: 10 },
-  refineCardText: { color: '#94A3B8', fontSize: 13, fontWeight: '700', textAlign: 'center', lineHeight: 18 },
+  // placeCard/refineCard/badgeScheduled removed — those lived only inside the extracted
+  // PlaceCard/RefineSearchCard components (components/trips/place-card.tsx,
+  // components/trips/refine-search-card.tsx), which define their own local styles now.
   refineContextBadge: { backgroundColor: 'rgba(59, 130, 246, 0.1)', paddingVertical: 14, borderRadius: 14, flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 18, marginBottom: 20, borderWidth: 1, borderColor: '#3B82F630' },
   refineContextText: { color: '#3B82F6', fontSize: 14, fontWeight: '800' },
 
@@ -1983,7 +1847,9 @@ const styles = StyleSheet.create({
   // from 88%) both push the header/Cancel further from the status bar than the first pass at
   // this fix did — still too close to the top on a real device even with the height cap and
   // ScrollView in place, reported live.
-  darkActionSheet: { backgroundColor: '#0F172A', borderTopLeftRadius: 32, borderTopRightRadius: 32, paddingHorizontal: 24, paddingTop: 36, paddingBottom: Platform.OS === 'ios' ? 48 : 24, borderWidth: 1, borderColor: '#1E293B', maxHeight: '82%' },
+  // Value now lives in components/ui/dark-action-sheet-style.ts (was byte-for-byte duplicated
+  // with social.tsx's `actionSheet` — see CHANGELOG.md's cleanliness-audit entry).
+  darkActionSheet: darkActionSheetStyle,
   heroDetailsBadge: { backgroundColor: 'rgba(59, 130, 246, 0.1)', paddingVertical: 14, borderRadius: 14, flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 18, marginBottom: 20, borderWidth: 1, borderColor: '#3B82F630' },
   heroDetailsTarget: { color: '#3B82F6', fontSize: 14, fontWeight: '800' },
   ratingLarge: { color: '#FCD34D', fontSize: 14, fontWeight: '900' },
@@ -2003,13 +1869,9 @@ const styles = StyleSheet.create({
   friendConfigCard: { backgroundColor: '#1E293B', borderRadius: 20, padding: 20, marginBottom: 16, borderWidth: 1, borderColor: '#334155' },
   friendConfigName: { color: '#F8FAFC', fontSize: 18, fontWeight: '700', marginBottom: 8 },
 
-  eventSelectRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 16, backgroundColor: '#0F172A', borderRadius: 12, marginBottom: 10, borderWidth: 1, borderColor: '#1E293B' },
-  eventSelectRowActive: { borderColor: '#10B981', backgroundColor: '#10B98110' },
-  checkboxNative: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: '#334155', marginRight: 16, justifyContent: 'center', alignItems: 'center' },
-  checkboxNativeActive: { backgroundColor: '#10B981', borderColor: '#10B981' },
-  checkboxText: { color: '#FFF', fontSize: 12, fontWeight: '900' },
-  eventSelectName: { color: '#94A3B8', fontSize: 16, fontWeight: '700' },
-  eventSelectNameActive: { color: '#F8FAFC' },
+  // eventSelectRow/checkboxNative/eventSelectName (+ Active variants) removed — those lived
+  // only inside the extracted ContactPicker component (components/trips/contact-picker.tsx),
+  // which defines its own local styles now.
   eventSelectTime: { color: '#64748B', fontSize: 14, marginTop: 4 },
 
   durationPill: { flex: 1, paddingVertical: 12, backgroundColor: '#1E293B', borderRadius: 12, alignItems: 'center', borderWidth: 1, borderColor: '#334155' },

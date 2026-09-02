@@ -1,5 +1,3 @@
-import { FOOD_GENRES_CATEGORIZED, ACTIVITY_GENRES_CATEGORIZED, EVENT_GENRES_CATEGORIZED } from '../constants/preferences';
-
 // Maps every leaf tag in constants/preferences.ts to Google Places API (New) type IDs
 // (https://developers.google.com/maps/documentation/places/web-service/place-types, Table A),
 // in both directions: `placeTypes` drives search-time filtering (includedType) once we call
@@ -232,13 +230,9 @@ export function supportsScheduleData(category: 'Restaurant' | 'Activity' | 'Even
   return category !== 'Event';
 }
 
-// Sanity check, exercised by lib/google-places-types.test.ts: every leaf tag declared in the
-// taxonomy has exactly one mapping entry here, and vice versa — keeps this file from silently
-// drifting out of sync if constants/preferences.ts changes.
-export function getAllTaxonomyTags(): string[] {
-  return [
-    ...FOOD_GENRES_CATEGORIZED.flatMap(g => g.activities),
-    ...ACTIVITY_GENRES_CATEGORIZED.flatMap(g => g.activities),
-    ...EVENT_GENRES_CATEGORIZED.flatMap(g => g.activities),
-  ];
-}
+// The "every leaf tag has exactly one mapping entry" sanity check (keeps this file from
+// silently drifting out of sync if constants/preferences.ts changes) used to live here as an
+// exported getAllTaxonomyTags(), but nothing outside lib/google-places-types.test.ts ever
+// called it — it existed purely to serve that one test. Moved into the test file itself
+// (still flattening the same three categorized arrays) so this module doesn't export a
+// production-facing function whose only real purpose is test setup.

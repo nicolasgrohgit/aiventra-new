@@ -93,6 +93,94 @@ this is still pre-release/beta.
   google_id: 'hijacked', firstName: 'UpdatedName'}` persisted only `firstName`; a follow-up
   `PUT` with `homebase`/`avatarUrl`/`preferences` persisted all three, confirming real profile
   editing still works unchanged.
+- **`docs/useauth-split-plan.md` still claimed the `hooks/useAuth.tsx` split was "not
+  attempted this pass — deliberately deferred," which this changelog's own prior entries
+  repeated — but the split is actually complete.** Verified directly rather than trusting the
+  stale status: `hooks/useAuth.tsx` is 236 lines (identity/session only), and
+  `lib/api-client.ts`/`hooks/useContacts.tsx`/`hooks/useEvents.tsx`/`hooks/useTrips.tsx` all
+  exist, wired up in `app/_layout.tsx` exactly per the plan's provider boundaries, each
+  carrying a "Step N of the useAuth.tsx split" comment pointing back at the doc. The doc's
+  header now says so plainly; the rest of the doc (provider boundaries, migration order,
+  verification standard) is kept as historical reference rather than deleted — see
+  `docs/useauth-split-plan.md`.
+
+### Changed
+- **`hooks/useTrips.tsx` and `hooks/useContacts.tsx` no longer each carry their own copy of
+  the offline-sync engine.** Found during the code-cleanliness audit run alongside the
+  security audit above: the two files
+  independently implemented the identical AsyncStorage-load → ref-guarded server-sync-effect →
+  diff-based create/update/delete (isolated try/catch + `lib/mutation-queue.ts` fallback) →
+  refetch shape, ~90 nearly-identical lines each. Factored into `hooks/useSyncedCollection.ts`,
+  a config-driven hook (not a component — each provider still owns its own Context and any
+  extra methods, `toggleDismissedSlot`/`refreshContacts`) that both providers now call. The
+  hand-rolled `a.id === b.id || a._id === b._id` identity check this sync logic (and 2 other
+  call sites) used is now the shared `sameEntity()` helper (`lib/entity-id.ts`). Along the way,
+  `TripsContextType`/`ContactsContextType`'s `trips: any[]`/`contacts: any[]` became
+  `ClientTrip[]`/`ClientContact[]` (defined next to `parseServerTrips`/`parseServerContacts`,
+  the shape those functions already normalized). Verified with a live round-trip against the
+  real local backend (login, create/update/delete for both a trip and a contact via direct API
+  calls matching exactly what the new hook sends) — not just `tsc --noEmit` passing.
+- **`app/(tabs)/trips.tsx`'s `PlaceCard`/`RefineSearchCard`/`ContactPicker` and
+  `app/(tabs)/profile.tsx`'s five nested modals (`OptionRow`, `ConfigRowModal`,
+  `CategorizedSelectionModal`, `GenericSelectionModal`, `VersionHistoryModal`) no longer get
+  re-created on every render of their parent screen.** Extracted to real top-level,
+  props-driven components under `components/trips/` and `components/profile/` respectively.
+  Both screens' own render bodies were touched only at each component's definition site and
+  call sites (props threaded through instead of closures) — everything else left as-is, since
+  `trips.tsx`/`social.tsx` are also under active, unrelated feature work elsewhere in this
+  sprint. New shared types (`ClientTrip`'s sibling `TripEvent`/`TripMock`/`TripBaseLocation`,
+  plus `formatDistanceLabel`/`placePhotoUri`) live in the new `lib/trip-types.ts`, specifically
+  to let the extracted components avoid importing back from `trips.tsx` itself.
+- **The `darkActionSheet` bottom-sheet style, byte-for-byte duplicated between
+  `social.tsx:439` (as `actionSheet`) and `trips.tsx:1885`, is now defined once.** Each file's
+  own comment pointed at the other instead of extracting it. Now in
+  `components/ui/dark-action-sheet-style.ts`; both screens' style objects just reference it.
+- **`CLAUDE.md` corrected to match the current codebase**, found stale during the same audit:
+  it described a mock recommendation "engine" in `lib/recommendations.ts` that's since been
+  removed (now 41 lines — just the `PlaceRecommendation` type and `displayCategory()`); said
+  `Event` "has no REST endpoints" when it has 8; omitted `models/FriendRequest.ts`/`Place.ts`
+  and most of `lib/` (`free-time.ts`, `place-matching.ts`, `google-places-client.ts`,
+  `google-places-types.ts`, `places-population.ts`, `mutation-queue.ts`, `api-client.ts`,
+  `geocoding.ts`, `hotel-geocoding.ts`, `onboarding-taste.ts`, `timezones.ts`, `maps-link.ts`,
+  `avatar.ts`, `mongodb.ts`) from its own file lists; and its "Client state" section still
+  described the pre-split `useAuth.tsx` as owning trips/contacts directly. All corrected,
+  including a note on the new `--conditions=react-server` flag `npm test` now runs with (see
+  below).
+- **The 3 dead exports the audit flagged are gone — 2 deleted outright, 1 relocated rather
+  than deleted along with its test coverage.** `computeMatchScore()`
+  (`lib/place-matching.ts`) and `getAllTaxonomyTags()` (`lib/google-places-types.ts`) had no
+  callers outside their own test files — confirmed by grepping the whole worktree, not
+  assumed. `computeMatchScore()` and its tests were deleted outright (the real scoring lives
+  server-side as a Mongo aggregation; this was a since-orphaned testable mirror of it).
+  `getAllTaxonomyTags()` existed purely to serve one valuable regression test ("every leaf tag
+  in `constants/preferences.ts` has exactly one mapping entry") — rather than delete that
+  coverage along with the export, the same flattening logic now lives directly in
+  `lib/google-places-types.test.ts` instead of being a production export. `getPendingMutationCount()`
+  (`lib/mutation-queue.ts`) was also unused — considered wiring it into a "N pending changes"
+  UI indicator instead of deleting it, since offline sync is core to this product per
+  `CLAUDE.md`, but there's no existing polling/reactive mechanism to hang it off (the only
+  thing that currently "ticks" is `useMutationQueueFlush`'s AppState-foreground listener) —
+  building one would be a small UI feature, not a cleanup, so out of scope here. Deleted as
+  genuinely dead code for now.
+- **`lib/mutation-queue.ts` (retry/reconciliation logic for failed offline-sync writes) now
+  has test coverage** (`lib/mutation-queue.test.ts`), matching its siblings
+  (`free-time.ts`/`onboarding-taste.ts`/`place-matching.ts`/`hotel-geocoding.ts`/`avatar.ts`
+  all already had `.test.ts` files) — this was the one piece of `lib/` where a silent bug is
+  most likely to hide (a failed sync just "queues again" with no visible symptom). Covers:
+  successful replay-then-remove, a dropped-connection retry that stays queued until it
+  succeeds, a non-ok response (e.g. 404) staying queued rather than being dropped, a newer
+  mutation for the same key replacing rather than stacking on the older one, and one failing
+  mutation not blocking another queued mutation in the same flush. Turned up a real gap while
+  writing it: this file's actual dependency chain (`lib/api-client.ts` → `expo-constants` →
+  `react-native`) can't be transformed by esbuild outside the RN/Expo build pipeline
+  (`react-native/index.js` uses Flow syntax `tsx --test` can't parse) — which is the real
+  reason this file had no test before now, not an oversight. Fixed by running `npm test` with
+  `--conditions=react-server`, which routes `expo-constants` to its dependency-free build
+  (meant for RSC/server contexts, equally applicable here) instead of the one that pulls in
+  `react-native` — no production code changed to make this possible. AsyncStorage (also used
+  by this file) needed a smaller stub of its own (`window.localStorage`, backed by an
+  in-memory `Map`, same stubbing pattern `lib/hotel-geocoding.test.ts` already uses for
+  `fetch`).
 
 ### Roadmap noted
 - **No database backup strategy — a real incident during this sprint, not a hypothetical.**

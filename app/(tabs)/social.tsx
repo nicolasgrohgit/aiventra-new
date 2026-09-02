@@ -8,6 +8,7 @@ import { useContacts } from '@/hooks/useContacts';
 import { useAuth } from '@/hooks/useAuth';
 import { useFriendRequests } from '@/hooks/useFriendRequests';
 import { useEvents } from '@/hooks/useEvents';
+import { darkActionSheetStyle } from '@/components/ui/dark-action-sheet-style';
 
 // Same shape GET /api/friends-nearby returns everywhere it's consumed (see NearbyFriend in
 // app/(tabs)/trips.tsx) — duplicated locally rather than shared/exported since it's a small,
@@ -617,14 +618,9 @@ const styles = StyleSheet.create({
   emptyText: { color: '#64748B', fontStyle: 'italic', textAlign: 'center', marginTop: 20 },
   
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
-  // maxHeight caps this the same way trips.tsx's darkActionSheet does — a longer circle list
-  // shouldn't be able to grow this sheet past the point where its content (or Cancel, on a
-  // shorter screen) gets pushed off-screen.
-  // paddingTop (36, vs. the 24 every other side uses) and a lower maxHeight cap (82%, down
-  // from 88%) both push this sheet's top content further from the status bar than the first
-  // pass at this fix did — same adjustment as trips.tsx's darkActionSheet, reported too close
-  // to the top on a real device even with the height cap and ScrollView in place.
-  actionSheet: { backgroundColor: '#0F172A', borderTopLeftRadius: 32, borderTopRightRadius: 32, paddingHorizontal: 24, paddingTop: 36, paddingBottom: Platform.OS === 'ios' ? 48 : 24, borderWidth: 1, borderColor: '#1E293B', maxHeight: '82%' },
+  // Value now lives in components/ui/dark-action-sheet-style.ts (was byte-for-byte duplicated
+  // with trips.tsx's `darkActionSheet` — see CHANGELOG.md's cleanliness-audit entry).
+  actionSheet: darkActionSheetStyle,
   sheetTitle: { color: '#FFF', fontSize: 22, fontWeight: '800', marginBottom: 6, textAlign: 'center' },
   sheetSubtitle: { color: '#94A3B8', fontSize: 15, marginBottom: 28, textAlign: 'center' },
   sheetOptionsBounds: { backgroundColor: '#1E293B', borderRadius: 16, overflow: 'hidden' },

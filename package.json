@@ -9,7 +9,7 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "test": "tsx --test lib/*.test.ts models/*.test.ts",
+    "test": "tsx --conditions=react-server --test lib/*.test.ts models/*.test.ts",
     "server": "tsx server.ts",
     "seed-curated-places": "tsx scripts/seed-curated-places.ts",
     "link-contact": "tsx scripts/link-contact.ts",

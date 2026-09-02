@@ -87,8 +87,3 @@ export async function flushMutationQueue(): Promise<void> {
   }
   if (changed) await persist();
 }
-
-export async function getPendingMutationCount(): Promise<number> {
-  const q = await load();
-  return Object.keys(q).length;
-}

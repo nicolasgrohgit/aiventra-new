@@ -1,13 +1,27 @@
 # Splitting `hooks/useAuth.tsx`
 
-Not attempted this pass — deliberately deferred. `useAuth.tsx` is ~600 lines now (auth +
-trips + contacts + events + token plumbing) and is imported by 8 screens (`trips.tsx`,
-`social.tsx`, `profile.tsx`, `index.tsx`, `onboarding.tsx`, `login.tsx`, `app/_layout.tsx`,
-`recommendation.tsx`). A full split touches all of them, and this sandbox has no way to
-actually run the RN app (only `tsc`/`eslint` static checks) — attempting the whole thing
-in one pass with no live-app verification risks landing in a half-migrated state, which is
-worse than not starting. This plan is the safe path to do it properly, whenever it's picked
-up next.
+**Done.** All 5 steps below are complete: `hooks/useAuth.tsx` is 236 lines (identity/session
+only), and `lib/api-client.ts`/`hooks/useContacts.tsx`/`hooks/useEvents.tsx`/
+`hooks/useTrips.tsx` all exist, wired up exactly per the provider boundaries and nesting order
+below, each carrying a "Step N of 5" comment pointing back at this doc. Corrected as part of a
+code-cleanliness pass that found this doc (and `CHANGELOG.md`'s own prior entries) still
+describing this as "deliberately deferred" — verified directly by reading each file rather
+than trusting the stale status. Left in place, not deleted: the reasoning below (provider
+boundaries, migration order, verification standard) is still useful context for anyone
+touching these files, e.g. `hooks/useSyncedCollection.ts`, added afterward to de-duplicate
+`useTrips.tsx`/`useContacts.tsx`'s shared sync logic on top of this same split.
+
+The paragraph below is kept as-is (historical) — it described the plan's status before this
+correction, not the plan's content:
+
+> Not attempted this pass — deliberately deferred. `useAuth.tsx` is ~600 lines now (auth +
+> trips + contacts + events + token plumbing) and is imported by 8 screens (`trips.tsx`,
+> `social.tsx`, `profile.tsx`, `index.tsx`, `onboarding.tsx`, `login.tsx`, `app/_layout.tsx`,
+> `recommendation.tsx`). A full split touches all of them, and this sandbox has no way to
+> actually run the RN app (only `tsc`/`eslint` static checks) — attempting the whole thing
+> in one pass with no live-app verification risks landing in a half-migrated state, which is
+> worse than not starting. This plan is the safe path to do it properly, whenever it's picked
+> up next.
 
 ## Proposed provider boundaries
 
