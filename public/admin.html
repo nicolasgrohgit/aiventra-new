@@ -87,6 +87,37 @@ const cancelBtn = document.getElementById('cancel-edit');
 const submitBtn = document.getElementById('submit-btn');
 const formTitle = document.getElementById('form-title');
 
+// The /admin/api/places routes now require an ADMIN_TOKEN header (see server.ts's
+// requireAdminToken) — this page has no server-side gate of its own (can't easily be added
+// at the express.static level without restructuring), so it's inert without a valid token
+// either way, which is the part that actually matters. Token lives only in sessionStorage
+// (cleared when the tab closes), never written into the page/URL.
+let adminToken = sessionStorage.getItem('odysai_admin_token') || '';
+
+function ensureAdminToken() {
+  if (!adminToken) {
+    adminToken = prompt('Admin token required (ADMIN_TOKEN on the server):') || '';
+    if (adminToken) sessionStorage.setItem('odysai_admin_token', adminToken);
+  }
+  return adminToken;
+}
+
+// Wraps fetch to attach the admin token header and to re-prompt (once) on a 401, in case the
+// stored token is stale/wrong, instead of failing silently.
+async function adminFetch(url, options) {
+  ensureAdminToken();
+  const res = await fetch(url, {
+    ...options,
+    headers: { ...(options && options.headers), 'X-Admin-Token': adminToken }
+  });
+  if (res.status === 401) {
+    sessionStorage.removeItem('odysai_admin_token');
+    adminToken = '';
+    setStatus('Invalid admin token.', true);
+  }
+  return res;
+}
+
 function setStatus(msg, isError) {
   statusEl.textContent = msg || '';
   statusEl.style.color = isError ? '#b00020' : '#0a7a2f';
@@ -106,7 +137,7 @@ function resetForm() {
 async function loadPlaces() {
   const city = document.getElementById('city-filter').value.trim();
   const url = city ? `/admin/api/places?city=${encodeURIComponent(city)}` : '/admin/api/places';
-  const res = await fetch(url);
+  const res = await adminFetch(url);
   if (!res.ok) {
     setStatus('Failed to load places', true);
     return;
@@ -156,7 +187,7 @@ function startEdit(p) {
 
 async function deletePlace(id, name) {
   if (!confirm(`Delete "${name}"? This can't be undone.`)) return;
-  const res = await fetch(`/admin/api/places/${id}`, { method: 'DELETE' });
+  const res = await adminFetch(`/admin/api/places/${id}`, { method: 'DELETE' });
   if (!res.ok) {
     setStatus('Delete failed', true);
     return;
@@ -179,7 +210,7 @@ form.addEventListener('submit', async (e) => {
     description: document.getElementById('f-description').value.trim()
   };
 
-  const res = await fetch(id ? `/admin/api/places/${id}` : '/admin/api/places', {
+  const res = await adminFetch(id ? `/admin/api/places/${id}` : '/admin/api/places', {
     method: id ? 'PUT' : 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)

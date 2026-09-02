@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
+import rateLimit from 'express-rate-limit';
 import pino from 'pino';
 import pinoHttp from 'pino-http';
 import * as Sentry from '@sentry/node';
@@ -12,6 +13,8 @@ import {
   SOURCE_RANK_BONUS, DEFAULT_MAX_DISTANCE_KM, resolveSearchRadiusKm, GeoPoint
 } from './lib/place-matching';
 import { guessTimezoneForCity } from './lib/timezones';
+import { encryptWithKey, decryptWithKey, isEncryptedValue } from './lib/field-encryption';
+import { getOrCreateUserDataKey, getUserDataKeyIfExists } from './lib/user-data-key';
 import User from './models/User';
 import Trip from './models/Trip';
 import Contact from './models/Contact';
@@ -40,10 +43,37 @@ if (!JWT_SECRET) {
 const app = express();
 const port = process.env.PORT || 3000;
 
+// Cheap insurance across the whole app — generous enough to never bother a real client,
+// there specifically to blunt scripted abuse now that the app is reachable over the public
+// beta tunnel, not just localhost. The two concrete enumeration/brute-force vectors from the
+// security audit (POST /api/auth/login handing out a session from an email alone with no
+// password, and POST /api/friend-requests distinguishing "no account" via a 404) get their
+// own much stricter limiter below, applied on top of this one.
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 300,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+app.use(globalLimiter);
+
+const strictLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later.' }
+});
+
 app.use(cors());
 app.use(express.json());
-// Local-only admin tool for curating vetted places (see /admin/api/places below) — no auth
-// by design, matches the user's explicit "local-only, no auth" decision for this tool.
+// Local-only admin tool for curating vetted places (see /admin/api/places below). Was
+// "no auth by design" — that assumption didn't survive the beta tunnel making this
+// internet-reachable; the /admin/api/places routes below now require ADMIN_TOKEN (see
+// requireAdminToken). admin.html itself still can't be gated at this express.static level
+// without restructuring, but it's inert without a valid token either way now that the API
+// routes it calls are locked down — it prompts for the token client-side and sends it as a
+// header on every admin API call it makes.
 app.use(express.static('public'));
 app.use(pinoHttp({
   logger,
@@ -79,6 +109,28 @@ function authenticate(req: AuthedRequest, res: express.Response, next: express.N
   }
 }
 
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
+
+// Shared-secret gate for the /admin/api/places routes (see the express.static comment above).
+// Deliberately not JWT/`authenticate` — this is a single ops tool for curating vetted places,
+// not a per-user resource, so a single shared token compared header-to-env-var is the right
+// weight of protection, not a second full auth system. `admin.html`'s own JS prompts for this
+// token and echoes it back on every admin API call (see public/admin.html) — this is what
+// actually stops that page from being useful to anyone who doesn't have the token, since the
+// page itself can't be gated at the express.static level without restructuring.
+function requireAdminToken(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (!ADMIN_TOKEN) {
+    // Fails closed, not open: an unset ADMIN_TOKEN disables the admin API entirely rather
+    // than falling back to "no check" (which is exactly the bug this middleware exists to fix).
+    return res.status(503).json({ error: 'Admin API is disabled: ADMIN_TOKEN is not configured on the server.' });
+  }
+  const provided = req.headers['x-admin-token'];
+  if (provided !== ADMIN_TOKEN) {
+    return res.status(401).json({ error: 'Invalid or missing admin token' });
+  }
+  next();
+}
+
 // Routes catch and respond to their own errors (rather than calling next(err)), so
 // Express's default/Sentry error-handling middleware never sees them — this is what
 // actually gets a 500 into the logs and into Sentry (when configured) instead of vanishing.
@@ -108,7 +160,7 @@ app.get('/health', (_req: express.Request, res: express.Response) => {
 // REST API Endpoints
 
 // 1. Auth & Profiles
-app.post('/api/auth/login', async (req: AuthedRequest, res: express.Response) => {
+app.post('/api/auth/login', strictLimiter, async (req: AuthedRequest, res: express.Response) => {
   try {
     const { email, name, firstName, lastName, dob, homebase, avatarUrl, preferences } = req.body;
     if (!email) {
@@ -145,7 +197,7 @@ app.post('/api/auth/login', async (req: AuthedRequest, res: express.Response) =>
     res.json({ user, token });
   } catch (error: any) {
     reportError(error, req, 'login failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -161,18 +213,42 @@ app.get('/api/users/:id', authenticate, async (req: AuthedRequest, res: express.
     res.json(user);
   } catch (error: any) {
     reportError(error, req, 'get user failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+// Explicit allowlist, not `$set: req.body` — the schema is `strict: false` (see
+// models/User.ts) specifically to allow ad hoc top-level fields like firstName/homebase, which
+// means an unfiltered $set would let a client set ANY top-level field on their own account,
+// including ones that don't exist yet (a real privilege-escalation vector the moment a role/
+// isAdmin-type field is ever added). Covers every field the real client callers actually send
+// (verified against hooks/useAuth.tsx's completeOnboarding/updatePreferences/updateUser and
+// every updateUser(...) call site in app/onboarding.tsx and app/(tabs)/profile.tsx): profile
+// edits (firstName, lastName, email, dob, name, homebase), the homebase-sharing toggle
+// (homebaseSharedCircles), the avatar picker (avatarUrl — a client-side base64 data URI, see
+// lib/avatar.ts, deliberately camelCase and distinct from the snake_case `avatar_url` set at
+// account creation in POST /api/auth/login), and preferences (onboarding + the Profile tab's
+// preference pills). Mirrors the same explicit-allowlist pattern already used in
+// POST /api/trips / PUT /api/trips/:id above.
+const USER_UPDATABLE_FIELDS = [
+  'firstName', 'lastName', 'email', 'name', 'dob', 'homebase',
+  'homebaseSharedCircles', 'avatarUrl', 'preferences'
+] as const;
 
 app.put('/api/users/:id', authenticate, async (req: AuthedRequest, res: express.Response) => {
   try {
     if (req.params.id !== req.userId) {
       return res.status(403).json({ error: 'Forbidden' });
     }
+    const updateData: Record<string, any> = {};
+    for (const field of USER_UPDATABLE_FIELDS) {
+      if (req.body[field] !== undefined) {
+        updateData[field] = req.body[field];
+      }
+    }
     const user = await User.findByIdAndUpdate(
       req.params.id,
-      { $set: req.body },
+      { $set: updateData },
       { new: true, runValidators: true }
     );
     if (!user) {
@@ -181,7 +257,7 @@ app.put('/api/users/:id', authenticate, async (req: AuthedRequest, res: express.
     res.json(user);
   } catch (error: any) {
     reportError(error, req, 'update user failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -211,7 +287,7 @@ app.get('/api/trips', authenticate, async (req: AuthedRequest, res: express.Resp
     res.json(trips);
   } catch (error: any) {
     reportError(error, req, 'list trips failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -237,7 +313,7 @@ app.post('/api/trips', authenticate, async (req: AuthedRequest, res: express.Res
     res.json(trip);
   } catch (error: any) {
     reportError(error, req, 'create trip failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -266,7 +342,7 @@ app.put('/api/trips/:id', authenticate, async (req: AuthedRequest, res: express.
     res.json(trip);
   } catch (error: any) {
     reportError(error, req, 'update trip failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -282,7 +358,7 @@ app.delete('/api/trips/:id', authenticate, async (req: AuthedRequest, res: expre
     res.json({ success: true, message: 'Trip deleted successfully' });
   } catch (error: any) {
     reportError(error, req, 'delete trip failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -308,7 +384,7 @@ app.post('/api/trips/:tripId/dismissed-slots', authenticate, async (req: AuthedR
     res.json({ dismissedSlots: trip.dismissedSlots });
   } catch (error: any) {
     reportError(error, req, 'dismiss slot failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -325,7 +401,7 @@ app.delete('/api/trips/:tripId/dismissed-slots/:slotKey', authenticate, async (r
     res.json({ dismissedSlots: trip.dismissedSlots });
   } catch (error: any) {
     reportError(error, req, 'restore dismissed slot failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -417,9 +493,50 @@ app.get('/api/friends-nearby', authenticate, async (req: AuthedRequest, res: exp
     res.json(Array.from(results.values()));
   } catch (error: any) {
     reportError(error, req, 'friends nearby lookup failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+// --- Per-user field encryption for Event.title / .location / .place_name — the local-only
+// stopgap from docs/data-encryption-plan.md (see lib/field-encryption.ts for the full design
+// writeup). Every helper below is a clean no-op — fields read/write as plain strings, current
+// behavior unchanged — until ENCRYPTION_MASTER_KEY is actually set, so this is safe to ship
+// without requiring every environment to configure it immediately. getOrCreateUserDataKey/
+// getUserDataKeyIfExists live in lib/user-data-key.ts (not inline here) so
+// scripts/migrate-encrypt-events.ts can share the exact same key-lookup logic instead of
+// re-deriving its own copy that could quietly drift from what the live routes do.
+
+function encryptField(value: string | undefined, key: Buffer | null): string | undefined {
+  if (value === undefined || key === null) return value;
+  return encryptWithKey(value, key);
+}
+
+function decryptField(value: string | undefined, key: Buffer | null): string | undefined {
+  if (value === undefined || key === null || !isEncryptedValue(value)) return value;
+  return decryptWithKey(value, key);
+}
+
+// Decrypts title/location/place_name on a batch of Event documents — each potentially
+// created by a different user (e.g. GET /api/events/invited spans many organizers) — fetching
+// each unique creator's data key at most once. Returns plain objects, not Mongoose documents,
+// since the encrypted fields are being rewritten with their decrypted values.
+async function decryptEvents(events: any[]): Promise<any[]> {
+  const uniqueCreatorIds = Array.from(new Set(events.map(e => e.created_by.toString())));
+  const keysByCreator = new Map<string, Buffer | null>();
+  for (const id of uniqueCreatorIds) {
+    keysByCreator.set(id, await getUserDataKeyIfExists(id));
+  }
+  return events.map(e => {
+    const obj = e.toObject ? e.toObject() : e;
+    const key = keysByCreator.get(obj.created_by.toString()) ?? null;
+    return {
+      ...obj,
+      title: decryptField(obj.title, key),
+      location: decryptField(obj.location, key),
+      place_name: decryptField(obj.place_name, key)
+    };
+  });
+}
 
 // 3. Events (created and, in the future, calendar-imported — see models/Event.ts)
 // Kept as their own collection rather than embedded in Trip specifically so "events I'm
@@ -428,10 +545,10 @@ app.get('/api/friends-nearby', authenticate, async (req: AuthedRequest, res: exp
 app.get('/api/events/invited', authenticate, async (req: AuthedRequest, res: express.Response) => {
   try {
     const events = await Event.find({ 'participants.user_id': req.userId }).sort({ start_time: 1 });
-    res.json(events);
+    res.json(await decryptEvents(events));
   } catch (error: any) {
     reportError(error, req, 'list invited events failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -454,10 +571,10 @@ app.get('/api/trips/:tripId/events', authenticate, async (req: AuthedRequest, re
         ] }
       : { trip_id: trip._id };
     const events = await Event.find(query).sort({ start_time: 1 });
-    res.json(events);
+    res.json(await decryptEvents(events));
   } catch (error: any) {
     reportError(error, req, 'list trip events failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -498,16 +615,17 @@ app.post('/api/trips/:tripId/events', authenticate, async (req: AuthedRequest, r
       }));
     }
 
+    const dataKey = await getOrCreateUserDataKey(req.userId as string);
     const event = await Event.create({
       trip_id: trip._id,
       created_by: req.userId,
       source: 'created',
-      title,
+      title: encryptField(title, dataKey),
       start_time: new Date(startTime),
       end_time: new Date(endTime),
       place_id: placeId,
-      place_name: placeName,
-      location,
+      place_name: encryptField(placeName, dataKey),
+      location: encryptField(location, dataKey),
       participants
     });
 
@@ -515,10 +633,12 @@ app.post('/api/trips/:tripId/events', authenticate, async (req: AuthedRequest, r
       { event: 'event_created', userId: req.userId, tripId: trip._id.toString(), eventId: event._id.toString(), participantCount: participants.length },
       'event created'
     );
-    res.json(event);
+    // Return the plaintext values already in hand rather than re-decrypting — this request
+    // already knows them, so there's no need for a second data-key lookup.
+    res.json({ ...event.toObject(), title, place_name: placeName, location });
   } catch (error: any) {
     reportError(error, req, 'create event failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -538,6 +658,10 @@ app.post('/api/trips/:tripId/events/import', authenticate, async (req: AuthedReq
       return res.status(400).json({ error: 'events must be an array' });
     }
 
+    // Computed once, not per-event — every imported event in this batch shares the same
+    // created_by (req.userId), so this is one data-key lookup/creation for the whole batch.
+    const dataKey = await getOrCreateUserDataKey(req.userId as string);
+
     const imported = [];
     for (const evt of events) {
       const { id, title, startTime, endTime, location } = evt || {};
@@ -550,10 +674,10 @@ app.post('/api/trips/:tripId/events/import', authenticate, async (req: AuthedReq
             trip_id: trip._id,
             created_by: req.userId,
             source: 'imported',
-            title,
+            title: encryptField(title, dataKey),
             start_time: new Date(startTime),
             end_time: new Date(endTime),
-            location,
+            location: encryptField(location, dataKey),
             google_event_id: id
           }
         },
@@ -566,10 +690,10 @@ app.post('/api/trips/:tripId/events/import', authenticate, async (req: AuthedReq
       { event: 'events_imported', userId: req.userId, tripId: trip._id.toString(), count: imported.length },
       'calendar events imported'
     );
-    res.json(imported);
+    res.json(await decryptEvents(imported));
   } catch (error: any) {
     reportError(error, req, 'import events failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -590,12 +714,13 @@ app.put('/api/events/:id', authenticate, async (req: AuthedRequest, res: express
       return res.status(404).json({ error: 'Event not found' });
     }
 
-    if (title !== undefined) event.title = title;
+    const dataKey = await getOrCreateUserDataKey(req.userId as string);
+    if (title !== undefined) event.title = encryptField(title, dataKey) as string;
     if (startTime !== undefined) event.start_time = new Date(startTime);
     if (endTime !== undefined) event.end_time = new Date(endTime);
     if (placeId !== undefined) event.place_id = placeId;
-    if (placeName !== undefined) event.place_name = placeName;
-    if (location !== undefined) event.location = location;
+    if (placeName !== undefined) event.place_name = encryptField(placeName, dataKey);
+    if (location !== undefined) event.location = encryptField(location, dataKey);
 
     // participantContactIds, when present, replaces the invite list wholesale — same
     // Contact -> User resolution (and the same "must be a joined, linked contact" rule) as
@@ -627,10 +752,11 @@ app.put('/api/events/:id', authenticate, async (req: AuthedRequest, res: express
     }
 
     await event.save();
-    res.json(event);
+    const [decrypted] = await decryptEvents([event]);
+    res.json(decrypted);
   } catch (error: any) {
     reportError(error, req, 'update event failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -681,7 +807,7 @@ app.put('/api/events/:id/respond', authenticate, async (req: AuthedRequest, res:
     res.json(event);
   } catch (error: any) {
     reportError(error, req, 'respond to event failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -694,7 +820,7 @@ app.delete('/api/events/:id', authenticate, async (req: AuthedRequest, res: expr
     res.json({ success: true, message: 'Event deleted successfully' });
   } catch (error: any) {
     reportError(error, req, 'delete event failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -803,7 +929,7 @@ app.post('/api/events/:id/recommendations', authenticate, async (req: AuthedRequ
     res.json(stripPhotoRef(tieredShuffle(places)));
   } catch (error: any) {
     reportError(error, req, 'joint recommendation failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -893,7 +1019,7 @@ app.post('/api/recommendations', authenticate, async (req: AuthedRequest, res: e
     res.json(stripPhotoRef(tieredShuffle(places)));
   } catch (error: any) {
     reportError(error, req, 'solo recommendation failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -940,7 +1066,7 @@ app.get('/api/places/:id/photo', async (req: AuthedRequest, res: express.Respons
     res.send(buffer);
   } catch (error: any) {
     reportError(error, req, 'place photo proxy failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -977,7 +1103,7 @@ app.get('/api/places/city-photo', async (req: AuthedRequest, res: express.Respon
     res.json({ placeId: place._id });
   } catch (error: any) {
     reportError(error, req, 'city photo lookup failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -999,7 +1125,7 @@ app.get('/api/places/:id', async (req: AuthedRequest, res: express.Response) => 
     res.json({ ...result, matchScore: 0 });
   } catch (error: any) {
     reportError(error, req, 'place lookup failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -1010,7 +1136,7 @@ app.get('/api/contacts', authenticate, async (req: AuthedRequest, res: express.R
     res.json(contacts);
   } catch (error: any) {
     reportError(error, req, 'list contacts failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -1035,7 +1161,7 @@ app.post('/api/contacts', authenticate, async (req: AuthedRequest, res: express.
     res.json(contact);
   } catch (error: any) {
     reportError(error, req, 'create contact failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -1058,7 +1184,7 @@ app.put('/api/contacts/:id', authenticate, async (req: AuthedRequest, res: expre
     res.json(contact);
   } catch (error: any) {
     reportError(error, req, 'update contact failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -1071,7 +1197,7 @@ app.delete('/api/contacts/:id', authenticate, async (req: AuthedRequest, res: ex
     res.json({ success: true, message: 'Contact deleted successfully' });
   } catch (error: any) {
     reportError(error, req, 'delete contact failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -1081,7 +1207,7 @@ app.delete('/api/contacts/:id', authenticate, async (req: AuthedRequest, res: ex
 // only ever targets an existing User, looked up by email, and requires the recipient to
 // accept before any Contact document is created — invite-by-email stays unilateral by
 // design, this is not.
-app.post('/api/friend-requests', authenticate, async (req: AuthedRequest, res: express.Response) => {
+app.post('/api/friend-requests', strictLimiter, authenticate, async (req: AuthedRequest, res: express.Response) => {
   try {
     const { toEmail, circleTag } = req.body;
     if (!toEmail || !circleTag) {
@@ -1126,7 +1252,7 @@ app.post('/api/friend-requests', authenticate, async (req: AuthedRequest, res: e
     res.json(request);
   } catch (error: any) {
     reportError(error, req, 'send friend request failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -1138,7 +1264,7 @@ app.get('/api/friend-requests/incoming', authenticate, async (req: AuthedRequest
     res.json(requests);
   } catch (error: any) {
     reportError(error, req, 'list incoming friend requests failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -1150,7 +1276,7 @@ app.get('/api/friend-requests/sent', authenticate, async (req: AuthedRequest, re
     res.json(requests);
   } catch (error: any) {
     reportError(error, req, 'list sent friend requests failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -1213,7 +1339,7 @@ app.put('/api/friend-requests/:id/respond', authenticate, async (req: AuthedRequ
     res.json(request);
   } catch (error: any) {
     reportError(error, req, 'respond to friend request failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -1223,7 +1349,7 @@ app.put('/api/friend-requests/:id/respond', authenticate, async (req: AuthedRequ
 // source: 'curated' server-side, regardless of what a client sends, so this is the one and
 // only path that can create permanent, vetted entries — everything else in the app only
 // ever produces source: 'generated' filler (see lib/places-population.ts).
-app.get('/admin/api/places', async (req: AuthedRequest, res: express.Response) => {
+app.get('/admin/api/places', requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
   try {
     const filter: any = {};
     if (typeof req.query.city === 'string' && req.query.city.trim()) {
@@ -1233,11 +1359,11 @@ app.get('/admin/api/places', async (req: AuthedRequest, res: express.Response) =
     res.json(places);
   } catch (error: any) {
     reportError(error, req, 'list admin places failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-app.post('/admin/api/places', async (req: AuthedRequest, res: express.Response) => {
+app.post('/admin/api/places', requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
   try {
     const { name, city, category, genre, rating, description, estimatedDuration, distanceKm } = req.body;
     if (!name || !city || !category || !genre) {
@@ -1258,11 +1384,11 @@ app.post('/admin/api/places', async (req: AuthedRequest, res: express.Response) 
     res.json(place);
   } catch (error: any) {
     reportError(error, req, 'create admin place failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-app.put('/admin/api/places/:id', async (req: AuthedRequest, res: express.Response) => {
+app.put('/admin/api/places/:id', requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
   try {
     const { name, city, category, genre, rating, description, estimatedDuration, distanceKm } = req.body;
     const updateData: any = { source: 'curated' };
@@ -1290,11 +1416,11 @@ app.put('/admin/api/places/:id', async (req: AuthedRequest, res: express.Respons
     res.json(place);
   } catch (error: any) {
     reportError(error, req, 'update admin place failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-app.delete('/admin/api/places/:id', async (req: AuthedRequest, res: express.Response) => {
+app.delete('/admin/api/places/:id', requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
   try {
     const place = await Place.findByIdAndDelete(req.params.id);
     if (!place) {
@@ -1303,7 +1429,7 @@ app.delete('/admin/api/places/:id', async (req: AuthedRequest, res: express.Resp
     res.json({ success: true, message: 'Place deleted successfully' });
   } catch (error: any) {
     reportError(error, req, 'delete admin place failed');
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
