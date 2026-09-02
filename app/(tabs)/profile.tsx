@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, ScrollView, TouchableOpacity, Text, Platform, TextInput, Modal, Alert, ActivityIndicator } from 'react-native';
+import { StyleSheet, View, ScrollView, TouchableOpacity, Text, Platform, TextInput, Alert, ActivityIndicator } from 'react-native';
 import { Image } from 'expo-image';
 import Constants from 'expo-constants';
 import * as ImagePicker from 'expo-image-picker';
@@ -10,8 +10,12 @@ import { NativeDatePicker } from '@/components/ui/NativeDatePicker';
 import { searchCities, CityResult } from '@/lib/geocoding';
 import { FOOD_GENRES_CATEGORIZED, ACTIVITY_GENRES_CATEGORIZED, EVENT_GENRES_CATEGORIZED } from '@/constants/preferences';
 import { CircleShareSelector } from '@/components/ui/circle-share-selector';
-import { hasGoogleMatch } from '@/lib/google-places-types';
 import { getAvatarResizeActions, AVATAR_JPEG_QUALITY, isAvatarBase64SizeAcceptable, toAvatarDataUri } from '@/lib/avatar';
+import { OptionRow } from '@/components/profile/option-row';
+import { ConfigRowModal } from '@/components/profile/config-row-modal';
+import { CategorizedSelectionModal } from '@/components/profile/categorized-selection-modal';
+import { GenericSelectionModal } from '@/components/profile/generic-selection-modal';
+import { VersionHistoryModal } from '@/components/profile/version-history-modal';
 
 export const COMMON_DIETS = ['Vegetarian', 'Vegan', 'Halal', 'Kosher', 'Gluten-Free', 'Keto', 'Nut-Free'];
 
@@ -222,149 +226,9 @@ export default function ProfileScreen() {
     }
   };
 
-  // `wrap`: for rows with more options than comfortably fit on one line (e.g. the 9 dinner-time
-  // presets) — flex:1 pills dividing a single row got so narrow their own text wrapped
-  // mid-value ("18:0" / "0"). Wrapped pills size to their content and flow onto multiple lines
-  // instead. Default (no `wrap`) is unchanged for the short rows (Budget/Currency/Date Format)
-  // that already look right as evenly-filled single-row pills.
-  const OptionRow = ({ label, options, current, onSelect, wrap }: any) => (
-    <View style={styles.optionRowContainer}>
-      <Text style={styles.optionLabel}>{label}</Text>
-      <View style={[styles.optionsWrapper, wrap && styles.optionsWrapperWrap]}>
-        {options.map((opt: string) => (
-          <TouchableOpacity
-            key={opt}
-            onPress={() => onSelect(opt)}
-            activeOpacity={0.8}
-            style={[styles.optionPill, wrap && styles.optionPillAuto, current === opt && styles.optionPillActive]}
-          >
-            <Text style={[styles.optionText, current === opt && styles.optionTextActive]}>{opt}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-    </View>
-  );
-
-  const ConfigRowModal = ({ title, arrayString, openModal }: { title: string, arrayString: string[], openModal: () => void }) => (
-     <View style={{ marginBottom: 24 }}>
-       <View style={styles.dietHeaderRow}>
-         <Text style={styles.optionLabel}>{title}</Text>
-         <TouchableOpacity style={styles.editDietBtn} onPress={openModal}>
-           <Text style={styles.editDietBtnText}>Edit</Text>
-         </TouchableOpacity>
-       </View>
-       <View style={styles.dietTagsView}>
-         {arrayString?.map((item: string, i: number) => (
-           <View key={i} style={styles.dietTag}><Text style={styles.dietTagText}>{item}</Text></View>
-         ))}
-         {arrayString.length === 0 && <Text style={styles.cardDesc}>Nothing selected yet.</Text>}
-       </View>
-     </View>
-  );
-
-  const CategorizedSelectionModal = ({ visible, close, title, description, groupedOptions, selected, toggle, category }: any) => (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={close}>
-      <View style={styles.modalContainer}>
-        <View style={styles.modalHeader}>
-          <Text style={styles.modalTitle}>{title}</Text>
-          <TouchableOpacity onPress={close} style={styles.closeButton}>
-            <Text style={styles.closeButtonText}>Done</Text>
-          </TouchableOpacity>
-        </View>
-        <Text style={styles.modalSubtitle}>{description}</Text>
-
-        <ScrollView showsVerticalScrollIndicator={false}>
-          {category === 'Event' && (
-            <Text style={styles.categoryNote}>
-              Event venues are covered — matching what&apos;s actually on during your dates is coming soon.
-            </Text>
-          )}
-          {groupedOptions.map((group: any) => (
-            <View key={group.type} style={styles.categoryGroup}>
-              <Text style={styles.categoryTitle}>{group.type}</Text>
-              <View style={styles.bubblesContainer}>
-                {group.activities.map((opt: string) => {
-                  const active = selected.includes(opt);
-                  const comingSoon = !hasGoogleMatch(opt);
-                  return (
-                    <TouchableOpacity
-                      key={opt}
-                      style={[styles.bubbleOption, active && styles.bubbleOptionActive, comingSoon && styles.bubbleOptionComingSoon]}
-                      onPress={() => toggle(opt)}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={[styles.bubbleOptionText, active && styles.bubbleOptionTextActive]}>{opt}</Text>
-                      {comingSoon && <Text style={styles.comingSoonBadge}>Soon</Text>}
-                    </TouchableOpacity>
-                  )
-                })}
-              </View>
-            </View>
-          ))}
-        </ScrollView>
-      </View>
-    </Modal>
-  );
-
-  const GenericSelectionModal = ({ visible, close, title, description, options, selected, toggle }: any) => (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={close}>
-      <View style={styles.modalContainer}>
-        <View style={styles.modalHeader}>
-          <Text style={styles.modalTitle}>{title}</Text>
-          <TouchableOpacity onPress={close} style={styles.closeButton}>
-            <Text style={styles.closeButtonText}>Done</Text>
-          </TouchableOpacity>
-        </View>
-        <Text style={styles.modalSubtitle}>{description}</Text>
-        
-        <ScrollView>
-          {options.map((opt: string) => {
-            const active = selected.includes(opt);
-            return (
-              <TouchableOpacity key={opt} style={[styles.dietModalOption, active && styles.dietModalOptionActive]} onPress={() => toggle(opt)} activeOpacity={0.7}>
-                <Text style={[styles.dietModalOptionText, active && styles.dietModalOptionTextActive]}>{opt}</Text>
-                {active && <Text style={styles.checkmark}>✓</Text>}
-              </TouchableOpacity>
-            )
-          })}
-        </ScrollView>
-      </View>
-    </Modal>
-  );
-
-  const VersionHistoryModal = ({ visible, close }: { visible: boolean, close: () => void }) => (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={close}>
-      <View style={styles.modalContainer}>
-        <View style={styles.modalHeader}>
-          <Text style={styles.modalTitle}>Version History</Text>
-          <TouchableOpacity onPress={close} style={styles.closeButton}>
-            <Text style={styles.closeButtonText}>Close</Text>
-          </TouchableOpacity>
-        </View>
-        <Text style={styles.modalSubtitle}>Track the evolution and changes made to Odys.ai.</Text>
-        
-        <ScrollView showsVerticalScrollIndicator={false}>
-          {CHANGELOG_HISTORY.map((item) => (
-            <View key={item.version} style={styles.changelogCard}>
-              <View style={styles.changelogHeader}>
-                <Text style={styles.changelogVersion}>v{item.version}</Text>
-                <Text style={styles.changelogDate}>{item.date}</Text>
-              </View>
-              <Text style={styles.changelogTitle}>{item.title}</Text>
-              <View style={styles.changelogList}>
-                {item.changes.map((change, i) => (
-                  <View key={i} style={styles.changelogRow}>
-                    <Text style={styles.changelogBullet}>•</Text>
-                    <Text style={styles.changelogText}>{change}</Text>
-                  </View>
-                ))}
-              </View>
-            </View>
-          ))}
-        </ScrollView>
-      </View>
-    </Modal>
-  );
+  // OptionRow, ConfigRowModal, CategorizedSelectionModal, GenericSelectionModal, and
+  // VersionHistoryModal used to be defined inline here (re-created every render) — extracted
+  // to components/profile/*.tsx. See CHANGELOG.md's cleanliness-audit entry.
 
   return (
     <View style={styles.container}>
@@ -502,7 +366,7 @@ export default function ProfileScreen() {
       <CategorizedSelectionModal visible={showFoodModal} close={() => setShowFoodModal(false)} title="Dining Contexts" description="Select your favorite cuisines to prioritize them in dining recommendations." groupedOptions={FOOD_GENRES_CATEGORIZED} selected={foodGenres} toggle={(i:string) => toggleArrayItem(i, foodGenres, setFoodGenres)} category="Restaurant" />
       <CategorizedSelectionModal visible={showActivityModal} close={() => setShowActivityModal(false)} title="Activity Genres" description="Choose the types of outdoor and indoor activities you enjoy most." groupedOptions={ACTIVITY_GENRES_CATEGORIZED} selected={activityGenres} toggle={(i:string) => toggleArrayItem(i, activityGenres, setActivityGenres)} category="Activity" />
       <CategorizedSelectionModal visible={showEventModal} close={() => setShowEventModal(false)} title="Event Types" description="Select the categories of live entertainment and events you would like to discover." groupedOptions={EVENT_GENRES_CATEGORIZED} selected={eventGenres} toggle={(i:string) => toggleArrayItem(i, eventGenres, setEventGenres)} category="Event" />
-      <VersionHistoryModal visible={showVersionModal} close={() => setShowVersionModal(false)} />
+      <VersionHistoryModal visible={showVersionModal} close={() => setShowVersionModal(false)} history={CHANGELOG_HISTORY} />
 
     </View>
   );
@@ -535,57 +399,20 @@ const styles = StyleSheet.create({
   citySuggestionSub: { color: '#64748B', fontSize: 12, marginTop: 2 },
   cityWarningText: { color: '#F59E0B', fontSize: 13, marginTop: 8, lineHeight: 18 },
 
-  optionRowContainer: { marginBottom: 28 },
-  optionLabel: { color: '#DBEAFE', fontSize: 13, fontWeight: '700', textTransform: 'uppercase', marginBottom: 16 },
-  optionsWrapper: { flexDirection: 'row', gap: 12 },
-  optionsWrapperWrap: { flexWrap: 'wrap' },
-  optionPill: { flex: 1, paddingVertical: 14, backgroundColor: '#1E293B', borderRadius: 12, alignItems: 'center', borderWidth: 1, borderColor: '#334155' },
-  optionPillAuto: { flex: 0, paddingHorizontal: 16, minWidth: 64 },
-  optionPillActive: { backgroundColor: '#3B82F6', borderColor: '#3B82F6' },
-  optionText: { color: '#94A3B8', fontWeight: '600', fontSize: 15 },
-  optionTextActive: { color: '#FFF' },
-  
-  dietHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  editDietBtn: { backgroundColor: '#1E293B', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 12, borderWidth: 1, borderColor: '#334155' },
-  editDietBtnText: { color: '#3B82F6', fontWeight: 'bold', fontSize: 13 },
-  dietTagsView: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  dietTag: { backgroundColor: 'rgba(16, 185, 129, 0.1)', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(16, 185, 129, 0.3)' },
-  dietTagText: { color: '#10B981', fontWeight: '700', fontSize: 14 },
-  
+  // optionRowContainer/optionLabel/optionsWrapper/optionPill/optionText (+ variants) and
+  // dietHeaderRow/editDietBtn/dietTagsView/dietTag/dietTagText removed — those lived only
+  // inside the extracted OptionRow/ConfigRowModal components (components/profile/option-row.tsx,
+  // components/profile/config-row-modal.tsx), which define their own local styles now.
+
   saveButton: { backgroundColor: '#1E293B', paddingVertical: 18, borderRadius: 16, alignItems: 'center', marginBottom: 20, borderWidth: 1, borderColor: '#334155' },
   saveButtonText: { color: '#F8FAFC', fontSize: 16, fontWeight: '800' },
   logoutButton: { backgroundColor: 'rgba(220, 38, 38, 0.1)', paddingVertical: 18, borderRadius: 16, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(220, 38, 38, 0.3)' },
   logoutText: { color: '#FCA5A5', fontSize: 16, fontWeight: '800' },
 
-  modalContainer: { flex: 1, backgroundColor: '#0F172A', padding: 24, paddingTop: Platform.OS === 'ios' ? 40 : 24 },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  modalTitle: { color: '#FFF', fontSize: 24, fontWeight: 'bold', flex: 1, paddingRight: 20 },
-  closeButton: { padding: 8 },
-  closeButtonText: { color: '#3B82F6', fontSize: 16, fontWeight: '600' },
-  modalSubtitle: { color: '#94A3B8', fontSize: 15, lineHeight: 22, marginBottom: 32 },
-  dietModalOption: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#1E293B', padding: 18, borderRadius: 12, marginBottom: 12, borderWidth: 1, borderColor: '#334155' },
-  dietModalOptionActive: { backgroundColor: 'rgba(16, 185, 129, 0.1)', borderColor: '#10B981' },
-  dietModalOptionText: { color: '#F8FAFC', fontSize: 16, fontWeight: '600' },
-  dietModalOptionTextActive: { color: '#10B981' },
-  checkmark: { color: '#10B981', fontSize: 18, fontWeight: 'bold' },
-  categoryGroup: { marginBottom: 28 },
-  categoryTitle: { color: '#F8FAFC', fontSize: 16, fontWeight: '700', marginBottom: 14, textTransform: 'uppercase', letterSpacing: 0.5 },
-  bubblesContainer: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  bubbleOption: { backgroundColor: '#1E293B', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, borderWidth: 1, borderColor: '#334155' },
-  bubbleOptionActive: { backgroundColor: 'rgba(59, 130, 246, 0.15)', borderColor: '#3B82F6' },
-  bubbleOptionText: { color: '#94A3B8', fontSize: 14, fontWeight: '600' },
-  bubbleOptionTextActive: { color: '#3B82F6' },
-  bubbleOptionComingSoon: { borderStyle: 'dashed' },
-  comingSoonBadge: { color: '#F59E0B', fontSize: 9, fontWeight: '700', marginTop: 3, textTransform: 'uppercase', letterSpacing: 0.5, textAlign: 'center' },
-  categoryNote: { color: '#64748B', fontSize: 13, lineHeight: 18, marginBottom: 18 },
-  
-  changelogCard: { backgroundColor: '#1E293B', padding: 20, borderRadius: 16, marginBottom: 20, borderWidth: 1, borderColor: '#334155' },
-  changelogHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
-  changelogVersion: { color: '#3B82F6', fontSize: 18, fontWeight: '800' },
-  changelogDate: { color: '#64748B', fontSize: 13, fontWeight: '600' },
-  changelogTitle: { color: '#F8FAFC', fontSize: 15, fontWeight: '700', marginBottom: 14 },
-  changelogList: { gap: 8 },
-  changelogRow: { flexDirection: 'row', alignItems: 'flex-start' },
-  changelogBullet: { color: '#3B82F6', marginRight: 8, fontSize: 14, fontWeight: 'bold' },
-  changelogText: { color: '#CBD5E1', fontSize: 14, lineHeight: 20, flex: 1 }
+  // modalContainer/modalHeader/modalTitle/closeButton/closeButtonText/modalSubtitle,
+  // dietModalOption*/checkmark, categoryGroup/categoryTitle/bubblesContainer/bubbleOption*/
+  // comingSoonBadge/categoryNote, and changelog* removed — those lived only inside the
+  // extracted CategorizedSelectionModal/GenericSelectionModal/VersionHistoryModal components
+  // (components/profile/{categorized-selection-modal,generic-selection-modal,
+  // version-history-modal}.tsx), which define their own local styles now.
 });

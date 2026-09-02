@@ -2,7 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   isMealWindow, getMealWindows, flattenPreferenceTags, buildCategoryFilter, escapeRegExp,
-  computeMatchScore, shuffled, tieredShuffle, buildGeoNearStage, resolveAnchorForDate,
+  shuffled, tieredShuffle, buildGeoNearStage, resolveAnchorForDate,
   haversineDistanceKm, jitterCoordinates, buildCityDurationQuery, resolveSearchRadiusKm,
   DEFAULT_MAX_DISTANCE_KM
 } from './place-matching';
@@ -130,39 +130,6 @@ describe('escapeRegExp', () => {
     const re = new RegExp(`^${escaped}$`, 'i');
     assert.equal(re.test('New York (NY)'), true);
     assert.equal(re.test('New York XNYX'), false); // would incorrectly match if () weren't escaped
-  });
-});
-
-describe('computeMatchScore', () => {
-  test('no overlap scores 0', () => {
-    assert.equal(computeMatchScore(['Restaurant', 'French'], [['Italian', 'Museums']]), 0);
-  });
-
-  test('single participant, one overlapping tag scores 1', () => {
-    assert.equal(computeMatchScore(['Restaurant', 'French'], [['French', 'Museums']]), 1);
-  });
-
-  test('joint matching sums intersection sizes across all participants', () => {
-    // Place tagged Restaurant/French; participant A likes French, participant B likes French
-    // and Restaurant — mirrors the real aggregation's $add-of-per-participant-$size behavior.
-    const placeTags = ['Restaurant', 'French'];
-    const score = computeMatchScore(placeTags, [
-      ['French'],
-      ['French', 'Restaurant']
-    ]);
-    assert.equal(score, 1 + 2);
-  });
-
-  test('a participant with no matching tags contributes 0, not a negative or NaN', () => {
-    const score = computeMatchScore(['Restaurant', 'French'], [
-      ['French'],
-      ['Hiking', 'Cinema']
-    ]);
-    assert.equal(score, 1);
-  });
-
-  test('empty participant list scores 0', () => {
-    assert.equal(computeMatchScore(['Restaurant', 'French'], []), 0);
   });
 });
 

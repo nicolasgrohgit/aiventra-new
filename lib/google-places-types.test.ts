@@ -2,7 +2,6 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   PLACES_TYPE_MAPPINGS,
-  getAllTaxonomyTags,
   getPlaceTypesForTag,
   getMatchQualityForTag,
   hasGoogleMatch,
@@ -10,6 +9,18 @@ import {
   supportsScheduleData,
   getPlaceTypesForCategory,
 } from './google-places-types';
+import { FOOD_GENRES_CATEGORIZED, ACTIVITY_GENRES_CATEGORIZED, EVENT_GENRES_CATEGORIZED } from '../constants/preferences';
+
+// Only used by the coverage check below — see the comment left in lib/google-places-types.ts
+// where this used to live as an exported getAllTaxonomyTags(); nothing outside this test file
+// ever called it, so it was moved here rather than kept as a production export.
+function getAllTaxonomyTags(): string[] {
+  return [
+    ...FOOD_GENRES_CATEGORIZED.flatMap(g => g.activities),
+    ...ACTIVITY_GENRES_CATEGORIZED.flatMap(g => g.activities),
+    ...EVENT_GENRES_CATEGORIZED.flatMap(g => g.activities),
+  ];
+}
 
 describe('taxonomy coverage', () => {
   test('every leaf tag in constants/preferences.ts has exactly one mapping entry', () => {

@@ -272,20 +272,6 @@ export function jitterCoordinates(center: GeoPoint, minKm: number, maxKm: number
 }
 
 /**
- * The actual scoring rule, as plain JS — mirrors the $setIntersection + $add Mongo pipeline
- * exactly, so it's testable without a database. One participant's tags in participantTagSets
- * = solo recommendation scoring; multiple = joint/blind matching. This is deliberately the
- * kind of pure function that would have caught the preferences-schema bug found this session
- * (undefined tags in → always-0 scores out) without needing a live database at all.
- */
-export function computeMatchScore(placeTags: string[], participantTagSets: string[][]): number {
-  return participantTagSets.reduce((total, tags) => {
-    const intersectionSize = placeTags.filter(t => tags.includes(t)).length;
-    return total + intersectionSize;
-  }, 0);
-}
-
-/**
  * Fisher-Yates shuffle, non-mutating — applied to an already-scored-and-limited recommendation
  * list (see POST /api/recommendations and POST /api/events/:id/recommendations) so repeated
  * slots/days on the same trip don't all surface the identical top-scored place first every
