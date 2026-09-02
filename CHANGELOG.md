@@ -151,6 +151,56 @@ this is still pre-release/beta.
   URLs are account-scoped).
 
 ### Added
+- **Circles: "Discover nearby friends" now actually exists on the Circles tab, and a contact
+  can finally be removed, not just re-circled.** Closes gaps #1 and #5 from
+  `docs/circles-feature-proposal.md`. `social.tsx`'s own subtitle ("Manage privacy and
+  discover nearby friends") promised a feature that had zero code path anywhere in the file —
+  `GET /api/friends-nearby` (circle-scoped, sharer-driven presence discovery, `server.ts:337`)
+  was wired only into `trips.tsx`, gated behind an open trip. Now also wired into `social.tsx`
+  directly (new "Near &lt;home city&gt; right now" section, above the circle filter pills),
+  scoped to the user's `homebase` with no date range — no trip required. Tapping a nearby
+  friend shows a simple lives-here/visiting detail (no propose-event flow here; that stays
+  `trips.tsx`'s job). Separately, the "Move Contact" sheet — previously the only action on a
+  contact, and it only ever reassigned `circleTags` — now has a "Remove Friend"/"Remove
+  Invite" action gated behind a native destructive confirmation (irreversible: re-adding means
+  a new friend request or invite). No new backend work needed: `DELETE /api/contacts/:id`
+  already existed and is scoped to `owner_user_id` (`server.ts:1065`), and
+  `hooks/useContacts.tsx`'s `setContacts` already calls it whenever its old-vs-new array diff
+  detects a contact dropped from local state — the UI just never produced that diff before.
+  Live-verified against the real backend end-to-end: created two throwaway accounts sharing a
+  homebase city, linked them as contacts on both sides with `homebaseSharedCircles` set, and
+  confirmed `GET /api/friends-nearby` returns the correct `lives_here` match for the scoped
+  city; then `DELETE /api/contacts/:id` followed by `GET /api/contacts` confirmed the contact
+  is actually gone, not just hidden.
+- **Circles: contacts can now be tagged into more than one circle, matching the data model.**
+  Closes gap #3. `Contact.circleTags` is a `string[]` (`lib/contacts.ts`, `models/Contact.ts`)
+  and always supported multiple tags, but `social.tsx`'s `handleMoveContact` always replaced
+  the array with a single new value (`circleTags: [newCircle]`), making the "Move Contact"
+  sheet behave like a single-select radio group. Replaced with a real toggle
+  (`handleToggleContactCircle`): tapping a circle adds/removes it from the contact's tag set,
+  the sheet stays open across taps (so multiple circles can be picked in one visit — see the
+  new "Done" button, below), and `selectedContact` is kept in sync alongside `contacts` so the
+  ✓ marks update immediately. Matters concretely for a colleague who's also a genuine friend
+  (normal for this app's "bleisure" audience) — they can now be filed under both `Work` and
+  `Family and Friends`, so their own separate circle-sharing choices are visible to you under
+  either. Live-verified: `PUT /api/contacts/:id` with `{"circleTags":["Work","Family and
+  Friends"]}` against a real contact, confirmed via `GET /api/contacts` that both tags
+  persisted together.
+- **Circles: pending (invite-by-email) contacts are no longer a dead end.** Closes gap #4.
+  Previously a `pending_` contact showed a static "Pending — hasn't joined yet" label with no
+  further action, no sent-date, and no recovery path. The contact card now shows "Pending —
+  invited &lt;date&gt;" (from the `Contact` doc's own `createdAt`, already returned by the API
+  and already flowing through `parseServerContacts` — just never surfaced in the UI). The
+  "Move Contact" sheet adds a "Resend Invite" action for pending contacts. There's no
+  email-sending or invite-token infrastructure anywhere in this backend (confirmed: no
+  nodemailer/sendgrid/etc. dependency, no `/api/invites` route) — building real "resend the
+  original email" delivery is a backend prerequisite that isn't in place, so this doesn't fake
+  it. Instead it opens the device's own mail client via `Linking.openURL('mailto:...')` (React
+  Native core, no new dependency) with the invite re-composed and the recipient's email
+  pre-filled, so there's an actual next step instead of a static label. Full email-sending
+  infrastructure (so this could be a true one-tap resend) is a separate, larger backend piece
+  — flagged, not built here.
+
 - **The local beta stack (MongoDB, backend server, cloudflared tunnel) now survives a
   reboot on its own.** Triggered by a real incident: an OOM-killed Gradle build forced a
   server reboot, which silently took MongoDB, `npm run server`, and the tunnel down with it —
@@ -177,6 +227,24 @@ this is still pre-release/beta.
   ever needs to run on real test devices. Cut a from-scratch local build from OOM-crashing to
   ~10-11 minutes clean.
 
+### Changed
+- **Circles: "Move Contact" sheet copy no longer implies the privacy mechanism backwards.**
+  Closes gap #2. The sheet's old copy — "Assign them to a new Circle privacy tier" —
+  is a hint, not an explanation, and the direction it implies is backwards from how the
+  mechanism actually works: `GET /api/friends-nearby` cross-references *their*
+  `homebaseSharedCircles`/`Trip.sharedWithCircles` opt-in against *your* `circleTags` on
+  *them*, so filing a colleague under "Work" doesn't limit what they see of you — it's the
+  precondition for what of *their* separately-shared presence becomes visible to *you*. Rewrote
+  the sheet's copy to be concrete about that direction, matching the bar
+  `CircleShareSelector` already sets elsewhere in the app (`trips.tsx`'s "Lets people in these
+  circles see you're heading here on these dates..."), and added a short note for pending
+  (not-yet-joined) contacts clarifying that none of it applies until they actually join. The
+  sheet's old always-"Cancel" close button is now "Done" for this sheet specifically (the
+  Accept Friend Request sheet keeps "Cancel", which is still accurate there) — circle toggles
+  now apply live as they're tapped, same pattern as `profile.tsx`'s
+  `toggleHomebaseCircle`/`updateUser`, so "Cancel" was no longer accurate once toggling
+  stopped auto-closing the sheet.
+
 ### Roadmap noted
 - **Per-user field-level encryption at rest (AES-256), starting with calendar-imported data.**
   `POST /api/trips/:tripId/events/import` stores real device-calendar `title`/`location` in
@@ -187,10 +255,6 @@ this is still pre-release/beta.
   per-user AES-256-GCM envelope encryption, key-management dependency on the eventual GCP
   migration, which fields can't be transparently encrypted without losing server-side
   query/filter/index capability) written up in new `docs/data-encryption-plan.md`.
-- **Circles: no way to actually remove a contact, only re-circle them.** `social.tsx`'s "Move
-  Contact" sheet only ever reassigns `circleTags` — there's no "Remove Friend" action anywhere
-  in the UI, even though `DELETE /api/contacts/:id` already exists and works on the backend.
-  Requested directly. Not built here — added as gap #5 to `docs/circles-feature-proposal.md`.
 - **Create/Edit Trip: end-date picker doesn't follow the start date.** Reported directly:
   picking an October start date leaves the end-date calendar still showing September. Root
   cause, confirmed by reading the code: `startDate`/`endDate` in `app/(tabs)/trips.tsx`

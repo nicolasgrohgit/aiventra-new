@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { StyleSheet, View, ScrollView, TouchableOpacity, Text, Platform, Modal, TextInput, Alert } from 'react-native';
+import { StyleSheet, View, ScrollView, TouchableOpacity, Text, Platform, Modal, TextInput, Alert, Linking } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { Image } from 'expo-image';
 import { ThemedText } from '@/components/themed-text';
@@ -7,6 +7,24 @@ import { DEFAULT_CIRCLES, getContactsByCircle, Contact } from '@/lib/contacts';
 import { useContacts } from '@/hooks/useContacts';
 import { useAuth } from '@/hooks/useAuth';
 import { useFriendRequests } from '@/hooks/useFriendRequests';
+import { useEvents } from '@/hooks/useEvents';
+
+// Same shape GET /api/friends-nearby returns everywhere it's consumed (see NearbyFriend in
+// app/(tabs)/trips.tsx) — duplicated locally rather than shared/exported since it's a small,
+// screen-local render shape, not a domain type.
+interface NearbyFriend {
+  userId: string;
+  name: string;
+  avatarUrl?: string;
+  matches: { type: 'lives_here' | 'visiting'; startDate?: string; endDate?: string }[];
+}
+
+const formatShortDate = (iso?: string) => {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
 
 export default function SocialScreen() {
   const CIRCLE_FILTERS = ['All', ...DEFAULT_CIRCLES];
@@ -15,6 +33,7 @@ export default function SocialScreen() {
   const { user } = useAuth();
   const { contacts, setContacts, refreshContacts } = useContacts();
   const { sendFriendRequest, fetchIncomingRequests, fetchSentRequests, respondToFriendRequest } = useFriendRequests();
+  const { getFriendsNearby } = useEvents();
   const [showInviteModal, setShowInviteModal] = useState(false);
   // 'invite' = existing invite-by-email flow (unlinked, unilateral, stays as-is). 'friend' =
   // new friend-request flow — only works for an email that already has an Odys.ai account,
@@ -40,6 +59,15 @@ export default function SocialScreen() {
   // its own state since it picks a circle_tag for a FriendRequest, not an existing Contact.
   const [respondingRequest, setRespondingRequest] = useState<any | null>(null);
 
+  // "Discover nearby friends" — this tab's own subtitle claims it, but until now the only
+  // wiring for GET /api/friends-nearby was trips.tsx, gated behind an open trip. Scoped here
+  // to the user's home city with no date range ("right now"), not a specific trip's dates —
+  // see docs/circles-feature-proposal.md gap #1. Empty until the user has a homebase (set at
+  // onboarding, so this is effectively always populated for a real account) and at least one
+  // contact who's pointed a Contact back at them with circle-sharing turned on (server-side,
+  // see server.ts's /api/friends-nearby comment) — an empty result is normal, not an error.
+  const [nearbyFriends, setNearbyFriends] = useState<NearbyFriend[]>([]);
+
   const refreshFriendRequests = async () => {
     try {
       const [incoming, sent] = await Promise.all([fetchIncomingRequests(), fetchSentRequests()]);
@@ -50,13 +78,33 @@ export default function SocialScreen() {
     }
   };
 
+  const refreshNearbyFriends = async () => {
+    if (!user?.homebase) {
+      setNearbyFriends([]);
+      return;
+    }
+    // getFriendsNearby already swallows its own errors down to [] (see hooks/useEvents.tsx) —
+    // a failed background discovery fetch shouldn't surface an alert on this tab.
+    setNearbyFriends(await getFriendsNearby({ city: user.homebase }));
+  };
+
   useFocusEffect(
     useCallback(() => {
       if (!user) return;
       refreshFriendRequests();
+      refreshNearbyFriends();
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [user?._id, user?.id])
+    }, [user?._id, user?.id, user?.homebase])
   );
+
+  const handleTapNearbyFriend = (friend: NearbyFriend) => {
+    const visiting = friend.matches.find(m => m.type === 'visiting');
+    const livesHere = friend.matches.some(m => m.type === 'lives_here');
+    const detail = visiting?.startDate && visiting?.endDate
+      ? `Visiting ${formatShortDate(visiting.startDate)} – ${formatShortDate(visiting.endDate)}`
+      : (livesHere ? `Lives in ${user?.homebase || 'your home city'}` : 'Near you right now.');
+    Alert.alert(friend.name, detail);
+  };
 
   const displayedContacts = activeCircle === 'All' 
     ? contacts 
@@ -79,13 +127,75 @@ export default function SocialScreen() {
     setShowInviteModal(false);
   };
 
-  const handleMoveContact = (contactId: string, newCircle: string) => {
+  // Toggle, not replace-on-select: Contact.circleTags is a string[] (lib/contacts.ts,
+  // models/Contact.ts) and MOCK_CONTACTS already implies multi-tag is a legitimate shape, but
+  // this used to always overwrite with a single-element array, making the UI behave like a
+  // radio group despite the model being a set. A colleague who's also a genuine friend
+  // couldn't be tagged both "Work" and "Family and Friends" — see gap #3 in
+  // docs/circles-feature-proposal.md. The sheet stays open across taps now (see the Done
+  // button below) so multiple circles can be picked in one visit; `selectedContact` is kept
+  // in sync alongside `contacts` so the ✓ marks re-render immediately.
+  const handleToggleContactCircle = (contactId: string, circle: string) => {
+    const toggleTags = (tags: string[]) =>
+      tags.includes(circle) ? tags.filter(t => t !== circle) : [...tags, circle];
+
     setContacts(contacts.map((c: Contact) =>
-      c.id === contactId
-        ? { ...c, circleTags: [newCircle] }
-        : c
+      c.id === contactId ? { ...c, circleTags: toggleTags(c.circleTags) } : c
     ));
-    setSelectedContact(null);
+    setSelectedContact(prev =>
+      prev && prev.id === contactId ? { ...prev, circleTags: toggleTags(prev.circleTags) } : prev
+    );
+  };
+
+  // Gap #5: the only action on a contact used to be re-circling — no way to actually stop
+  // being connected to someone. DELETE /api/contacts/:id already exists and is scoped to
+  // owner_user_id (server.ts:1065); hooks/useContacts.tsx's setContacts already calls it
+  // whenever its old-vs-new array diff detects a contact dropped from local state, so
+  // removing here is just producing that diff — no new API wiring needed. Irreversible, so
+  // gated behind a native confirm (matches this app's existing Alert.alert usage elsewhere in
+  // this file, e.g. the "Already sent" duplicate-request check).
+  const handleRemoveContact = (contact: Contact) => {
+    Alert.alert(
+      contact.isAppUser ? 'Remove friend?' : 'Remove invite?',
+      contact.isAppUser
+        ? `${contact.name} will be removed from your Circles. This can't be undone — you'd need to send a new friend request to reconnect.`
+        : `The pending invite to ${contact.email || contact.name} will be removed. You can invite them again later if you change your mind.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: () => {
+            setContacts(contacts.filter((c: Contact) => c.id !== contact.id));
+            setSelectedContact(null);
+          }
+        }
+      ]
+    );
+  };
+
+  // Gap #4: a pending (invite-by-email) contact was a dead end after the initial invite — no
+  // resend, no recovery path. There's no email-sending or invite-token infra anywhere in this
+  // backend (confirmed: no nodemailer/sendgrid/etc. in server.ts, no /api/invites route), so a
+  // real "resend the original email" isn't a prerequisite that's actually in place — this
+  // opens the device's own mail client with the invite re-composed and the recipient
+  // pre-filled, using Linking (already part of react-native core, no new dependency), so the
+  // user can actually re-send something rather than staring at a static "Pending" label.
+  const handleResendInvite = async (contact: Contact) => {
+    if (!contact.email) {
+      Alert.alert('No email on file', "This contact doesn't have an email address saved, so there's nothing to resend to.");
+      return;
+    }
+    const subject = encodeURIComponent('Join me on Odys.ai');
+    const body = encodeURIComponent(
+      `Hey! I added you as a contact on Odys.ai so we can plan trips and catch up when we're in the same city. ` +
+      `Grab the app and sign up with this email address (${contact.email}) so we're connected.`
+    );
+    try {
+      await Linking.openURL(`mailto:${contact.email}?subject=${subject}&body=${body}`);
+    } catch {
+      Alert.alert('Could not open email', `No email app is set up on this device. Ask them to sign up with ${contact.email} to connect.`);
+    }
   };
 
   const handleSendFriendRequest = async () => {
@@ -182,6 +292,37 @@ export default function SocialScreen() {
           </View>
         )}
 
+        {/* Nearby friends — GET /api/friends-nearby, scoped to the user's home city with no
+            date range ("right now"), not a specific trip. Circle-scoped and sharer-driven:
+            only shows someone if THEY put a Contact pointing back at you under a circle
+            THEY'VE separately opted into sharing their homebase/trip with (see the copy fix
+            in the Move Contact sheet below). Only rendered when there's a match, same
+            convention as trips.tsx's own "Friends nearby" bubbles — an empty result is
+            normal, not an error, so there's nothing useful to say in the empty case. */}
+        {nearbyFriends.length > 0 && (
+          <View style={styles.nearbySection}>
+            <Text style={styles.nearbySectionTitle}>
+              Near {(user?.homebase || 'you').split(',')[0].trim()} right now
+            </Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.nearbyRow}>
+              {nearbyFriends.map(friend => {
+                const livesHere = friend.matches.some(m => m.type === 'lives_here');
+                return (
+                  <TouchableOpacity
+                    key={friend.userId}
+                    style={styles.nearbyCard}
+                    activeOpacity={0.7}
+                    onPress={() => handleTapNearbyFriend(friend)}
+                  >
+                    <Text style={styles.nearbyCardName}>{friend.name}</Text>
+                    <Text style={styles.nearbyCardSub}>{livesHere ? 'Lives here' : 'Visiting'}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+        )}
+
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.pillScroller}>
           {CIRCLE_FILTERS.map(circle => (
             <TouchableOpacity 
@@ -218,7 +359,11 @@ export default function SocialScreen() {
                        <Text style={styles.appUserText}>Odys.ai User</Text>
                     </View>
                   ) : (
-                    <Text style={styles.inviteText}>Pending — hasn&apos;t joined yet</Text>
+                    <Text style={styles.inviteText}>
+                      {formatShortDate(contact.createdAt)
+                        ? `Pending — invited ${formatShortDate(contact.createdAt)}`
+                        : "Pending — hasn't joined yet"}
+                    </Text>
                   )}
                 </View>
   
@@ -246,8 +391,24 @@ export default function SocialScreen() {
         <View style={styles.overlay}>
           <View style={styles.actionSheet}>
             <ScrollView showsVerticalScrollIndicator={false}>
-            <Text style={styles.sheetTitle}>Move {selectedContact?.name}</Text>
-            <Text style={styles.sheetSubtitle}>Assign them to a new Circle privacy tier.</Text>
+            <Text style={styles.sheetTitle}>{selectedContact?.name}</Text>
+            {/* Concrete about the actual mechanism, matching the bar CircleShareSelector sets
+                elsewhere (trips.tsx's "Lets people in these circles see you're heading here on
+                these dates..."). Direction matters here specifically because it's easy to read
+                backwards: filing someone under "Work" doesn't limit what THEY see of YOU — it's
+                the other way around, and it's contingent on THEIR own separate opt-in. See gap
+                #2 in docs/circles-feature-proposal.md. */}
+            <Text style={styles.sheetSubtitle}>
+              This is about what you can see of them, not what they can see of you. If
+              they&apos;ve separately shared their home city or a trip with a circle you put
+              them in here, you&apos;ll see it (like &quot;near you right now&quot;) — it has
+              no effect on your own privacy. Tap to toggle — they can be in more than one circle.
+            </Text>
+            {!selectedContact?.isAppUser && (
+              <Text style={styles.sheetPendingNote}>
+                They haven&apos;t joined Odys.ai yet, so none of this applies until they do — this just files them for later.
+              </Text>
+            )}
 
             <View style={styles.sheetOptionsBounds}>
               {DEFAULT_CIRCLES.map(circle => {
@@ -261,7 +422,7 @@ export default function SocialScreen() {
                   <TouchableOpacity
                     key={circle}
                     style={[styles.sheetOption, isCurrent && styles.sheetOptionActive]}
-                    onPress={() => handleMoveContact(selectedContact!.id, circle)}
+                    onPress={() => handleToggleContactCircle(selectedContact!.id, circle)}
                   >
                     <Text style={[styles.sheetOptionText, isCurrent && styles.sheetOptionTextActive]}>
                       {isCurrent ? '✓  ' : ''}{circle}
@@ -270,10 +431,28 @@ export default function SocialScreen() {
                 );
               })}
             </View>
+
+            {!selectedContact?.isAppUser && (
+              <TouchableOpacity
+                onPress={() => selectedContact && handleResendInvite(selectedContact)}
+                style={styles.resendButton}
+              >
+                <Text style={styles.resendButtonText}>Resend Invite</Text>
+              </TouchableOpacity>
+            )}
+
+            <TouchableOpacity
+              onPress={() => selectedContact && handleRemoveContact(selectedContact)}
+              style={styles.removeButton}
+            >
+              <Text style={styles.removeButtonText}>
+                {selectedContact?.isAppUser ? 'Remove Friend' : 'Remove Invite'}
+              </Text>
+            </TouchableOpacity>
             </ScrollView>
 
-            <TouchableOpacity onPress={() => setSelectedContact(null)} style={styles.cancelButton}>
-              <Text style={styles.cancelText}>Cancel</Text>
+            <TouchableOpacity onPress={() => setSelectedContact(null)} style={styles.sheetCloseButton}>
+              <Text style={styles.sheetCloseText}>Done</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -409,6 +588,15 @@ const styles = StyleSheet.create({
   subtitle: { color: '#94A3B8', fontSize: 16 },
   addButton: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#3B82F6', justifyContent: 'center', alignItems: 'center', shadowColor: '#3B82F6', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 8, elevation: 5 },
   addButtonText: { color: '#FFFFFF', fontSize: 28, fontWeight: '400', lineHeight: 30, marginTop: Platform.OS === 'ios' ? -2 : 0 },
+  // Reuses the app's existing #3B82F6 accent (already used for locationBadge below) rather
+  // than trips.tsx's green nearby-bubble treatment, so "near me" reads as this screen's own
+  // visual language rather than importing trips.tsx's.
+  nearbySection: { marginBottom: 32 },
+  nearbySectionTitle: { color: '#94A3B8', fontSize: 12, fontWeight: '800', textTransform: 'uppercase', marginBottom: 12, letterSpacing: 0.5 },
+  nearbyRow: { flexDirection: 'row', gap: 10 },
+  nearbyCard: { backgroundColor: 'rgba(59, 130, 246, 0.12)', borderWidth: 1, borderColor: '#3B82F6', borderRadius: 16, paddingHorizontal: 16, paddingVertical: 12 },
+  nearbyCardName: { color: '#93C5FD', fontWeight: '800', fontSize: 14 },
+  nearbyCardSub: { color: '#60A5FA', fontSize: 11, marginTop: 2, textTransform: 'uppercase', letterSpacing: 0.3 },
   pillScroller: { flexDirection: 'row', marginBottom: 32, maxHeight: 50 },
   pill: { paddingHorizontal: 20, height: 40, borderRadius: 20, backgroundColor: '#1E293B', marginRight: 12, borderWidth: 1, borderColor: '#334155', justifyContent: 'center' },
   activePill: { backgroundColor: '#3B82F6', borderColor: '#3B82F6' },
@@ -444,6 +632,18 @@ const styles = StyleSheet.create({
   sheetOptionActive: { backgroundColor: 'rgba(59, 130, 246, 0.15)' },
   sheetOptionText: { color: '#3B82F6', fontSize: 18, fontWeight: '700' },
   sheetOptionTextActive: { color: '#93C5FD' },
+  sheetPendingNote: { color: '#64748B', fontSize: 12, marginTop: -14, marginBottom: 20, textAlign: 'center', lineHeight: 17, fontStyle: 'italic' },
+  // Distinct from cancelButton/cancelText (still used by the Accept Friend Request sheet
+  // below, which really is a cancel) — circle toggles and the resend/remove actions in this
+  // sheet apply immediately as they're tapped, same live-apply pattern as
+  // CircleShareSelector's onToggle in profile.tsx, so "Cancel" would be misleading here:
+  // there's nothing left to cancel by the time this button is visible.
+  sheetCloseButton: { marginTop: 16, paddingVertical: 18, borderRadius: 16, backgroundColor: '#1E293B', alignItems: 'center' },
+  sheetCloseText: { color: '#94A3B8', fontSize: 18, fontWeight: '800' },
+  resendButton: { marginTop: 20, paddingVertical: 16, borderRadius: 16, backgroundColor: 'rgba(59, 130, 246, 0.12)', borderWidth: 1, borderColor: '#3B82F6', alignItems: 'center' },
+  resendButtonText: { color: '#3B82F6', fontSize: 16, fontWeight: '800' },
+  removeButton: { marginTop: 12, paddingVertical: 16, borderRadius: 16, backgroundColor: 'rgba(239, 68, 68, 0.12)', borderWidth: 1, borderColor: '#EF4444', alignItems: 'center' },
+  removeButtonText: { color: '#EF4444', fontSize: 16, fontWeight: '800' },
   cancelButton: { marginTop: 16, paddingVertical: 18, borderRadius: 16, backgroundColor: '#1E293B', alignItems: 'center' },
   cancelText: { color: '#EF4444', fontSize: 18, fontWeight: '800' },
 

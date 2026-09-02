@@ -4,7 +4,13 @@ export interface Contact {
   isAppUser: boolean;
   sharedLocation?: string;
   circleTags: string[];
-  avatarUrl?: string; // New relational boundary handling graphical pictures natively 
+  avatarUrl?: string; // New relational boundary handling graphical pictures natively
+  // Both present on a real synced Contact (parseServerContacts in hooks/useContacts.tsx
+  // spreads the raw server doc), but only meaningfully populated for a pending (invite-by-
+  // email, !isAppUser) contact — email is what an invite resend targets, createdAt is shown
+  // as "invited <date>" so a pending invite doesn't read as a dead end. See social.tsx.
+  email?: string;
+  createdAt?: string;
 }
 
 export const DEFAULT_CIRCLES = ['Family and Friends', 'Relatives', 'Work'];
