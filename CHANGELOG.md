@@ -4,6 +4,176 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are `0.0.x` while
 this is still pre-release/beta.
 
+## [Unreleased]
+### Fixed
+- **New trips could show "nothing proposed" for Lunch (and every other slot) right after
+  creation, requiring the app to be backgrounded/reopened before AI proposals appeared.**
+  Reported live against a real Rome trip. Root cause, confirmed via server logs
+  (`journalctl`/`~/.local/share/odysai-server/server.log`): `handleSaveTrip`
+  (`app/(tabs)/trips.tsx`) gave a newly-created trip a plain `Date.now().toString()` local id
+  — unlike every other locally-created entity in this app (see CLAUDE.md's "Locally-generated
+  IDs are prefixed `mock_...`" convention) — so nothing recognized it as not-yet-synced. The
+  AI-Schedule-Proposals fetch effect and the calendar-import effect both fire immediately off
+  whatever's in `trips` state, so they fired instantly with this fake id, before the trip's
+  real Mongo `_id` came back from the server — every one of those requests 500'd
+  (`CastError: Cast to ObjectId failed for value "<timestamp>"`), and the failure got cached
+  as an empty result per slot (`fetchedSlotKeys` never retries a key once attempted). A second,
+  correct round of fetches does fire moments later once the real id lands, but a user looking
+  at the trip in that window saw empty proposals and no built-in reason to expect them to
+  reappear. Fixed: the local id is now `mock_${Date.now()}`, and both effects skip a trip
+  whose id still has that prefix, waiting for the real synced id instead of firing (and
+  failing) early. Verified by reading the exact CastError stack traces in the server log
+  against the reported trip, then `tsc --noEmit`/`npm run lint` clean — not verified against a
+  live device/simulator (none available in this environment, consistent with this project's
+  existing verification-ceiling notes elsewhere in this changelog).
+
+### Roadmap noted
+- **A participant's shadow trip is never cleaned up when the organizer's trip (or its events)
+  is deleted, leaving a permanently empty trip behind.** Reported live: Toto (an event
+  participant) saw two trips to Rome — one with the actual accepted restaurant, one showing
+  nothing. Confirmed via direct API calls: `DELETE /api/trips/:id` (`server.ts:273-287`)
+  cascades to delete the organizer's own `Event` docs (`Event.deleteMany({ trip_id })`) but
+  never touches other users' shadow trips (`Trip.linkedTripId`, added in 0.0.36 —
+  auto-created for a participant on accept) that point at the deleted trip. Verified against
+  real data: the organizer trip behind Toto's older shadow trip 404s (deleted), while Toto's
+  shadow trip referencing it is still there, permanently empty, with no indication why.
+  `DELETE /api/events/:id` (`server.ts:688-699`) has the same gap for the narrower case where
+  deleting one event empties out a shadow trip that had others. Not built here — proposed fix:
+  when a trip (or its last remaining event) is deleted, also delete/archive any other `Trip`
+  docs whose `linkedTripId` points at it, mirroring the cascade-to-Events pattern already used
+  in the same handler.
+- **A confirmed event's card looks and behaves completely differently depending on who's
+  viewing it — organizer vs. invited participant.** Reported live, same Toto scenario: the
+  accepted restaurant has no address, no photo, and no "Navigate" button on Toto's side, unlike
+  Nico's. Root cause, confirmed by reading the render logic: the rich card (photo, address,
+  rating, "Navigate ›") only appears when `isPlaceScheduledInSlot` (`trips.tsx:946-952`)
+  matches a confirmed event against an entry in the *current viewer's own* independently-scored
+  recommendation results for that slot — true for whoever picked the place from their own
+  proposals (the organizer), essentially never true for a participant, whose own recommendation
+  query is scored against their own preferences and has no reason to surface the same place.
+  Every other case falls back to the plain "Current Schedule" timeline row
+  (`trips.tsx:1149-1203`) — a colored dot, time, and a text label, not even tappable. Not built
+  here — the fix is a rendering-path merge, not a viewer-specific special case: any resolved
+  event (one with a `place_name`/`place_id`) should render with the same card treatment
+  regardless of whether it happens to overlap the viewer's own recommendation cache, sourcing
+  address/photo directly from `GET /api/places/:id` — the same fallback-fetch-by-id mechanism
+  already used elsewhere (0.0.32/0.0.34) for exactly this "place not in this viewer's own
+  slotRecommendations" situation.
+- **Full security audit — 1 critical, 1 high, 1 medium, 2 low, and 4 areas verified clean.**
+  Requested directly ahead of sprint planning. **Critical:** `POST /api/auth/login`
+  (`server.ts:111`) grants a full 30-day session for any email address with zero password/OTP/
+  OAuth verification — confirmed no auth mechanism exists anywhere in the codebase
+  (`User.google_id` is a schema field but is never checked). Combined with
+  `POST /api/friend-requests` (`server.ts:1091`) returning a distinguishable 404 for an
+  unregistered email, this is a free email-enumeration oracle paired with a walk-in token for
+  any account it finds — live and internet-reachable via the beta tunnel right now, no rate
+  limit slowing it down. **High:** `public/admin.html` and all 5 `/admin/api/places` routes
+  (`server.ts:1220`) have no auth at all, built on a "local-only" assumption the beta tunnel
+  already breaks. **Medium:** no rate limiting anywhere in `server.ts`. **Low:** all ~35 route
+  handlers leak raw `error.message` to clients on a 500 (`server.ts:148` +34 more);
+  `PUT /api/users/:id` (`server.ts:168`) does `$set: req.body` against a `strict:false` schema
+  with no allowlist — self-inflicted-only today, but a real privilege-escalation vector the
+  moment any role field is added. **Verified clean:** IDOR (every `:id`-scoped route correctly
+  scopes to its owning field, not a bare lookup), regex injection (`escapeRegExp` applied at
+  every `$regex` site), the intentionally-unauthenticated photo proxy route (reasoning holds),
+  and secrets/dependencies (nothing committed; `npm audit` hits are all transitive build
+  tooling, none reachable from the running server). Not fixed here — audit only, feeding
+  sprint planning.
+- **Full code-cleanliness audit — 9 findings, plus one correction to this very changelog's own
+  prior entries.** Requested directly alongside the security audit. **Correction:** the
+  `hooks/useAuth.tsx` split (tracked as deferred/not-started in this changelog and in
+  `docs/useauth-split-plan.md`) is actually already complete — verified directly:
+  `useAuth.tsx` is 236 lines (identity/session only), with `useTrips.tsx`/`useContacts.tsx`/
+  `useEvents.tsx` already split out exactly per the plan, each carrying "Step N of 5"
+  comments. The plan doc still opens with "Not attempted this pass," which will mislead the
+  next person into re-planning finished work. **Medium:** `useTrips.tsx`/`useContacts.tsx`
+  duplicate ~90 lines of identical offline-sync logic each (`useTrips.tsx:100-203` vs.
+  `useContacts.tsx:96-191`) — a `createSyncedCollectionProvider(config)` factory would remove
+  it, the natural next step after the split above; `trips.tsx` (1946 lines/46 `useState`s) and
+  `profile.tsx` both define their modal subcomponents inside the parent's render body,
+  re-creating them every render; the `darkActionSheet` bottom-sheet style is byte-for-byte
+  duplicated between `social.tsx:439` and `trips.tsx:1885`, each file's own comment pointing at
+  the other instead of extracting it. **Low:** the documented `id`/`_id` dual-check convention
+  is hand-rolled 6 times with no shared helper; `CLAUDE.md` itself is stale in several places
+  (describes a mock recommendation engine that's since been removed, says `Event` "has no REST
+  endpoints" when it has ~10, omits `models/FriendRequest.ts`/`Place.ts` and most of `lib/`
+  from its own file lists); 3 dead exports (`getPendingMutationCount`, `computeMatchScore`,
+  `getAllTaxonomyTags`); `lib/mutation-queue.ts`'s retry/reconciliation logic is untested
+  despite being exactly the kind of thing that fails silently; type erosion (69 `any` in
+  app/hooks/lib, 51 in `server.ts`) where the parse functions already have real shapes to
+  reuse. Not fixed here — audit only. Both audits published as a structured, block-organized
+  roadmap artifact for sprint planning (link kept locally, not committed here since artifact
+  URLs are account-scoped).
+
+### Added
+- **The local beta stack (MongoDB, backend server, cloudflared tunnel) now survives a
+  reboot on its own.** Triggered by a real incident: an OOM-killed Gradle build forced a
+  server reboot, which silently took MongoDB, `npm run server`, and the tunnel down with it —
+  discovered only when trying to share a build. Three systemd `--user` units
+  (`~/.config/systemd/user/odysai-{mongo,server,tunnel}.service`, not checked into the repo,
+  machine-specific) wrap the existing `scripts/local-mongo.sh`, `tsx server.ts`, and
+  `scripts/expose-server.sh` respectively, each `enabled` with dependency ordering
+  (server requires mongo; tunnel wants server). `loginctl enable-linger` (no root needed) makes
+  the user's systemd instance start at boot even with nobody logged in — the systemd-native
+  equivalent of an `rcX.d` startup script on this system (Ubuntu 25.10 has no SysV init to hook
+  into). `scripts/restart-server.sh` (still run daily at 6am via cron) now does
+  `systemctl --user restart odysai-server.service` instead of its old manual `pkill`+`nohup`
+  dance, since that would otherwise race with systemd's own `Restart=always` on the same
+  process. Live-verified: stopped the manually-started processes, brought all three up via
+  `systemctl --user enable --now`, confirmed `/health` responds 200 and the tunnel serves
+  traffic end-to-end — not verified against an actual physical reboot in this session.
+- **Local EAS Android builds capped to fit available RAM.** A prior local `eas build --local`
+  OOM-killed the Gradle daemon mid-build (kernel `Out of memory: Killed process ... (java)`,
+  confirmed via `journalctl`) — root cause was compiling native C++ for all 4 Android ABIs in
+  parallel on a 4-core/15GB machine. Fixed two ways: `~/.gradle/gradle.properties` (global,
+  not checked in) caps `org.gradle.jvmargs`/`kotlin.daemon.jvm.options`/`workers.max` to leave
+  headroom; `ORG_GRADLE_PROJECT_reactNativeArchitectures=arm64-v8a` (set at build invocation,
+  not committed anywhere) restricts local builds to one ABI, since a preview/test APK only
+  ever needs to run on real test devices. Cut a from-scratch local build from OOM-crashing to
+  ~10-11 minutes clean.
+
+### Roadmap noted
+- **Per-user field-level encryption at rest (AES-256), starting with calendar-imported data.**
+  `POST /api/trips/:tripId/events/import` stores real device-calendar `title`/`location` in
+  MongoDB in plaintext today — some of the most sensitive data this app touches, and more so
+  once real OAuth (still deferred, see below) potentially brings in real Google Calendar data
+  rather than just device-local sync. Requested directly: every user's data encrypted with a
+  key unique to that user, before OAuth work proceeds. Not built here — full proposal (scope,
+  per-user AES-256-GCM envelope encryption, key-management dependency on the eventual GCP
+  migration, which fields can't be transparently encrypted without losing server-side
+  query/filter/index capability) written up in new `docs/data-encryption-plan.md`.
+- **Circles: no way to actually remove a contact, only re-circle them.** `social.tsx`'s "Move
+  Contact" sheet only ever reassigns `circleTags` — there's no "Remove Friend" action anywhere
+  in the UI, even though `DELETE /api/contacts/:id` already exists and works on the backend.
+  Requested directly. Not built here — added as gap #5 to `docs/circles-feature-proposal.md`.
+- **App icon redo needed — the Android home-screen icon reads too light.** Reported live after
+  installing 0.0.37. Root cause, confirmed by reading the actual asset files: 0.0.37's icon
+  redesign updated the flat `icon.png` to the intended navy `#0F172A` background, but never
+  touched the separate Android *adaptive* icon layers that actually render on a home screen —
+  `assets/images/android-icon-background.png` is still the old pale `#E6F4FE` (left over from
+  the pre-0.0.32 map-pin icon), and `android-icon-foreground.png`'s white sail/ring is nearly
+  invisible against it, leaving just a faint blue crescent on a near-white tile.
+  `app.json`'s `android.adaptiveIcon.backgroundColor` is also still `#E6F4FE`. Not fixed here —
+  needs the adaptive icon's background/foreground regenerated to match the navy design
+  (`scripts` used for the original generation are in `scratch/icon-proposals/round2/gen_icons.py`
+  for reference), plus `app.json` updated to match, then a rebuild.
+- **Create/Edit Trip: end-date picker doesn't follow the start date.** Reported directly:
+  picking an October start date leaves the end-date calendar still showing September. Root
+  cause, confirmed by reading the code: `startDate`/`endDate` in `app/(tabs)/trips.tsx`
+  (lines ~128-129) are two fully independent `useState`s with no relationship after their
+  initial default (today / today+3 days) — `components/ui/NativeDatePicker.tsx` just renders
+  whatever `Date` it's handed as `value`, with no `minimumDate` support and no awareness of the
+  other field, so the end-date picker always opens on whatever month `endDate` currently
+  happens to be. There's already a submit-time guard (`trips.tsx:615`,
+  `if (startDate > endDate) Alert.alert('Invalid Dates', ...)`), but nothing keeps the two in
+  sync while the user is actively picking — same root cause as the reported symptom, not a
+  separate bug. Not built here — proposed two-part fix: (1) auto-advance `endDate` (preserving
+  the existing trip length) whenever `startDate` moves to on/after it, so the end-date picker
+  naturally opens on a relevant month; (2) add `minimumDate` support to `NativeDatePicker`
+  (the underlying `@react-native-community/datetimepicker` already supports it) and pass
+  `startDate` as the end-date field's `minimumDate`, as a safety net for manual backward
+  scrolling — the standard pattern from hotel/flight-booking date pickers.
+
 ## [0.0.37] - 2026-08-30
 ### Added
 - **The "Schedule It" modal now has a real edit mode for already-scheduled places.** Tapping

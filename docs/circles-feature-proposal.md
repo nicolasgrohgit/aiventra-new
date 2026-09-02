@@ -8,8 +8,9 @@ re-litigate that structure, only what's built on top of it.
 
 ## What's actually missing, grounded in the current code
 
-Four concrete gaps, in order of how surprising they are once you actually read
-`app/(tabs)/social.tsx` against what it claims to do.
+Five concrete gaps, in order of how surprising they are once you actually read
+`app/(tabs)/social.tsx` against what it claims to do. (Gap #5 added later, flagged directly by
+the product owner rather than found in this read-through.)
 
 ### 1. The tab's own subtitle promises a feature that doesn't exist in it
 
@@ -87,6 +88,20 @@ was sent. Given `docs/monetization-strategy.md` and this doc both point at the f
 mechanic as core product value (not a bolt-on), a dead invite with no recovery path is a real
 leak in the onboarding funnel worth a follow-up, even though it's outside what was explicitly
 asked here.
+
+### 5. A contact can be re-circled but never actually removed
+
+`social.tsx`'s "Move Contact" bottom sheet — the only action available when tapping a
+contact — offers circle reassignment and nothing else; there's no "Remove Friend"/"Delete
+Contact" action anywhere in the UI. This isn't a backend gap: `DELETE /api/contacts/:id`
+already exists and works (`server.ts:1065`, scoped to `owner_user_id` so it can't delete
+someone else's contact), and `hooks/useAuth.tsx`'s `setContacts` already calls it internally
+when its old-vs-new array diff detects a contact was dropped from local state — but nothing in
+`social.tsx` ever produces that diff, since there's no button that removes a contact from the
+array in the first place. A user who wants to actually stop being connected to someone (not
+just re-file them into a different circle) has no way to do that today. Straightforward to add
+alongside gap #3's circle-toggle work — a destructive action in the same "Move Contact" sheet,
+presumably with a confirmation step given it's irreversible.
 
 ## Chat: recommendation is to defer, and replace the underlying need with something lighter
 

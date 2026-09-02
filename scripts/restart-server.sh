@@ -4,25 +4,22 @@
 # made to server.ts, since editing the file doesn't restart the already-running process.
 # Run via cron at 6am daily (see the crontab entry this project's setup registered) — safe to
 # also run by hand anytime.
+#
+# The server now runs as a systemd --user unit (odysai-server.service, see
+# ~/.config/systemd/user/), enabled with `loginctl enable-linger` so the whole beta stack
+# (mongo, server, tunnel) survives a reboot on its own. This script now just asks systemd to
+# restart it, rather than manually pkill+nohup'ing the process — doing both would race, since
+# systemd's own Restart=always would also try to relaunch a killed process, risking two
+# instances fighting over port 3000.
 
-set -e
-
-PROJECT_DIR="/home/nico/Aiventra-new"
 LOG_DIR="$HOME/.local/share/odysai-server"
 LOG_FILE="$LOG_DIR/server.log"
-# cron runs with a minimal PATH — node/npx are managed by nvm, not on cron's default PATH.
-NODE_BIN="$HOME/.nvm/versions/node/v20.20.1/bin"
 
 mkdir -p "$LOG_DIR"
-cd "$PROJECT_DIR"
 
-echo "[$(date -Iseconds)] Restarting server..." >> "$LOG_FILE"
+echo "[$(date -Iseconds)] Restarting server (systemctl --user restart odysai-server.service)..." >> "$LOG_FILE"
 
-pkill -f "tsx server.ts" 2>/dev/null || true
-sleep 2
-
-PATH="$NODE_BIN:$PATH" nohup "$NODE_BIN/npx" tsx server.ts >> "$LOG_FILE" 2>&1 &
-disown
+systemctl --user restart odysai-server.service
 
 sleep 3
 if curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/health | grep -q 200; then

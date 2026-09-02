@@ -293,6 +293,12 @@ export default function TripsScreen() {
   // not a new button. Only syncs if calendar access is already granted (never prompts here —
   // see getDeviceEventsForDateRange), so this is a silent no-op for most trips today.
   const syncDeviceCalendarForTrip = async (trip: TripMock) => {
+    // Skip a trip that hasn't been assigned its real Mongo _id yet (still the mock_-prefixed
+    // local id set at creation, see handleSaveTrip) — importTripEvents(trip.id, ...) would
+    // otherwise fire immediately on the optimistic local render and 500 (CastError: not a
+    // valid ObjectId) against a tripId that doesn't exist server-side yet. The effect below
+    // re-runs once `trips` updates with the synced trip, so this just waits for that.
+    if (trip.id.startsWith('mock_')) return;
     const events = await getDeviceEventsForDateRange(trip.startDate, trip.endDate);
     if (events.length === 0) return;
     await importTripEvents(trip.id, events.map(e => ({
@@ -377,6 +383,13 @@ export default function TripsScreen() {
   // anchor too, same as today's behavior.
   useEffect(() => {
     trips.forEach((trip: TripMock) => {
+      // A trip still on its mock_-prefixed local id hasn't synced to the server yet — fetching
+      // recommendations against it 500s (invalid tripId) and, worse, permanently caches an
+      // empty result under a key built from this soon-to-be-discarded id (fetchedSlotKeys
+      // below never retries a key once attempted). Live-reported as "nothing proposed for
+      // Lunch" right after creating a trip. Skip; this effect re-fires once `trips` updates
+      // with the real synced id.
+      if (trip.id.startsWith('mock_')) return;
       // A collapsed card's proposals aren't rendered at all — skip fetching for it entirely
       // rather than fetching-and-hiding.
       if (collapsedTripIds.has(trip.id)) return;
@@ -644,7 +657,12 @@ export default function TripsScreen() {
       } : t));
     } else {
       setTrips([{
-        id: Date.now().toString(),
+        // mock_-prefixed like every other locally-created entity (see CLAUDE.md's "Locally-
+        // generated IDs are prefixed" convention) — this trip briefly exists in `trips` state
+        // under this id before setTrips' own sync round-trip replaces it with the real Mongo
+        // _id. Effects below that fire network calls keyed on trip.id check for this prefix
+        // and skip until the real id lands, instead of 500ing against a fake tripId.
+        id: `mock_${Date.now()}`,
         destination: newDestination,
         startDate: startDate,
         endDate: endDate,

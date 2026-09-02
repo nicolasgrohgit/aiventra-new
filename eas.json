@@ -8,7 +8,7 @@
         "simulator": false
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://dim-heroes-court-brisbane.trycloudflare.com"
+        "EXPO_PUBLIC_API_URL": "https://investor-controversy-observation-signal.trycloudflare.com"
       }
     },
     "production": {}
