@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, ReactNode, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { apiFetch, API_URL, setAuthToken } from '@/lib/api-client';
+import { registerForPushNotificationsAsync } from '@/lib/push-token';
 
 // Step 2 of the useAuth.tsx split (see docs/useauth-split-plan.md): this is now just
 // identity/session/onboarding. Trips, contacts, and events live in their own providers
@@ -99,6 +100,23 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         setUser(backendUser);
         await saveState('@user', backendUser);
         await saveState('@authToken', token);
+
+        // Best-effort push-token registration (see lib/push-token.ts and the new
+        // POST /api/users/me/push-token). Deliberately fire-and-forget, NOT awaited: this
+        // triggers a native permission prompt, which must never block/delay the login flow
+        // itself — a user who dismisses or never sees that prompt should still be logged in
+        // exactly as before this existed. Any failure (denied permission, no push capability,
+        // network error posting the token) is caught and logged, never surfaced to the UI.
+        registerForPushNotificationsAsync()
+          .then((pushToken) => {
+            if (!pushToken) return;
+            return apiFetch(`${API_URL}/api/users/me/push-token`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ token: pushToken })
+            });
+          })
+          .catch((err) => console.warn('Failed to register push token:', err));
       } else {
         throw new Error('Failed to login via server');
       }

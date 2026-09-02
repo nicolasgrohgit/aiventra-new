@@ -223,6 +223,63 @@ this is still pre-release/beta.
   it's flagged for a human spot-check rather than wired in blind. No code changes — full
   research and recommendation in new `docs/event-data-coverage-plan.md`.
 
+### Added
+- **Push notification infrastructure — server-side built and live-verified end-to-end;
+  client-side registration wired in; in-app display/deep-linking still a follow-up.** Closes
+  the gap the 0.0.33 friend-requests entry called out directly ("no push notification infra
+  exists anywhere in this app... device tokens, `expo-notifications`, server-side push
+  sending"). Built: (1) `User.expoPushToken` (`models/User.ts`) plus a new
+  `POST /api/users/me/push-token` (`server.ts`) that stores it, scoped to `req.userId` —
+  deliberately a new endpoint rather than folded into `PUT /api/users/:id`, since that route
+  is independently being locked down with a field allowlist elsewhere in this sprint and this
+  avoids the conflict. (2) `lib/push-notifications.ts`: a `sendPushNotification` helper that
+  POSTs to Expo's push HTTPS API (`https://exp.host/--/api/v2/push/send`), no extra SDK
+  needed. Best-effort only, same shape as `ensurePlacesForCity`
+  (`lib/places-population.ts`): every failure (network error, invalid/expired token, a
+  per-ticket error in Expo's response body) is caught and logged, never thrown. Wired into
+  the two places this app currently generates a notification-worthy event: `POST
+  /api/friend-requests` (new incoming friend request) and `POST /api/trips/:tripId/events`'s
+  `participantContactIds` path (new event invite) — both wrapped in their own try/catch at
+  the call site too, for defense in depth, matching how `ensurePlacesForCity` itself is
+  called in three places despite already being best-effort internally. (3) Client-side:
+  `lib/push-token.ts` (`registerForPushNotificationsAsync`, wrapping `expo-notifications`'
+  permission request + `getExpoPushTokenAsync`, using `app.json`'s existing EAS
+  `projectId`) called from `hooks/useAuth.tsx`'s `login()` on a successful backend login —
+  deliberately fire-and-forget (not awaited), so a slow/denied native permission prompt can
+  never delay or fail the login flow itself. `expo-notifications` config plugin added to
+  `app.json` (notification icon: the existing monochrome Android adaptive-icon asset, tint
+  `#0F172A` to match the 0.0.37 navy redesign).
+  **Explicitly deferred as follow-up, not started here:** in-app foreground notification
+  display config (`Notifications.setNotificationHandler`) and tap-to-navigate deep linking
+  from a received notification into the relevant friend-request/event screen; re-registering
+  the push token on app reopen for a returning user who never re-calls `login()` (today's
+  wiring only registers at the moment of a fresh backend login); multi-device fan-out (the
+  schema stores one token per user, last-registered wins).
+  **Live-verified against the real local backend and MongoDB**, not just `tsc`/lint: ran this
+  worktree's own `server.ts` (not the shared systemd-managed instance at `/home/nico/
+  Aiventra-new`, deliberately left untouched) on a scratch port against the same local Mongo;
+  logged in as two throwaway accounts via `POST /api/auth/login`; confirmed
+  `POST /api/users/me/push-token` validates (400 on a missing token), persists
+  (`expoPushToken` round-trips through `GET /api/users/:id`), and requires auth (401 with no
+  token). Set a syntactically-valid-but-fake Expo token
+  (`ExponentPushToken[fakeTestToken1234567]`) on the second account, then, from the first:
+  sent a real `POST /api/friend-requests` and, after linking the two as contacts via the
+  accept flow, a real `POST /api/trips/:tripId/events` invite — both calls returned 200 with
+  the expected document, and the server log showed `sendPushNotification` actually reaching
+  Expo's live API and logging back its real per-ticket error (`"...is not a valid Expo push
+  token" / DeviceNotRegistered`) without the friend-request/event-creation response ever
+  slowing beyond the extra network round-trip or failing. Independently confirmed the same
+  well-formed-request/structured-error behavior with a raw `curl` straight to
+  `https://exp.host/--/api/v2/push/send`. Test accounts/trip/event/contact/friend-request
+  cleaned up afterward (direct Mongo deletes by the throwaway ids, since neither users nor
+  friend requests have a delete endpoint).
+  **Verification ceiling:** the actual receiving end — a real device or simulator getting a
+  real Expo push token and seeing a notification arrive — cannot be verified in this
+  environment (no physical device/simulator available here, consistent with this project's
+  existing verification-ceiling notes elsewhere in this changelog); everything server-side up
+  to and including Expo's push API accepting a well-formed request is verified, the
+  client-to-device leg is not.
+
 ## [0.0.37] - 2026-08-30
 ### Added
 - **The "Schedule It" modal now has a real edit mode for already-scheduled places.** Tapping

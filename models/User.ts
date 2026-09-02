@@ -29,6 +29,15 @@ export interface IUser extends Document {
   // direct property access in GET /api/friends-nearby — this project was already burned once
   // by an undeclared field that stored fine but returned undefined on direct access.
   homebaseSharedCircles: string[];
+  // Expo push token for this user's current device, registered client-side via
+  // lib/push-token.ts (expo-notifications) and stored through the dedicated
+  // POST /api/users/me/push-token endpoint below — deliberately not folded into the general
+  // PUT /api/users/:id update path. Formally declared for the same "direct property access"
+  // reason as homebaseSharedCircles above (server.ts reads user.expoPushToken directly when
+  // sending a push, see POST /api/friend-requests and POST /api/trips/:tripId/events).
+  // Single device only for now (last-registered token wins) — multi-device fanout is a
+  // follow-up, not needed for this build.
+  expoPushToken?: string;
 }
 
 const UserSchema = new Schema<IUser>({
@@ -48,7 +57,8 @@ const UserSchema = new Schema<IUser>({
     earliestLunchTime: { type: String },
     earliestDinnerTime: { type: String },
   },
-  homebaseSharedCircles: { type: [String], default: [] }
+  homebaseSharedCircles: { type: [String], default: [] },
+  expoPushToken: { type: String }
 }, { timestamps: true, strict: false }); // strict: false only needed now for top-level ad hoc fields (firstName, homebase, etc.) — preferences.* is fully declared above
 
 export default mongoose.models.User || mongoose.model<IUser>('User', UserSchema);
