@@ -7,15 +7,19 @@ interface NativeDatePickerProps {
   onChange: (date: Date) => void;
   mode?: 'date' | 'time';
   format?: 'date' | 'time';
+  // Passed straight through to @react-native-community/datetimepicker, which already
+  // supports it natively on both platforms — disables/clamps any date before this one in
+  // the native picker UI itself, rather than only catching it after the fact at submit time.
+  minimumDate?: Date;
 }
 
 /**
  * A highly generic, cross-platform Native Date/Time picker explicitly resolving UI boundaries cleanly.
  */
-export function NativeDatePicker({ value, onChange, mode = 'date', format = 'date' }: NativeDatePickerProps) {
+export function NativeDatePicker({ value, onChange, mode = 'date', format = 'date', minimumDate }: NativeDatePickerProps) {
   const [showAndroidPicker, setShowAndroidPicker] = useState(false);
 
-  const displayValue = format === 'time' 
+  const displayValue = format === 'time'
     ? value.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     : value.toDateString();
 
@@ -27,12 +31,13 @@ export function NativeDatePicker({ value, onChange, mode = 'date', format = 'dat
         </TouchableOpacity>
       ) : (
         <View style={styles.iosContainer}>
-          <DateTimePicker 
-            value={value} 
-            mode={mode} 
-            display="default" 
-            themeVariant="dark" 
-            onChange={(e, d) => d && onChange(d)} 
+          <DateTimePicker
+            value={value}
+            mode={mode}
+            display="default"
+            themeVariant="dark"
+            minimumDate={minimumDate}
+            onChange={(e, d) => d && onChange(d)}
           />
         </View>
       )}
@@ -42,6 +47,7 @@ export function NativeDatePicker({ value, onChange, mode = 'date', format = 'dat
           value={value}
           mode={mode}
           display="default"
+          minimumDate={minimumDate}
           onChange={(e, d) => {
             setShowAndroidPicker(false);
             if (d) onChange(d);

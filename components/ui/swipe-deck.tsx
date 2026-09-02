@@ -20,6 +20,24 @@ import { domainForTag } from '@/lib/onboarding-taste';
 // keeps the blast radius of an unverifiable change smaller. Core `PanResponder`/`Animated`
 // need no such setup and are just as capable for a single-axis swipe-and-fly-off. Worth
 // revisiting if the team standardizes on gesture-handler for a future swipeable surface.
+//
+// "Feels slow" fix (this pass): a *prior* attempt fixed this by migrating the whole gesture
+// system to Gesture.Pan()/reanimated above — that broke the ✓/✕ round buttons (deck silently
+// stopped advancing) and was reverted (see CHANGELOG 0.0.32 "Known issue"). Deliberately not
+// repeating that here. Root cause of the actual sluggishness, on inspection: the drag-follow
+// event below (onPanResponderMove) was wired with `useNativeDriver: false`, so every single
+// touchmove sample bounced through the JS bridge to update `position` before the card's
+// transform could repaint — exactly the kind of per-frame JS thread round-trip that reads as
+// "the card feels like it's lagging behind my finger." Switched to `useNativeDriver: true`;
+// safe because `position.x`/`position.y` are only ever consumed as `transform`
+// (`getTranslateTransform()` + the `rotate` interpolation below), which the native driver
+// fully supports — nothing here reads the raw numeric value off the JS thread. The
+// `onPanResponderRelease` spring-back and `advance()`'s fly-off `Animated.timing` were
+// already `useNativeDriver: true`, so this was the one remaining JS-driven path in the
+// gesture code. Critically, this leaves `PanResponder` itself, `onMoveShouldSetPanResponder`,
+// `onPanResponderRelease`, and the ✓/✕ `Pressable`s' `onPress={() => advance(...)}` wiring
+// completely untouched — the round buttons don't go through this event at all, so this
+// change carries essentially none of the risk the reverted gesture-handler migration did.
 
 const SWIPE_THRESHOLD = 100;
 const FLY_OFF_DISTANCE = 500;
@@ -74,7 +92,7 @@ export function SwipeDeck({ candidates, onComplete }: SwipeDeckProps) {
   const panResponder = useRef(
     PanResponder.create({
       onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 6,
-      onPanResponderMove: Animated.event([null, { dx: position.x, dy: position.y }], { useNativeDriver: false }),
+      onPanResponderMove: Animated.event([null, { dx: position.x, dy: position.y }], { useNativeDriver: true }),
       onPanResponderRelease: (_, gesture) => {
         if (gesture.dx > SWIPE_THRESHOLD) advance(true, 'right');
         else if (gesture.dx < -SWIPE_THRESHOLD) advance(false, 'left');
