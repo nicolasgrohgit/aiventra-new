@@ -114,37 +114,115 @@ this is still pre-release/beta.
   to). Worth revisiting once GCP migration (Block 05) lands, since Atlas's built-in
   point-in-time backups would make this a non-issue — but shouldn't wait until then, since
   local dev/beta work touching real data continues in the meantime.
-- **A participant's shadow trip is never cleaned up when the organizer's trip (or its events)
-  is deleted, leaving a permanently empty trip behind.** Reported live: Toto (an event
+- **A participant's shadow trip was never cleaned up when the organizer's trip (or its last
+  event) was deleted, leaving a permanently empty trip behind.** Reported live: Toto (an event
   participant) saw two trips to Rome — one with the actual accepted restaurant, one showing
-  nothing. Confirmed via direct API calls: `DELETE /api/trips/:id` (`server.ts:273-287`)
-  cascades to delete the organizer's own `Event` docs (`Event.deleteMany({ trip_id })`) but
-  never touches other users' shadow trips (`Trip.linkedTripId`, added in 0.0.36 —
-  auto-created for a participant on accept) that point at the deleted trip. Verified against
-  real data: the organizer trip behind Toto's older shadow trip 404s (deleted), while Toto's
-  shadow trip referencing it is still there, permanently empty, with no indication why.
-  `DELETE /api/events/:id` (`server.ts:688-699`) has the same gap for the narrower case where
-  deleting one event empties out a shadow trip that had others. Not built here — proposed fix:
-  when a trip (or its last remaining event) is deleted, also delete/archive any other `Trip`
-  docs whose `linkedTripId` points at it, mirroring the cascade-to-Events pattern already used
-  in the same handler.
-- **A confirmed event's card looks and behaves completely differently depending on who's
-  viewing it — organizer vs. invited participant.** Reported live, same Toto scenario: the
-  accepted restaurant has no address, no photo, and no "Navigate" button on Toto's side, unlike
-  Nico's. Root cause, confirmed by reading the render logic: the rich card (photo, address,
-  rating, "Navigate ›") only appears when `isPlaceScheduledInSlot` (`trips.tsx:946-952`)
-  matches a confirmed event against an entry in the *current viewer's own* independently-scored
+  nothing. Root cause, confirmed via direct API calls: `DELETE /api/trips/:id` (`server.ts`)
+  cascaded to delete the organizer's own `Event` docs (`Event.deleteMany({ trip_id })`) but
+  never touched other users' shadow trips (`Trip.linkedTripId`, added in 0.0.36 —
+  auto-created for a participant on accept) that pointed at the deleted trip; `DELETE
+  /api/events/:id` had the same gap for the narrower case where deleting one event empties out
+  a shadow trip that had others. Fixed: both handlers now also delete any `Trip` docs whose
+  `linkedTripId` points at what was just deleted — `DELETE /api/trips/:id` unconditionally
+  (mirroring the existing `Event.deleteMany` cascade already there), `DELETE /api/events/:id`
+  only when deleting that event left zero events remaining under its `trip_id` (a
+  `countDocuments` check first, so a shadow trip with other live events survives). Kept both
+  diffs minimal and localized to just these two handlers, since another agent is independently
+  touching `server.ts` for security work in a parallel worktree. Live-verified against the real
+  backend and MongoDB — via a second local `tsx server.ts` instance on port 3099 pointed at the
+  same database, so as not to restart the shared systemd-managed server other agents may be
+  testing against: created a throwaway organizer + participant, a trip with two events both
+  accepted by the participant (creating one shadow trip). Deleting the first event left the
+  shadow trip intact (the second event still live); deleting the second (now the trip's last
+  event) correctly cascaded the shadow trip's deletion. Separately, recreated a third event and
+  confirmed deleting the whole organizer trip directly also correctly cascades. All test
+  data cleaned up afterward.
+- **A confirmed event's card no longer looks and behaves completely differently depending on
+  who's viewing it — organizer vs. invited participant.** Reported live, same Toto scenario:
+  the accepted restaurant had no address, no photo, and no "Navigate" button on Toto's side,
+  unlike Nico's. Root cause, confirmed by reading the render logic: the rich card (photo,
+  address, rating, "Navigate ›") only appeared when `isPlaceScheduledInSlot` matched a
+  confirmed event against an entry in the *current viewer's own* independently-scored
   recommendation results for that slot — true for whoever picked the place from their own
   proposals (the organizer), essentially never true for a participant, whose own recommendation
   query is scored against their own preferences and has no reason to surface the same place.
-  Every other case falls back to the plain "Current Schedule" timeline row
-  (`trips.tsx:1149-1203`) — a colored dot, time, and a text label, not even tappable. Not built
-  here — the fix is a rendering-path merge, not a viewer-specific special case: any resolved
-  event (one with a `place_name`/`place_id`) should render with the same card treatment
-  regardless of whether it happens to overlap the viewer's own recommendation cache, sourcing
-  address/photo directly from `GET /api/places/:id` — the same fallback-fetch-by-id mechanism
-  already used elsewhere (0.0.32/0.0.34) for exactly this "place not in this viewer's own
-  slotRecommendations" situation.
+  Every other case fell back to the plain "Current Schedule" timeline row — a colored dot,
+  time, and a text label, not even tappable. Fixed as a rendering-path merge, not a
+  viewer-specific special case: `PlaceCard` now accepts an optional `existingEvent` (the
+  caller's own known event, skipping the time-window re-derivation `findScheduledEventForPlace`
+  otherwise does) and `fullWidth` (swaps in the existing `placeCardWide` style — already used
+  by the joint-recommendation and refine-search results lists for the same single-column shape
+  — instead of the horizontal-scroll-sized `placeCard`). The "Current Schedule" timeline now
+  renders any resolved (`place_name`+`place_id`), non-imported event with this same card,
+  sourcing the place first from any slot's own cached `slotRecommendations` (new
+  `findPlaceInSlotRecommendations` helper — no extra network call when it's already there, e.g.
+  the organizer's own picks) and otherwise via `GET /api/places/:id` (new `placesById` cache +
+  a dedicated fetch effect, reusing the same fallback-fetch-by-id pattern already used for the
+  analogous "missingScheduled" gap in the AI Schedule Proposals fetch effect, just decoupled
+  from any one slot) — falling back to the plain text row only for the brief window before that
+  fetch resolves. `tsc --noEmit`/`npm run lint` clean. Not live-verified with an actual
+  two-account UI render in this pass — no device/simulator in this environment — so treat the
+  rendering side as verified by code-reading/type-checking only, unlike the fully
+  live-verified shadow-trip cascade above.
+- **Investigated: imported calendar events feeding the free-time algorithm and rendering on
+  the trip timeline — found already resolved, no code change needed.** This sprint's brief
+  (grounded in 0.0.14's "Explicitly out of scope" note) described `lib/free-time.ts`'s
+  free-time algorithm as not consuming `source:'imported'` events, and nothing rendering them
+  on the trip timeline. Both were actually already built in 0.0.21 ("Trip day-schedule now uses
+  the real imported calendar instead of a hardcoded work-day guess" / "'Scheduled Sequence' no
+  longer mislabels real meetings…"), nine versions after the 0.0.14 note this sprint item was
+  drawn from — the brief's grounding was stale, not the code. Verified directly against the
+  current code, not just this changelog's own claims: `getTripDaySchedule`
+  (`lib/free-time.ts`) still takes an `importedEvents` param and uses real
+  `calculateFreeTimeSlots` gaps on any day that has imported data, falling back to
+  `getHardcodedFreeSlots` only on a day with none; all three call sites in `trips.tsx` (the AI
+  Schedule Proposals fetch effect, the calendar-sync effect, and the main render) still pass
+  imported events through; `lib/free-time.test.ts`'s "a day with imported events uses real gaps
+  instead of the hardcoded pattern" test still exists and passes (re-ran the full suite this
+  session: 27/27 passing); and the "Current Schedule" timeline in `trips.tsx` still renders
+  `source: 'imported'` events as read-only busy blocks (`isImported` branch,
+  `timelineIndicatorBusy`, title + time only, no "Proposed…" treatment). No design decision to
+  flag and nothing to build — just correcting the record so this doesn't get re-planned as open
+  work by a future pass that also only reads the stale 0.0.14 note.
+- **Swipe-refine deck's drag felt sluggish.** `components/ui/swipe-deck.tsx`. Root cause, on
+  inspection: `onPanResponderMove`'s `Animated.event` (tracking the card's live drag position
+  every touchmove) was wired with `useNativeDriver: false`, forcing every single touch sample
+  through the JS bridge before the card's transform could repaint — the classic cause of a drag
+  that "feels like it's lagging behind my finger." Fixed by flipping it to
+  `useNativeDriver: true`; safe because `position.x`/`position.y` are only ever consumed as
+  `transform` (`getTranslateTransform()` plus the `rotate` interpolation), which the native
+  driver fully supports — nothing reads the raw numeric value off the JS thread. The
+  release-spring and fly-off animations were already `useNativeDriver: true`, so this was the
+  one remaining JS-driven step. Deliberately NOT the full `PanResponder`→`Gesture.Pan()`/
+  reanimated migration a prior attempt tried (see 0.0.32's "Known issue") — that migration is
+  what broke the ✓/✕ round buttons last time (deck silently stopped advancing) and was
+  reverted. This fix leaves `PanResponder`, `onMoveShouldSetPanResponder`,
+  `onPanResponderRelease`, and the round buttons' own `onPress={() => advance(...)}` wiring
+  completely untouched — none of that code path is touched by this diff — so it carries
+  essentially none of that regression's risk. Attempted to verify live via `expo start --web`
+  in a browser this session (the bundle came up cleanly at localhost:8090); walking a fresh
+  account through onboarding to reach this step was still in progress when a session-wide rate
+  limit cut the browser session short, unrelated to this change. Falling back to the
+  verification this task's brief explicitly allows in that case: `tsc --noEmit`/`npm run lint`
+  clean, plus high confidence from the change's narrow, single-flag, button-code-untouched
+  scope — but flagging honestly that this was not confirmed with an actual on-screen drag/button
+  test, unlike the fully live-verified items above. Worth a real on-device/browser pass before
+  calling the "feels slow" report fully closed.
+- **Create/Edit Trip: end-date picker now follows the start date.** Building on the two-part
+  fix proposed in this changelog previously: `components/ui/NativeDatePicker.tsx` now accepts
+  an optional `minimumDate`, passed straight through to the underlying
+  `@react-native-community/datetimepicker` on both the iOS inline and Android modal variants;
+  the end-date field in `app/(tabs)/trips.tsx` is given `startDate` as its `minimumDate` as a
+  safety net for manual backward scrolling. Separately, a new `handleStartDateChange` wraps
+  `setStartDate`: whenever the newly-picked start date lands on/after the current end date,
+  `endDate` auto-advances by the trip's existing length (minimum 1 day) so the end-date picker
+  naturally opens on a relevant month instead of a stale or now-invalid one, matching the
+  standard hotel/flight-booking date-picker pattern. `tsc --noEmit`/`npm run lint` clean — not
+  live-verified against an actual device date-picker interaction (no simulator in this
+  environment); this is a small, synchronous date-arithmetic change with no async/network
+  surface likely to hide a bug behind.
+
+### Roadmap noted
 - **Full security audit — 1 critical, 1 high, 1 medium, 2 low, and 4 areas verified clean.**
   Requested directly ahead of sprint planning. **Critical:** `POST /api/auth/login`
   (`server.ts:111`) grants a full 30-day session for any email address with zero password/OTP/

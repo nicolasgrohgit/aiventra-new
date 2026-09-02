@@ -127,6 +127,18 @@ export default function TripsScreen() {
   const [newDestination, setNewDestination] = useState('');
   const [startDate, setStartDate] = useState(new Date());
   const [endDate, setEndDate] = useState(new Date(Date.now() + 86400000 * 3));
+  // Keeps endDate meaningfully in sync with startDate while the user is actively picking:
+  // if the new start date would land on/after the current end date, push endDate forward by
+  // the same number of days the trip was already spanning (min 1), so the end-date picker
+  // naturally opens on a relevant month/day instead of an already-invalid one in the past.
+  // minimumDate on the end-date field (below) is the safety net for manual backward scrolling.
+  const handleStartDateChange = (newStart: Date) => {
+    setStartDate(newStart);
+    if (newStart.getTime() >= endDate.getTime()) {
+      const tripLengthMs = Math.max(endDate.getTime() - startDate.getTime(), 86400000);
+      setEndDate(new Date(newStart.getTime() + tripLengthMs));
+    }
+  };
   // Who can see this trip's destination/dates as a "traveling there" signal — private
   // (empty) by default, opt-in per circle, editable here whether creating or editing.
   const [newSharedWithCircles, setNewSharedWithCircles] = useState<string[]>([]);
@@ -259,6 +271,29 @@ export default function TripsScreen() {
   // Guards the getPlaceById fallback below (keyed by `${slotKey}-${placeId}`) so a scheduled
   // place missing from its slot's own results is only ever fetched once per slot.
   const fetchedPlaceForSlot = useRef<Set<string>>(new Set());
+
+  // Place details for "Current Schedule" timeline cards, keyed by place_id — a separate,
+  // slot-independent cache from slotRecommendations above, since a Current Schedule row has
+  // no slot of its own to key off. Populated by the effect below, checking slotRecommendations
+  // first (same place, no extra network call — e.g. the organizer's own picks are already
+  // there) before falling back to GET /api/places/:id, so a viewer for whom the event's place
+  // was never part of their own recommendation results (an invited participant, scored against
+  // their own preferences — see CHANGELOG's "no Navigate button on Toto's side" report) still
+  // gets a real address/photo instead of a bare text row.
+  const [placesById, setPlacesById] = useState<Record<string, PlaceRecommendation | null>>({});
+  const fetchedPlaceById = useRef<Set<string>>(new Set());
+
+  // Searches every slot's own cached recommendation results for a place, regardless of which
+  // slot/trip fetched it — a place a *different* slot already resolved is still the same real
+  // Place document, no reason to refetch it just because this lookup didn't originate from
+  // that slot's own query.
+  const findPlaceInSlotRecommendations = (placeId: string): PlaceRecommendation | undefined => {
+    for (const recs of Object.values(slotRecommendations)) {
+      const match = recs.find(p => p.id === placeId);
+      if (match) return match;
+    }
+    return undefined;
+  };
 
   const myUserId = user?._id || user?.id;
 
@@ -471,6 +506,31 @@ export default function TripsScreen() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trips, expandedTripIds, eventsByTrip, collapsedTripIds, user?.homebase, user?.preferences?.earliestLunchTime, user?.preferences?.earliestDinnerTime]);
+
+  // Resolves place details for "Current Schedule" timeline cards (see placesById above).
+  // Deliberately a separate effect from the AI Schedule Proposals one above rather than folded
+  // into it: that effect skips home-turf trips and unexpanded days entirely (no proposals to
+  // fetch there), but Current Schedule always renders every event on an uncollapsed trip
+  // regardless of home-turf status or which day is expanded, so it needs its own, broader
+  // trigger condition.
+  useEffect(() => {
+    trips.forEach((trip: TripMock) => {
+      if (trip.id.startsWith('mock_')) return;
+      if (collapsedTripIds.has(trip.id)) return;
+      const tripEvents = eventsByTrip[trip.id] || [];
+      tripEvents.forEach((event: TripEvent) => {
+        if (event.source !== 'created' || !event.place_id || !event.place_name) return;
+        const placeId = event.place_id;
+        if (findPlaceInSlotRecommendations(placeId)) return;
+        if (fetchedPlaceById.current.has(placeId)) return;
+        fetchedPlaceById.current.add(placeId);
+        getPlaceById(placeId).then(place => {
+          setPlacesById(prev => ({ ...prev, [placeId]: place ? { ...place, id: place._id } : null }));
+        });
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trips, eventsByTrip, collapsedTripIds]);
 
   // Debounced city lookup for the destination field — warn, don't block: a legitimate city
   // might genuinely not appear in a partial-query top-5 result.
@@ -949,17 +1009,32 @@ export default function TripsScreen() {
       new Date(e.start_time) < slotEnd && new Date(e.end_time) > slotStart
     );
 
-  const PlaceCard = ({ place, tripId, slotStart, tripEvents }: { place: PlaceRecommendation, tripId: string, slotStart: Date, tripEvents: TripEvent[] }) => {
+  // `existingEvent` (optional): when the caller already knows exactly which Event this card
+  // represents — the "Current Schedule" timeline below does, since it's rendering directly
+  // from a real Event doc — pass it directly instead of re-deriving it via
+  // findScheduledEventForPlace's time-window overlap match. That match is a slot-proposal-only
+  // concern (the AI Schedule Proposals flow only knows a place + a slot instant until the user
+  // taps, not yet an event id); it's unnecessary indirection for a caller that already has the
+  // real event, and event.end_time may not exactly equal place.estimatedDuration.
+  //
+  // `fullWidth` (optional): the AI Schedule Proposals flow renders these in a horizontal
+  // ScrollView, sized (`placeCard`'s fixed `width: 280`) to sit alongside siblings; the
+  // Current Schedule timeline is a single vertical column with no siblings to scroll past, so
+  // this swaps in `placeCardWide` instead (already used by the joint-recommendation and
+  // refine-search results lists for the same "single-column, no horizontal scroll" shape) —
+  // same card, same fields, same tap behavior, just not scroll-sized for a context with
+  // nothing to scroll.
+  const PlaceCard = ({ place, tripId, slotStart, tripEvents, existingEvent, fullWidth }: { place: PlaceRecommendation, tripId: string, slotStart: Date, tripEvents: TripEvent[], existingEvent?: TripEvent, fullWidth?: boolean }) => {
     // A place already added to this trip (any day) looks identical to an unscheduled one
     // otherwise, which is exactly why tapping "Add to Itinerary" reads as "nothing happened" —
     // it did work, there's just no visible trace of it back on the card you tapped.
     const alreadyScheduled = isPlaceScheduled(tripEvents, place.id);
     return (
     <TouchableOpacity
-      style={styles.placeCard}
+      style={fullWidth ? styles.placeCardWide : styles.placeCard}
       activeOpacity={0.8}
       onPress={() => {
-        const scheduledEvent = findScheduledEventForPlace(tripId, place.id, slotStart, place.estimatedDuration);
+        const scheduledEvent = existingEvent ?? findScheduledEventForPlace(tripId, place.id, slotStart, place.estimatedDuration);
         setSelectedPlace({ place, tripId, slotStart, existingEvent: scheduledEvent || null });
         refreshContacts();
       }}
@@ -1159,6 +1234,21 @@ export default function TripsScreen() {
                         // a genuine user-created event without a place yet does.
                         const isImported = event.source === 'imported';
                         const isResolved = !!event.place_name;
+                        // Any resolved event gets the same rich PlaceCard treatment regardless
+                        // of who's viewing it — previously this only happened to work for
+                        // whoever's own AI Schedule Proposals recommendation cache the place
+                        // was scored into (usually the organizer, who picked it from there), and
+                        // fell back to this bare text line for everyone else (e.g. an invited
+                        // participant, whose own recommendations are scored against their own
+                        // preferences and have no reason to include the same place). See
+                        // placesById/findPlaceInSlotRecommendations above for how this is
+                        // resolved regardless of viewer. Falls back to the plain text line only
+                        // while the place details are still in flight (or, rarely, failed to
+                        // load) — never a dead end, just a brief loading state upgraded in place
+                        // once the fetch above resolves.
+                        const resolvedPlace = isResolved && !isImported && event.place_id
+                          ? (findPlaceInSlotRecommendations(event.place_id) ?? placesById[event.place_id])
+                          : undefined;
                         return (
                           <View key={event._id} style={styles.timelineEventCard}>
                             <View style={[
@@ -1172,7 +1262,18 @@ export default function TripsScreen() {
                               {isImported ? (
                                 <Text style={styles.timelineEventName}>{event.title}</Text>
                               ) : isResolved ? (
-                                <Text style={styles.timelineEventName}>{event.place_name}</Text>
+                                resolvedPlace ? (
+                                  <PlaceCard
+                                    place={resolvedPlace}
+                                    tripId={trip.id}
+                                    slotStart={new Date(event.start_time)}
+                                    tripEvents={tripEvents}
+                                    existingEvent={event}
+                                    fullWidth
+                                  />
+                                ) : (
+                                  <Text style={styles.timelineEventName}>{event.place_name}</Text>
+                                )
                               ) : (
                                 <Text style={styles.timelineEventNamePending}>{event.title} — Proposed, picking a place together</Text>
                               )}
@@ -1746,10 +1847,10 @@ export default function TripsScreen() {
             </Text>
 
             <Text style={styles.inputLabel}>Start Date</Text>
-            <NativeDatePicker value={startDate} onChange={setStartDate} mode="date" format="date" />
+            <NativeDatePicker value={startDate} onChange={handleStartDateChange} mode="date" format="date" />
 
             <Text style={styles.inputLabel}>End Date</Text>
-            <NativeDatePicker value={endDate} onChange={setEndDate} mode="date" format="date" />
+            <NativeDatePicker value={endDate} onChange={setEndDate} mode="date" format="date" minimumDate={startDate} />
 
             <View style={{ marginTop: 8 }}>
               <CircleShareSelector

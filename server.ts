@@ -377,6 +377,10 @@ app.delete('/api/trips/:id', authenticate, async (req: AuthedRequest, res: expre
     // Events belong to the trip via trip_id (not embedded) — deleting the trip
     // doesn't cascade automatically, so clean up orphaned events explicitly.
     await Event.deleteMany({ trip_id: trip._id });
+    // A participant's "shadow" trip (Trip.linkedTripId, see PUT /api/events/:id/respond)
+    // mirrors this trip but has no other tie to it — without this, deleting the organizer's
+    // trip leaves the participant with a permanently empty trip pointing at a now-404ing id.
+    await Trip.deleteMany({ linkedTripId: trip._id });
     res.json({ success: true, message: 'Trip deleted successfully' });
   } catch (error: any) {
     reportError(error, req, 'delete trip failed');
@@ -863,6 +867,13 @@ app.delete('/api/events/:id', authenticate, async (req: AuthedRequest, res: expr
     const event = await Event.findOneAndDelete({ _id: req.params.id, created_by: req.userId });
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
+    }
+    // Narrower case of the same cascade as DELETE /api/trips/:id above: deleting this event
+    // may have been the trip's last one, which empties it out for any participant's shadow
+    // trip (Trip.linkedTripId) mirroring it just as fully as deleting the trip itself would.
+    const remainingEvents = await Event.countDocuments({ trip_id: event.trip_id });
+    if (remainingEvents === 0) {
+      await Trip.deleteMany({ linkedTripId: event.trip_id });
     }
     res.json({ success: true, message: 'Event deleted successfully' });
   } catch (error: any) {
