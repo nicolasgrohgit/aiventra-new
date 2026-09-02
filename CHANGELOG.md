@@ -26,6 +26,32 @@ this is still pre-release/beta.
   against the reported trip, then `tsc --noEmit`/`npm run lint` clean — not verified against a
   live device/simulator (none available in this environment, consistent with this project's
   existing verification-ceiling notes elsewhere in this changelog).
+- **The Android home-screen icon read too light.** Root cause, per the prior "Roadmap noted"
+  entry below: `icon.png`'s 0.0.37 redesign (navy `#0F172A` background, white "crescent O-sail"
+  boat mark) never propagated to the Android *adaptive* icon layers Android actually composites
+  on the home screen — `android-icon-background.png` was still the pale `#E6F4FE` left over from
+  the pre-0.0.32 map-pin icon (`android-icon-foreground.png` itself, it turns out, already held
+  the current boat artwork from the icon swap commit — only the backing plate was stale), and
+  `app.json`'s `android.adaptiveIcon.backgroundColor` matched that same stale pale value. Fixed:
+  regenerated `android-icon-background.png` as a flat, fully-opaque `#0F172A` (512x512), and
+  regenerated `android-icon-foreground.png` from the same hull/mast/sail/O-cutout drawing code
+  `icon.png` itself was built from (`scratch/icon-proposals/round2/gen_icons.py`'s
+  `render_concept(add_o_cutout=True)`, reused rather than reimplemented, per
+  `scratch/icon-proposals/round2/gen_adaptive_icons.py`), scaled down and re-centered so it sits
+  well inside Android's adaptive-icon safe zone, and updated `app.json`'s
+  `android.adaptiveIcon.backgroundColor` to `#0F172A` to match. No physical device available to
+  confirm on a real home screen, so verification was entirely programmatic, reading pixel values
+  directly rather than eyeballing renders: background is uniformly `(15,23,42,255)` at every
+  sampled point with no stray alpha; foreground's opaque content is centered within half a pixel
+  of canvas center and its farthest opaque pixel from center sits at 40.1% of the half-canvas
+  radius, well inside Android's documented 66%-diameter (61.1%-of-half-canvas-radius) safe
+  circle — confirmed both by that direct radius measurement and by compositing background +
+  foreground and simulating the most aggressive case, a full circular launcher mask, which crops
+  nothing but empty margin; the sail's "O" ring cutout is genuinely transparent (not baked-in
+  navy) so it reads correctly against the new background; and foreground edge pixels were
+  checked for premultiplied-alpha fringing (a `resize()`-on-straight-alpha bug that can halo
+  partially-transparent edges with black) — none found, edge colors stay pure white/blue at every
+  partial-alpha pixel sampled.
 
 ### Roadmap noted
 - **A participant's shadow trip is never cleaned up when the organizer's trip (or its events)
@@ -146,17 +172,6 @@ this is still pre-release/beta.
   Contact" sheet only ever reassigns `circleTags` — there's no "Remove Friend" action anywhere
   in the UI, even though `DELETE /api/contacts/:id` already exists and works on the backend.
   Requested directly. Not built here — added as gap #5 to `docs/circles-feature-proposal.md`.
-- **App icon redo needed — the Android home-screen icon reads too light.** Reported live after
-  installing 0.0.37. Root cause, confirmed by reading the actual asset files: 0.0.37's icon
-  redesign updated the flat `icon.png` to the intended navy `#0F172A` background, but never
-  touched the separate Android *adaptive* icon layers that actually render on a home screen —
-  `assets/images/android-icon-background.png` is still the old pale `#E6F4FE` (left over from
-  the pre-0.0.32 map-pin icon), and `android-icon-foreground.png`'s white sail/ring is nearly
-  invisible against it, leaving just a faint blue crescent on a near-white tile.
-  `app.json`'s `android.adaptiveIcon.backgroundColor` is also still `#E6F4FE`. Not fixed here —
-  needs the adaptive icon's background/foreground regenerated to match the navy design
-  (`scripts` used for the original generation are in `scratch/icon-proposals/round2/gen_icons.py`
-  for reference), plus `app.json` updated to match, then a rebuild.
 - **Create/Edit Trip: end-date picker doesn't follow the start date.** Reported directly:
   picking an October start date leaves the end-date calendar still showing September. Root
   cause, confirmed by reading the code: `startDate`/`endDate` in `app/(tabs)/trips.tsx`
