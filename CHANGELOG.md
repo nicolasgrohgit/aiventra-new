@@ -5,6 +5,8 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 this is still pre-release/beta.
 
 ## [Unreleased]
+
+## [0.0.38] - 2026-09-02
 ### Fixed
 - **New trips could show "nothing proposed" for Lunch (and every other slot) right after
   creation, requiring the app to be backgrounded/reopened before AI proposals appeared.**
