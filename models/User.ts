@@ -38,6 +38,14 @@ export interface IUser extends Document {
   // Single device only for now (last-registered token wins) — multi-device fanout is a
   // follow-up, not needed for this build.
   expoPushToken?: string;
+  // This user's random 256-bit AES data key, wrapped (encrypted) under the server's master
+  // key (see lib/field-encryption.ts / ENCRYPTION_MASTER_KEY) and stored as opaque ciphertext
+  // — never the raw key. Generated lazily on first write of an encrypted field (an Event this
+  // user created — see getOrCreateUserDataKey in server.ts), not at account creation, so
+  // existing users are unaffected until they actually create/edit an event. Absent entirely
+  // for a user who has never triggered that path, or for every user if ENCRYPTION_MASTER_KEY
+  // isn't configured at all.
+  encryptedDataKey?: string;
 }
 
 const UserSchema = new Schema<IUser>({
@@ -58,7 +66,8 @@ const UserSchema = new Schema<IUser>({
     earliestDinnerTime: { type: String },
   },
   homebaseSharedCircles: { type: [String], default: [] },
-  expoPushToken: { type: String }
+  expoPushToken: { type: String },
+  encryptedDataKey: { type: String }
 }, { timestamps: true, strict: false }); // strict: false only needed now for top-level ad hoc fields (firstName, homebase, etc.) — preferences.* is fully declared above
 
 export default mongoose.models.User || mongoose.model<IUser>('User', UserSchema);

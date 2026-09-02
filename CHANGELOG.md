@@ -52,6 +52,47 @@ this is still pre-release/beta.
   checked for premultiplied-alpha fringing (a `resize()`-on-straight-alpha bug that can halo
   partially-transparent edges with black) — none found, edge colors stay pure white/blue at every
   partial-alpha pixel sampled.
+- **Security sprint (block 04): admin panel had no auth at all.** None of the 5
+  `/admin/api/places` routes (`server.ts`) required `authenticate`, and `public/admin.html` was
+  served with no gate — flagged High in the security audit above, made worse by the beta
+  tunnel making it internet-reachable. Fixed: a new `requireAdminToken` middleware
+  (`server.ts`) checks an `X-Admin-Token` request header against a server-side `ADMIN_TOKEN`
+  env var and is applied to all 5 admin routes; it fails closed (503) if `ADMIN_TOKEN` isn't
+  configured at all, rather than silently allowing access like the bug it replaces.
+  `admin.html` can't be gated at the `express.static` level without restructuring, so instead
+  its own JS (`adminFetch`) prompts for the token on first use, caches it in
+  `sessionStorage` (cleared on tab close, never written into the page/URL), and sends it as
+  that header on every admin API call — the page is inert without a valid token either way now
+  that the routes it calls are locked down, which is the part that actually matters.
+  `ADMIN_TOKEN` added to `.env.example` (with a generation command) and to `.env` with a real
+  generated value. Live-verified against the real local backend: `GET /admin/api/places` with
+  no header and with a wrong header both 401; with the real token, 200; `admin.html`'s prompt/
+  header/retry-on-401 flow read through end-to-end.
+- **Security sprint (block 04): every 500 response leaked the raw internal error message.**
+  All ~35 route catch blocks did `res.status(500).json({ error: error.message })` — flagged
+  Low in the audit above. Fixed: every one now returns `{ error: 'Internal server error' }` to
+  the client; the existing `reportError` call (server-side `req.log.error` + Sentry when
+  configured) is untouched, so nothing is lost from the logs, only from what crosses the wire.
+  Live-verified: forced a real `CastError` (`PUT /api/trips/:id` with a malformed id) and
+  confirmed the HTTP response is the generic message while the structured server log still
+  captures the full `Cast to ObjectId failed for value "..."` detail.
+- **Security sprint (block 04): `PUT /api/users/:id` allowed mass assignment.** It did
+  `User.findByIdAndUpdate(id, { $set: req.body }, ...)` against a `strict: false` schema,
+  letting a client set any top-level field on their own account — flagged Low in the audit
+  above as "self-inflicted-only today, but a real privilege-escalation vector the moment any
+  role field is added." Fixed: `updateData` is now built from an explicit `USER_UPDATABLE_FIELDS`
+  allowlist (`server.ts`), the same explicit-allowlist pattern already used in
+  `POST /api/trips`/`PUT /api/trips/:id`. The allowlist (`firstName`, `lastName`, `email`,
+  `name`, `dob`, `homebase`, `homebaseSharedCircles`, `avatarUrl`, `preferences`) was derived
+  by tracing every real caller — `hooks/useAuth.tsx`'s `completeOnboarding`/`updatePreferences`/
+  `updateUser`, and every `updateUser(...)` call site in `app/onboarding.tsx` and
+  `app/(tabs)/profile.tsx`'s `handleSave` — rather than guessed, including the non-obvious
+  camelCase `avatarUrl` field the avatar picker writes (distinct from the snake_case
+  `avatar_url` set at account creation in `POST /api/auth/login`). Live-verified against the
+  real backend with a throwaway test account: a `PUT` with `{isAdmin: true, role: 'admin',
+  google_id: 'hijacked', firstName: 'UpdatedName'}` persisted only `firstName`; a follow-up
+  `PUT` with `homebase`/`avatarUrl`/`preferences` persisted all three, confirming real profile
+  editing still works unchanged.
 
 ### Roadmap noted
 - **No database backup strategy — a real incident during this sprint, not a hypothetical.**
@@ -123,7 +164,11 @@ this is still pre-release/beta.
   every `$regex` site), the intentionally-unauthenticated photo proxy route (reasoning holds),
   and secrets/dependencies (nothing committed; `npm audit` hits are all transitive build
   tooling, none reachable from the running server). Not fixed here — audit only, feeding
-  sprint planning.
+  sprint planning. **Update (sprint block 04):** the High/Medium/Low findings — admin panel
+  auth, rate limiting, the `error.message` leak, and the `PUT /api/users/:id` mass-assignment
+  gap — are fixed; see the `### Fixed`/`### Added` entries below. The Critical finding
+  (`POST /api/auth/login` granting a session from an email alone) is unchanged by design —
+  explicit product-owner call to keep it for now ("we aren't even beta"), not an oversight.
 - **Full code-cleanliness audit — 9 findings, plus one correction to this very changelog's own
   prior entries.** Requested directly alongside the security audit. **Correction:** the
   `hooks/useAuth.tsx` split (tracked as deferred/not-started in this changelog and in
@@ -200,7 +245,62 @@ this is still pre-release/beta.
   pre-filled, so there's an actual next step instead of a static label. Full email-sending
   infrastructure (so this could be a true one-tap resend) is a separate, larger backend piece
   — flagged, not built here.
-
+- **Security sprint (block 04): no rate limiting anywhere in `server.ts`.** Flagged Medium in
+  the security audit above — nothing slowed down scripted abuse of `POST /api/auth/login`
+  (grants a session from an email alone, see the Critical finding above, kept as-is by product
+  decision) or the email-enumeration oracle in `POST /api/friend-requests` (distinguishable 404
+  for an unregistered email). Fixed with `express-rate-limit`: a `strictLimiter` (10 requests /
+  15 min, keyed by IP) is applied specifically to those two routes, the two concrete vectors
+  named in the audit; a much looser `globalLimiter` (300 requests / 15 min) is applied
+  app-wide via `app.use()` as cheap insurance against everything else, generous enough it
+  should never bother a real client. Live-verified against the real backend: 12 rapid
+  `POST /api/auth/login` calls from the same IP returned 200 for the first several then 429
+  for the rest, within the same 15-minute window. `npm audit` after adding the dependency: no
+  new advisories (still 0 findings reachable from the running server, same as the audit's
+  "verified clean" note above).
+- **Security sprint (block 04): per-user AES-256-GCM field encryption at rest for
+  `Event.title` / `.location` / `.place_name`, the local-only stopgap
+  `docs/data-encryption-plan.md` explicitly called for.** These are the free-text fields the
+  plan flagged as most sensitive (calendar-imported titles/locations can reveal medical
+  appointments, legal matters, home/work addresses) and, per the plan's own reasoning, the
+  ones that can be encrypted transparently — none of them are ever filtered/sorted/indexed
+  server-side. Built exactly to the plan's proposed design: `lib/field-encryption.ts` holds
+  the pure AES-256-GCM primitives (a versioned `v1:<iv>:<tag>:<ciphertext>` format, unit-tested
+  in `lib/field-encryption.test.ts`); `lib/user-data-key.ts` implements the envelope —
+  each `User` gets a random 256-bit data key, generated lazily on first write, wrapped under
+  a single master key from the new `ENCRYPTION_MASTER_KEY` env var (the plan's explicit
+  "local-only stopgap," real KMS swap-in deferred with the still-pending GCP migration) and
+  stored as `User.encryptedDataKey`; `server.ts`'s Event routes (`POST`/`PUT`
+  `/api/trips/:tripId/events`, the calendar-`/import` upsert, `PUT /api/events/:id`) encrypt
+  on write and every read path (`GET /api/trips/:tripId/events`, `GET /api/events/invited`)
+  decrypts per-event using that event's *creator's* key, so an invited participant reading the
+  organizer's event still sees plaintext without needing a key of their own — this is
+  encryption against raw DB access, not a per-viewer access-control layer (that's the existing
+  ownership/participant checks, unchanged). A brand-new `scripts/migrate-encrypt-events.ts`
+  (with a `--dry-run` mode) backfills existing plaintext records, skipping any field already in
+  the versioned ciphertext format so it's safe to re-run, and never force-writes a record it
+  can't resolve a key for. Every helper is a clean no-op (fields read/write as plain strings,
+  today's behavior) when `ENCRYPTION_MASTER_KEY` isn't set, so this doesn't require every
+  environment to configure it immediately. **Deliberately not attempted:** key rotation (the
+  plan doc never specifies a policy — out of scope, not an oversight) and the real KMS swap-in
+  (explicitly deferred to the GCP migration in the plan itself). Live-verified end to end
+  against the real local MongoDB, not just unit tests: created an event with a real
+  title/location/place_name through the actual API and confirmed the raw MongoDB document
+  holds ciphertext (`v1:...`) while the API response is plaintext; confirmed a second user
+  invited to that event (`GET /api/events/invited`) sees the decrypted plaintext via the
+  organizer's key, not their own (they have none); confirmed `PUT /api/events/:id` re-encrypts
+  edited fields; ran `scripts/migrate-encrypt-events.ts` with `--dry-run` then for real against
+  the actual pre-existing 28 Event documents in the local dev database (backed up to JSON
+  first) — all 28 migrated with 0 failures, verified every field on every document is now in
+  the encrypted format, and re-fetched one of the migrated (previously plaintext) events
+  through the live API to confirm it still decrypts correctly end to end.
+  **Post-merge correction:** the migration above was run against the live shared MongoDB
+  before this branch's decryption code reached the systemd-managed server actually serving
+  the beta tunnel — which broke the live app immediately (every event title/location came
+  back as ciphertext to the old, pre-merge code). No backup file was actually found on disk
+  despite the note above; since all 28 affected events were test data, the `Event` collection
+  was deleted outright to restore service rather than reconstructed. See the new "Roadmap
+  noted" entry on database backups below — this is the incident that prompted it.
 - **The local beta stack (MongoDB, backend server, cloudflared tunnel) now survives a
   reboot on its own.** Triggered by a real incident: an OOM-killed Gradle build forced a
   server reboot, which silently took MongoDB, `npm run server`, and the tunnel down with it —
@@ -254,7 +354,13 @@ this is still pre-release/beta.
   key unique to that user, before OAuth work proceeds. Not built here — full proposal (scope,
   per-user AES-256-GCM envelope encryption, key-management dependency on the eventual GCP
   migration, which fields can't be transparently encrypted without losing server-side
-  query/filter/index capability) written up in new `docs/data-encryption-plan.md`.
+  query/filter/index capability) written up in new `docs/data-encryption-plan.md`. **Update
+  (sprint block 04):** the plan's own explicitly-allowed "local-only stopgap" — a master key
+  from an env var, real KMS swap-in still deferred with the GCP migration — is now built and
+  live-verified; see the `### Added` entry above (and its post-merge correction on the data
+  incident that came with verifying it live). Key rotation is still not designed (the plan
+  never specified a policy) and the real KMS migration is still fully out of scope, both
+  unchanged from this entry's original scoping.
 - **Create/Edit Trip: end-date picker doesn't follow the start date.** Reported directly:
   picking an October start date leaves the end-date calendar still showing September. Root
   cause, confirmed by reading the code: `startDate`/`endDate` in `app/(tabs)/trips.tsx`
