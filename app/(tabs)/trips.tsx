@@ -1177,7 +1177,7 @@ export default function TripsScreen() {
                     // Live-reported case this fixes: inviting a local contact to dinner in their
                     // home city auto-generated a full day of AI suggestions for a city they
                     // already know inside out.
-                    <Text style={styles.emptyText}>You're home here — no AI Schedule Proposals for a city you already know. Tap "+ Propose an Event" above if you want to plan something.</Text>
+                    <Text style={styles.emptyText}>You&apos;re home here — no AI Schedule Proposals for a city you already know. Tap &quot;+ Propose an Event&quot; above if you want to plan something.</Text>
                   ) : (
                   <>
                   <Text style={styles.proposalsHeader}>AI Schedule Proposals</Text>
