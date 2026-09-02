@@ -207,6 +207,21 @@ this is still pre-release/beta.
   (the underlying `@react-native-community/datetimepicker` already supports it) and pass
   `startDate` as the end-date field's `minimumDate`, as a safety net for manual backward
   scrolling — the standard pattern from hotel/flight-booking date pickers.
+- **Event listings and route-based Activity tags (Walking Tours, Boat Cruises, Bus Tours,
+  Water Sports, Scenic Drives) still have no real data source.** `lib/google-places-types.ts`
+  already documents both gaps accurately (`quality: 'broad'`/`'none'` on the affected tags —
+  Places API only returns venues, never schedules, and has no route/product data at all).
+  Checked seriously for a free, no-key source before assuming one doesn't exist, per this
+  project's `lib/weather.ts`/`lib/geocoding.ts` precedent: Eventbrite's public search API was
+  killed in 2020, TheSportsDB's free tier is too crippled (1-result caps, no city search) to
+  answer "what's on nearby," Ticketmaster/SeatGeek/Viator/GetYourGuide all require a vendor
+  key or partner agreement (already the plan in `docs/monetization-strategy.md`), and
+  OpenStreetMap's route/scenic tags are confirmed sparse/subjective and don't fit `Place`'s
+  point-only geometry (`models/Place.ts:29-30, 67-68, 84`) even where they exist. One
+  genuinely free/no-key candidate was found (StungEvents, unauthenticated `/events` and
+  `/search` endpoints) but has no independently verifiable track record or coverage data, so
+  it's flagged for a human spot-check rather than wired in blind. No code changes — full
+  research and recommendation in new `docs/event-data-coverage-plan.md`.
 
 ## [0.0.37] - 2026-08-30
 ### Added
