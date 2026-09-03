@@ -49,7 +49,6 @@ this is still pre-release/beta.
   need to lift the deck's progress state up just to preserve it. Same doc/mockup as above.
 - **No visual signal anywhere that a new friend request has arrived.** Reported live.
   `app/(tabs)/_layout.tsx`'s Circles tab has no `tabBarBadge` (Expo Router supports this
-  `app/(tabs)/_layout.tsx`'s Circles tab has no `tabBarBadge` (Expo Router supports this
   natively — small addition), but `hooks/useFriendRequests.tsx` has no cached/reactive
   count to drive one from (confirmed: thin imperative fetch-wrapper only, no polling).
   Two ways to source the count, not resolved here: poll periodically (simple, adds a
