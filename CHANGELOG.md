@@ -78,6 +78,51 @@ this is still pre-release/beta.
   sourced from) returns length 1 for the pending request and drops to 0 immediately after
   the recipient accepts it — matching what the badge would show at each step.
 
+- **Imported calendar events (flights, ground transit, an already-scheduled dinner) are now
+  classified and fed into the free-time algorithm, instead of the trip timeline rendering
+  every one of them as an identical plain "busy" row.** Follows up on the real Paris trip
+  (Sep 7) reports below: new `classifyImportedEvent()` (`lib/calendar-signals.ts`), a two-tier
+  pipeline per `docs/calendar-signal-detection-plan.md` — `matchNavan` (tight patterns for
+  Navan's known `Flight: ORIGIN (flight#) to DEST Confirmation CODE` /
+  `Travel time to|from X` / `Stay: X` format) tried first, `matchGeneric` (looser
+  airline-code/flight-number + directional patterns, hotel keywords, and a dining heuristic —
+  a real-looking `location` overlapping a meal-window instant, deliberately not a title-keyword
+  match, so it works regardless of language) as fallback. Classification is computed on the fly
+  from an event's own `title`/`location` every time it's needed rather than stored on the
+  `Event` model — no migration/backfill needed against the shared local MongoDB (there's no
+  backup mechanism for it right now, and a real incident happened last sprint from exactly a
+  migration going wrong against live shared data). 28 new unit tests
+  (`lib/calendar-signals.test.ts`) built from the real Navan sample text in the design doc, plus
+  live-verified against the real running local backend: created a throwaway trip under a
+  single-use test account, imported the exact real event cluster (`Travel time to TLS airport`
+  → `Flight: TLS (TO7103) to ORY Confirmation O7Z5VR` → `Travel time from ORY airport`, plus the
+  farewell dinner `Save The Date - Pot de depart Nico`), round-tripped it through the real
+  per-user field-encryption pipeline, confirmed every event classifies as expected, then deleted
+  the throwaway trip.
+
+  Wired into scheduling (`lib/free-time.ts`'s `getTripDaySchedule`, 9 new tests): a detected
+  flight now bounds the trip's own first/last day's *effective* free-time window instead of
+  just excluding its literal busy block — the arrival day's effective start becomes the
+  flight's landing time plus a 45-minute buffer (customs/baggage/the ride into town — a first
+  reasonable guess, not researched against real airport transit-time data, per the design doc),
+  and the departure day's effective end is pulled to 45 minutes before boarding. A day with no
+  flight signal is completely unaffected. And a detected dining event (either confidence level)
+  now suppresses the competing AI Lunch/Dinner proposal for that meal window
+  (`filterDiningConflicts`, wired into both the AI-proposals fetch effect and the render loop in
+  `app/(tabs)/trips.tsx`) and is surfaced directly in the "Current Schedule" timeline instead, as
+  a distinctly-styled `CalendarEventCard` (`components/trips/calendar-event-card.tsx`) — a "📅
+  From your calendar" badge rather than `PlaceCard`'s "✓ Scheduled"/match-score treatment, with a
+  real Navigate action reusing the existing `handleNavigate`/`buildMapsUrl` plumbing rather than
+  reinventing it. The short free gap before such an event is left exactly as-is — still whatever
+  plain activity/free-time classification it already got, not force-fit as a meal slot. Live-
+  verified end-to-end: a short (20-minute) real dinner reservation correctly suppressed the AI
+  Dinner proposal for the rest of that evening's dinner window while leaving an unrelated Lunch
+  proposal the same day untouched. Graphical mockup this was built against:
+  https://claude.ai/code/artifact/48e7c5bc-41d6-4df4-8b26-8135927c8ee2 ("Journey Timeline") — the
+  flight-cluster "Journey card" grouping shown there is not built (out of scope for this pass;
+  the underlying free-time math it depends on is, but the dedicated grouped-card UI for
+  flight/ground-transit rows is not).
+
 ### Fixed
 - **Event invite cards showed no indication of who invited you.** Two-part fix:
   `GET /api/events/invited` (`server.ts`) now does
@@ -96,6 +141,16 @@ this is still pre-release/beta.
   invite the other, and confirmed `GET /api/events/invited` returned `created_by` as a
   populated `{ _id, full_name, avatar_url }` object rather than an id string.
 
+- **"Looking for something else?" opened with a Time/Duration disconnected from whichever
+  slot was actually tapped.** Reported live against the same real Paris trip: `openRefineSearch`
+  (`app/(tabs)/trips.tsx`) hardcoded the form's default `Time` to 12:00 and `Duration` to 90
+  minutes unconditionally, so tapping it from e.g. an 18:00–19:00 evening slot still opened
+  showing noon/90min. Fixed: `RefineSearchCard` now passes its originating `SlotProposal`
+  through to `onPress` (rather than just a derived `mealWindow` boolean), and `openRefineSearch`
+  seeds `Time`/`Duration` from that proposal's own `startTime`/`durationMinutes`; `mealWindow` is
+  still computed the same way it already was (`proposal.type === 'meal'`), just from the same
+  proposal object instead of a separately-passed value. `tsc --noEmit`/`npm run lint` clean.
+
 ### Roadmap noted
 - **Redundant tag reuse across `VIBE_PRESETS` vibes — audited, not resolved.** 8 of
   `VIBE_PRESETS`' ~35 tag slots are reused across 2–3 vibes each (`Scenic Drives` alone spans
@@ -104,58 +159,6 @@ this is still pre-release/beta.
   as-is, assign every tag one "primary" vibe, or prune case-by-case) — deliberately left
   undecided, a taste/brand call more than a technical one. Not touched this pass;
   `VIBE_PRESETS`' existing tag-overlap structure is untouched.
-- **A short evening free slot that overlaps the dinner window gets no meal proposal at all,
-  and "Looking for something else?" on it shows disconnected defaults.** Reported live
-  against a real Paris trip (Sep 7) with a genuinely packed device calendar synced in.
-  Reproduced exactly by running `getTripDaySchedule`/`expandSlotForProposals`
-  (`lib/free-time.ts`) against the real event data: after a 16:00–18:00 meeting, the only
-  evening opening is a 60-minute gap (18:00–19:00) before back-to-back personal events run
-  19:00–21:30, leaving just 30 minutes before the day's 22:00 cutoff — too short to even
-  register as free time (`calculateFreeTimeSlots`'s 60-minute minimum gap). The 60-minute
-  slot does get labeled "Evening" (`labelFreeSlot`, since it touches the dinner window's
-  start), but `expandSlotForProposals` only carves a dedicated meal sub-proposal out of a
-  slot ≥150 minutes total — under that, it always returns a single generic `type: 'activity'`
-  proposal, even when the slot is unambiguously dinner-adjacent. Two compounding effects from
-  there: (1) no Restaurant-filtered Dinner card ever appears for a day like this, even though
-  a real 60-minute dinner window genuinely exists; (2) `components/trips/refine-search-card.tsx`
-  derives its `mealWindow` prop purely from `proposal.type === 'meal'`, so "Looking for
-  something else?" on this activity-typed proposal opens showing the non-meal tag set
-  (Attractions/Tours/Outdoor/etc.) instead of Food genres. Independently,
-  `openRefineSearch` (`app/(tabs)/trips.tsx:839`) hardcodes the form's default `Time` to
-  12:00 and `Duration` to 90 minutes unconditionally, regardless of which slot/proposal
-  triggered it — so even the clock and duration shown are disconnected from the real
-  18:00–19:00 slot that was tapped, on top of the tag-set issue. Not built here — two
-  separate fixes worth scoping: (a) whether a short slot overlapping a meal window should
-  still get a capped-duration meal proposal instead of being silently treated as generic
-  activity time (a threshold/product decision, not just a bug), and (b) regardless of (a),
-  `openRefineSearch`/`RefineSearchCard` should seed `Time`/`Duration`/`mealWindow` from the
-  originating proposal's own `startTime`/`durationMinutes`/`type` rather than hardcoded
-  defaults, so the form always reflects the slot the user actually tapped from.
-  **Refined by the entry directly below:** part (a)'s question is now answered — the 60-min
-  gap correctly is *not* dinner; the real dinner is a separate calendar event 40 minutes
-  later that the app currently has no way to recognize or surface at all. Part (b) (the
-  refine-defaults bug) still stands as-is regardless of that answer.
-- **Imported calendar events carry real travel signals (flights, ground transit, an
-  already-scheduled dinner) that the trip timeline is completely blind to — it only sees
-  "busy."** Direct follow-up to the entry above, after the product owner pointed out the
-  real shape of the data: the Sep 7 Paris trip's synced calendar includes a textbook
-  TripIt/Google-Calendar-auto-detected travel cluster (`Travel time to TLS airport` →
-  `Flight: TLS (TO7103) to ORY Confirmation O7Z5VR` → `Travel time from ORY airport`,
-  09:40–13:05) and a real farewell dinner (`Save The Date - Pot de depart Nico`, 19:00–21:00,
-  at a real street address). The timeline renders all of it as identical plain busy rows —
-  the flight cluster reads as three unrelated meetings, and the already-scheduled dinner is
-  invisible, which is *why* the app was trying (and failing) to invent a dinner proposal out
-  of the unrelated 60-minute gap beforehand in the entry above — it had no way to know dinner
-  was already handled. Not built here — full classification algorithm (`classifyImportedEvent()`
-  pattern rules for flight/ground-transit/lodging/dining, the dining heuristic being timing +
-  real-address-location rather than any title keyword — language-agnostic on purpose) and
-  scheduling integration (a detected flight should bound the day's effective free-time
-  window, not just subtract from a fixed one; a detected dining event should suppress the
-  competing AI meal proposal and be surfaced directly instead) written up in new
-  `docs/calendar-signal-detection-plan.md`. Graphical before/after proposal, using this
-  exact real trip's data and the app's actual color palette pulled from `trips.tsx`'s own
-  stylesheet:
-  https://claude.ai/code/artifact/48e7c5bc-41d6-4df4-8b26-8135927c8ee2 ("Journey Timeline").
 
 ## [0.0.38] - 2026-09-02
 ### Fixed

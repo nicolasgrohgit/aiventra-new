@@ -161,6 +161,111 @@ describe('getTripDaySchedule', () => {
     const days = getTripDaySchedule(FUTURE_MONDAY, FUTURE_MONDAY, 5, ZONE, []);
     assert.deepEqual(days[0].freeSlots.map(s => s.label), getHardcodedFreeSlots(FUTURE_MONDAY, ZONE).map(s => s.label));
   });
+
+  test('DaySchedule exposes the day\'s own imported events', () => {
+    const importedEvents = [
+      { id: 'a', title: 'Standup', startTime: new Date('2030-03-04T09:00:00+01:00'), endTime: new Date('2030-03-04T09:30:00+01:00') },
+    ];
+    const days = getTripDaySchedule(FUTURE_MONDAY, FUTURE_MONDAY, 5, ZONE, importedEvents);
+    assert.deepEqual(days[0].importedEvents, importedEvents);
+  });
+
+  test('a hardcoded-fallback day (no imported events) still exposes an empty importedEvents array', () => {
+    const days = getTripDaySchedule(FUTURE_MONDAY, FUTURE_MONDAY, 5, ZONE, []);
+    assert.deepEqual(days[0].importedEvents, []);
+  });
+});
+
+// Real Navan-style event titles (see docs/calendar-signal-detection-plan.md) so
+// classifyImportedEvent's matchNavan tier recognizes them as flight signals — these tests
+// exercise Part B item 1 of that doc: a detected flight bounding a trip day's effective
+// free-time window instead of just being excluded as a busy block.
+describe('getTripDaySchedule — flight-signal day bounding', () => {
+  const TRIP_START = FUTURE_MONDAY; // 2030-03-04
+  const TRIP_END = new Date('2030-03-06T00:00:00+01:00'); // 2030-03-06, a 3-day trip
+
+  test('an arrival-day flight bounds the effective day-start to arrival + buffer', () => {
+    const importedEvents = [
+      { id: 'flight', title: 'Flight: TLS (TO7103) to ORY Confirmation O7Z5VR', startTime: new Date('2030-03-04T10:40:00+01:00'), endTime: new Date('2030-03-04T12:05:00+01:00'), location: 'Toulouse - Blagnac Airport (TLS)' },
+    ];
+    const days = getTripDaySchedule(TRIP_START, TRIP_END, 5, ZONE, importedEvents);
+    const day0 = days[0]; // trip's own first day = arrival day
+    assert.equal(day0.freeSlots.length, 1);
+    // 12:05 arrival + 45min buffer = 12:50 — no slot should start any earlier, and none should
+    // exist covering the raw pre-flight morning (08:00-10:40), which the old dayStartHour=8
+    // default would have incorrectly surfaced as "free".
+    assert.equal(DateTime.fromJSDate(day0.freeSlots[0].startTime).setZone(ZONE).toFormat('HH:mm'), '12:50');
+  });
+
+  test('a later real ground-transit event on the arrival day wins over the generic buffer estimate', () => {
+    // Full real cluster from the design doc's sample trip: "Travel time from ORY airport" ends
+    // at 13:05, later than the flight-arrival-plus-buffer estimate (12:50) — the real synced
+    // data should win.
+    const importedEvents = [
+      { id: 'transit-to', title: 'Travel time to TLS airport', startTime: new Date('2030-03-04T09:40:00+01:00'), endTime: new Date('2030-03-04T10:40:00+01:00'), location: 'Toulouse - Blagnac Airport (TLS)' },
+      { id: 'flight', title: 'Flight: TLS (TO7103) to ORY Confirmation O7Z5VR', startTime: new Date('2030-03-04T10:40:00+01:00'), endTime: new Date('2030-03-04T12:05:00+01:00'), location: 'Toulouse - Blagnac Airport (TLS)' },
+      { id: 'transit-from', title: 'Travel time  from ORY airport', startTime: new Date('2030-03-04T12:05:00+01:00'), endTime: new Date('2030-03-04T13:05:00+01:00'), location: 'Orly Airport (ORY)' },
+    ];
+    const days = getTripDaySchedule(TRIP_START, TRIP_END, 5, ZONE, importedEvents);
+    assert.equal(days[0].freeSlots.length, 1);
+    assert.equal(DateTime.fromJSDate(days[0].freeSlots[0].startTime).setZone(ZONE).toFormat('HH:mm'), '13:05');
+  });
+
+  test('a departure-day flight bounds the effective day-end to departure - buffer, with no bogus trailing slot', () => {
+    const importedEvents = [
+      { id: 'flight-out', title: 'Flight: ORY (TO7104) to TLS Confirmation ABC123', startTime: new Date('2030-03-06T16:00:00+01:00'), endTime: new Date('2030-03-06T17:25:00+01:00'), location: 'Orly Airport (ORY)' },
+    ];
+    const days = getTripDaySchedule(TRIP_START, TRIP_END, 5, ZONE, importedEvents);
+    const lastDay = days[days.length - 1]; // trip's own last day = departure day
+    assert.equal(DateTime.fromJSDate(lastDay.date).setZone(ZONE).toFormat('yyyy-MM-dd'), '2030-03-06');
+    assert.equal(lastDay.freeSlots.length, 1);
+    // 16:00 departure - 45min buffer = 15:15 — no trailing slot after the flight's raw 17:25
+    // end should be generated (the old dayEndHour=22 default would have incorrectly surfaced
+    // a bogus 17:25-22:00 "free" slot on the day the traveller has already left).
+    assert.equal(DateTime.fromJSDate(lastDay.freeSlots[0].endTime).setZone(ZONE).toFormat('HH:mm'), '15:15');
+  });
+
+  test('a real ground-transit event on the departure day tightens the bound further than the generic buffer', () => {
+    const importedEvents = [
+      { id: 'transit-to', title: 'Travel time to ORY airport', startTime: new Date('2030-03-06T14:00:00+01:00'), endTime: new Date('2030-03-06T16:00:00+01:00'), location: 'Orly Airport (ORY)' },
+      { id: 'flight-out', title: 'Flight: ORY (TO7104) to TLS Confirmation ABC123', startTime: new Date('2030-03-06T16:00:00+01:00'), endTime: new Date('2030-03-06T17:25:00+01:00'), location: 'Orly Airport (ORY)' },
+    ];
+    const days = getTripDaySchedule(TRIP_START, TRIP_END, 5, ZONE, importedEvents);
+    const lastDay = days[days.length - 1];
+    assert.equal(lastDay.freeSlots.length, 1);
+    // The real transit block (starting 14:00) is a tighter, more accurate bound than the
+    // generic 45-min-before-departure estimate (15:15) — it should win.
+    assert.equal(DateTime.fromJSDate(lastDay.freeSlots[0].endTime).setZone(ZONE).toFormat('HH:mm'), '14:00');
+  });
+
+  test('a flight signal on a day that is neither the trip\'s first nor last day has no effect', () => {
+    // Same flight text, but placed on the middle day of the 3-day trip — day-bounding only
+    // applies to the trip's actual arrival/departure days, not "any day with a flight".
+    const importedEvents = [
+      { id: 'domestic-hop', title: 'Flight: TLS (TO7103) to ORY Confirmation O7Z5VR', startTime: new Date('2030-03-05T10:40:00+01:00'), endTime: new Date('2030-03-05T12:05:00+01:00'), location: 'Toulouse - Blagnac Airport (TLS)' },
+    ];
+    const days = getTripDaySchedule(TRIP_START, TRIP_END, 5, ZONE, importedEvents);
+    const middleDay = days[1];
+    assert.equal(DateTime.fromJSDate(middleDay.date).setZone(ZONE).toFormat('yyyy-MM-dd'), '2030-03-05');
+    // Unaffected: the plain dayStartHour=8 default applies, so the gap before the flight
+    // starts right at 08:00, not shifted by any arrival-buffer logic.
+    const morningSlot = middleDay.freeSlots.find(s => DateTime.fromJSDate(s.startTime).setZone(ZONE).toFormat('HH:mm') === '08:00');
+    assert.ok(morningSlot, 'the pre-flight morning gap should still start at the plain 08:00 default');
+  });
+
+  test('a day with only a non-flight signal (ground-transit only, no flight) is unaffected', () => {
+    const importedEvents = [
+      { id: 'transit-to', title: 'Travel time to TLS airport', startTime: new Date('2030-03-04T09:40:00+01:00'), endTime: new Date('2030-03-04T10:40:00+01:00'), location: 'Toulouse - Blagnac Airport (TLS)' },
+    ];
+    const days = getTripDaySchedule(TRIP_START, TRIP_END, 5, ZONE, importedEvents);
+    const morningSlot = days[0].freeSlots.find(s => DateTime.fromJSDate(s.startTime).setZone(ZONE).toFormat('HH:mm') === '08:00');
+    assert.ok(morningSlot, 'no flight signal present, so the plain 08:00 default should still apply');
+  });
+
+  test('a day with no imported events at all (hardcoded fallback) is unaffected even on the trip\'s first/last day', () => {
+    const days = getTripDaySchedule(TRIP_START, TRIP_END, 5, ZONE, []);
+    assert.deepEqual(days[0].freeSlots.map(s => s.label), getHardcodedFreeSlots(TRIP_START, ZONE).map(s => s.label));
+  });
 });
 
 describe('labelFreeSlot', () => {

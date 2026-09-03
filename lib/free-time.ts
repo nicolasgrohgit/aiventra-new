@@ -1,6 +1,7 @@
 import { DateTime } from 'luxon';
 import { DEVICE_TIMEZONE } from './timezones';
 import { getMealWindows, parseHourString, MealTimePreferences } from './place-matching';
+import { classifyImportedEvent } from './calendar-signals';
 
 export type { MealTimePreferences };
 
@@ -18,6 +19,13 @@ export interface CalendarEvent {
   location?: string;
 }
 
+// Buffer applied on either side of a detected flight when it bounds a trip day's effective
+// free-time window (see getTripDaySchedule below) — customs/baggage/the ride into town after
+// landing, or the boarding cutoff before departure. A first reasonable guess (the design doc's
+// suggested 30-45min range), not researched against real airport transit-time data — that's
+// explicitly out of scope for this round (see docs/calendar-signal-detection-plan.md).
+const FLIGHT_BUFFER_MINUTES = 45;
+
 export interface FreeTimeSlot {
   startTime: Date;
   endTime: Date;
@@ -30,6 +38,24 @@ export interface DaySchedule {
   dayLabel: string;
   isWeekend: boolean;
   freeSlots: FreeTimeSlot[];
+  // This day's real imported (device-calendar-synced) events, if any — [] when the day used
+  // getHardcodedFreeSlots' fallback instead. Exposed so a caller can run
+  // classifyImportedEvent (lib/calendar-signals.ts) against exactly the events this day's
+  // freeSlots were computed from, without re-deriving the same per-day filter this function
+  // already did internally — see filterDiningConflicts, used by app/(tabs)/trips.tsx to
+  // suppress an AI meal proposal that would compete with a real already-scheduled meal.
+  importedEvents: CalendarEvent[];
+}
+
+// Sets `base`'s time-of-day to `hour`, which may be fractional (e.g. 12.833 for 12:50) — used
+// for day-start/day-end boundaries that aren't necessarily on the hour, like a flight-arrival-
+// plus-buffer bound (see getTripDaySchedule) or a mealPrefs-shifted dayEndHour. Luxon's own
+// `.set({ hour })` silently truncates a fractional hour instead of erroring (verified:
+// `.set({ hour: 22.75 })` yields 22:00, dropping the 45 minutes) — floor the hour and convert
+// the remainder to minutes explicitly instead, rounding rather than truncating so a value like
+// 12.8333... (from a diff-in-minutes round trip) lands on :50, not :49.
+function atHour(base: DateTime, hour: number): DateTime {
+  return base.set({ hour: Math.floor(hour), minute: Math.round((hour % 1) * 60), second: 0, millisecond: 0 });
 }
 
 /**
@@ -48,8 +74,8 @@ export function calculateFreeTimeSlots(
   const now = DateTime.now().setZone(timezone);
 
   if (!events || events.length === 0) {
-    let start = now.set({ hour: dayStartHour, minute: 0, second: 0, millisecond: 0 });
-    const end = now.set({ hour: dayEndHour, minute: 0, second: 0, millisecond: 0 });
+    let start = atHour(now, dayStartHour);
+    const end = atHour(now, dayEndHour);
 
     // Trim to current time if today and current time has passed the start
     if (now > start) {
@@ -74,8 +100,8 @@ export function calculateFreeTimeSlots(
 
   // Start/end of daily available window, anchored to the first event's calendar day in `timezone`
   const firstEventDay = DateTime.fromJSDate(sortedEvents[0].startTime).setZone(timezone);
-  const dayStart = firstEventDay.set({ hour: dayStartHour, minute: 0, second: 0, millisecond: 0 });
-  const dayEnd = firstEventDay.set({ hour: dayEndHour, minute: 0, second: 0, millisecond: 0 });
+  const dayStart = atHour(firstEventDay, dayStartHour);
+  const dayEnd = atHour(firstEventDay, dayEndHour);
 
   let currentTime = dayStart;
 
@@ -138,8 +164,8 @@ export function labelFreeSlot(slot: FreeTimeSlot, timezone: string = DEVICE_TIME
   const { lunchStart, lunchEnd, dinnerStart, dinnerEnd } = getMealWindows(mealPrefs);
 
   const overlapMinutes = (windowStartHour: number, windowEndHour: number) => {
-    const winStart = start.set({ hour: Math.floor(windowStartHour), minute: (windowStartHour % 1) * 60, second: 0, millisecond: 0 });
-    const winEnd = start.set({ hour: Math.floor(windowEndHour), minute: (windowEndHour % 1) * 60, second: 0, millisecond: 0 });
+    const winStart = atHour(start, windowStartHour);
+    const winEnd = atHour(start, windowEndHour);
     const overlapStart = start > winStart ? start : winStart;
     const overlapEnd = end < winEnd ? end : winEnd;
     return Math.max(0, overlapEnd.diff(overlapStart, 'minutes').minutes);
@@ -213,15 +239,13 @@ export function expandSlotForProposals(slot: FreeTimeSlot, timezone: string = DE
     return asActivity();
   }
 
-  const atHour = (hour: number) => start.set({ hour: Math.floor(hour), minute: (hour % 1) * 60, second: 0, millisecond: 0 });
-
   const meals = ([
     { label: 'Lunch', windowStart: windows.lunchStart, windowEnd: windows.lunchEnd },
     { label: 'Dinner', windowStart: windows.dinnerStart, windowEnd: windows.dinnerEnd }
   ] as const)
     .map(m => {
-      const winStart = atHour(m.windowStart);
-      const winEnd = atHour(m.windowEnd);
+      const winStart = atHour(start, m.windowStart);
+      const winEnd = atHour(start, m.windowEnd);
       const overlapStart = start > winStart ? start : winStart;
       const overlapEnd = end < winEnd ? end : winEnd;
       const overlapMinutes = Math.max(0, overlapEnd.diff(overlapStart, 'minutes').minutes);
@@ -293,11 +317,10 @@ export function getHardcodedFreeSlots(date: Date, timezone: string = DEVICE_TIME
   // anyway, since parseHourString just returns it unchanged.
   const lunchStartHour = parseHourString(mealPrefs.earliestLunchTime, 12);
   const dinnerStartHour = parseHourString(mealPrefs.earliestDinnerTime, 18);
-  const atHour = (hour: number) => zonedDate.set({ hour: Math.floor(hour), minute: (hour % 1) * 60, second: 0, millisecond: 0 });
 
   if (isWeekend) {
-    let start = zonedDate.set({ hour: 8, minute: 0, second: 0, millisecond: 0 });
-    const end = zonedDate.set({ hour: 22, minute: 0, second: 0, millisecond: 0 });
+    let start = atHour(zonedDate, 8);
+    const end = atHour(zonedDate, 22);
 
     if (isToday && now > start) {
       start = now;
@@ -313,7 +336,7 @@ export function getHardcodedFreeSlots(date: Date, timezone: string = DEVICE_TIME
   // Weekday: lunch window + evening window
   const slots: FreeTimeSlot[] = [];
 
-  const lunchStart = atHour(lunchStartHour);
+  const lunchStart = atHour(zonedDate, lunchStartHour);
   const lunchEnd = lunchStart.plus({ minutes: 90 });
 
   if (!isToday || now < lunchEnd) {
@@ -324,8 +347,8 @@ export function getHardcodedFreeSlots(date: Date, timezone: string = DEVICE_TIME
     }
   }
 
-  const eveningStart = atHour(dinnerStartHour);
-  const eveningEndCap = atHour(23.5);
+  const eveningStart = atHour(zonedDate, dinnerStartHour);
+  const eveningEndCap = atHour(zonedDate, 23.5);
   const eveningEnd = DateTime.min(eveningStart.plus({ minutes: 240 }), eveningEndCap);
 
   if (!isToday || now < eveningEnd) {
@@ -359,6 +382,26 @@ export function getHardcodedFreeSlots(date: Date, timezone: string = DEVICE_TIME
  * getHardcodedFreeSlots, and also widens the day-end bound passed to calculateFreeTimeSlots
  * (fixed at 22 otherwise) so a late dinner preference doesn't get truncated by the real-
  * calendar path before expandSlotForProposals ever sees it.
+ *
+ * A detected flight (classifyImportedEvent, lib/calendar-signals.ts) additionally bounds the
+ * day's *effective* start/end instead of just being excluded as a busy block — see
+ * docs/calendar-signal-detection-plan.md Part B. On the trip's own first day, if that day's
+ * imported events include a flight signal, the effective day-start becomes that flight's
+ * arrival time plus FLIGHT_BUFFER_MINUTES (the traveller isn't reachable for activities until
+ * customs/baggage/the ride into town are done, even though the underlying busy-time math
+ * already excludes the literal flight/ground-transit blocks). Symmetrically, on the trip's own
+ * last day, a flight signal pulls the effective day-end earlier by the same buffer before its
+ * departure time. Only applied on the trip's actual first/last day — not just "any day with a
+ * flight" — since those are the only days a flight plausibly represents this trip's own
+ * arrival/departure rather than, say, a same-day domestic hop mid-trip, which this doesn't try
+ * to guess at. A day with no flight signal (the common case) is completely unaffected: the
+ * fixed dayStartHour=8 / dayEndHour bound applies exactly as before.
+ *
+ * The two sides use different mechanisms internally (see the inline comments in the loop
+ * below) — bounding dayStartHour is sufficient on the arrival side, but the departure side
+ * additionally extends the flight event's own busy window backward by the buffer, since
+ * dayEndHour alone only ever bounds the day's trailing gap, not one that ends right before a
+ * mid-day event.
  */
 export function getTripDaySchedule(
   startDate: Date,
@@ -372,6 +415,8 @@ export function getTripDaySchedule(
   let current = DateTime.fromJSDate(startDate).setZone(timezone).startOf('day');
   const end = DateTime.fromJSDate(endDate).setZone(timezone).endOf('day');
   const dayEndHour = Math.min(23.5, Math.max(22, getMealWindows(mealPrefs).dinnerEnd));
+  const tripStartDay = DateTime.fromJSDate(startDate).setZone(timezone).startOf('day');
+  const tripEndDay = DateTime.fromJSDate(endDate).setZone(timezone).startOf('day');
 
   let count = 0;
   while (current <= end && count < maxDays) {
@@ -382,8 +427,58 @@ export function getTripDaySchedule(
       DateTime.fromJSDate(e.startTime).setZone(timezone).hasSame(current, 'day')
     );
 
+    let effectiveDayStartHour = 8;
+    let effectiveDayEndHour = dayEndHour;
+    // The events actually passed to calculateFreeTimeSlots — identical to dayEvents unless a
+    // departure-day flight needs its own busy block extended (see below).
+    let eventsForFreeTime = dayEvents;
+
+    const isTripStartDay = current.hasSame(tripStartDay, 'day');
+    const isTripEndDay = current.hasSame(tripEndDay, 'day');
+    if (dayEvents.length > 0 && (isTripStartDay || isTripEndDay)) {
+      const isFlightSignal = (e: CalendarEvent) => classifyImportedEvent(e, timezone, mealPrefs)?.kind === 'flight';
+      const flightSignals = dayEvents.filter(isFlightSignal);
+
+      // Arrival day: bounding the day's own *start* (rather than just the flight's busy
+      // block) is what's needed here — calculateFreeTimeSlots seeds its very first gap check
+      // from dayStart, so this alone correctly suppresses any "free" gap before landing,
+      // including one computed against an earlier ground-transit event
+      // (`Travel time to <airport>`) rather than the flight itself. A later real event ending
+      // after this buffered estimate (e.g. `Travel time from <airport>`) still wins, since
+      // real synced data is more precise than this generic guess.
+      if (isTripStartDay && flightSignals.length > 0) {
+        // Non-null: DateTime.max/min types their return as possibly undefined only because TS
+        // can't see the flightSignals.length > 0 guard above through the spread — it's always
+        // defined here.
+        const latestArrival = DateTime.max(...flightSignals.map(e => DateTime.fromJSDate(e.endTime).setZone(timezone)))!
+          .plus({ minutes: FLIGHT_BUFFER_MINUTES });
+        effectiveDayStartHour = Math.max(effectiveDayStartHour, latestArrival.hour + latestArrival.minute / 60);
+      }
+
+      // Departure day needs two changes together, unlike arrival day: (1) capping
+      // effectiveDayEndHour, which only ever bounds the *trailing* gap after the day's last
+      // event — it correctly suppresses a bogus "free until 22:00" slot that would otherwise
+      // follow the flight's own end time, but does nothing for the gap that ends right before
+      // the flight *starts* (a gap-before-event, not a trailing gap) — so (2) the flight
+      // event's own busy window is additionally extended backward by the buffer, the same way
+      // a real `Travel time to <airport>` block already (correctly) bounds that gap when one
+      // exists. When a real transit event's own start is earlier than this buffered estimate
+      // (the common case, per the real sample data), it already wins on its own — this only
+      // matters when the flight is the day's only relevant event.
+      if (isTripEndDay && flightSignals.length > 0) {
+        const earliestDeparture = DateTime.min(...flightSignals.map(e => DateTime.fromJSDate(e.startTime).setZone(timezone)))!;
+        const bufferedDeparture = earliestDeparture.minus({ minutes: FLIGHT_BUFFER_MINUTES });
+        effectiveDayEndHour = Math.min(effectiveDayEndHour, bufferedDeparture.hour + bufferedDeparture.minute / 60);
+        eventsForFreeTime = dayEvents.map(e =>
+          isFlightSignal(e)
+            ? { ...e, startTime: DateTime.fromJSDate(e.startTime).setZone(timezone).minus({ minutes: FLIGHT_BUFFER_MINUTES }).toJSDate() }
+            : e
+        );
+      }
+    }
+
     const freeSlots = dayEvents.length > 0
-      ? calculateFreeTimeSlots(dayEvents, 8, dayEndHour, 60, timezone).map(slot => ({
+      ? calculateFreeTimeSlots(eventsForFreeTime, effectiveDayStartHour, effectiveDayEndHour, 60, timezone).map(slot => ({
           ...slot,
           label: labelFreeSlot(slot, timezone, mealPrefs)
         }))
@@ -394,6 +489,7 @@ export function getTripDaySchedule(
       dayLabel,
       isWeekend,
       freeSlots,
+      importedEvents: dayEvents,
     });
 
     current = current.plus({ days: 1 });

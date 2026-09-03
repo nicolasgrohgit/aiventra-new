@@ -8,16 +8,18 @@ import { useContacts } from '@/hooks/useContacts';
 import { useEvents } from '@/hooks/useEvents';
 import { PlaceRecommendation, displayCategory } from '@/lib/recommendations';
 import { NativeDatePicker } from '@/components/ui/NativeDatePicker';
-import { getTripDaySchedule, getDeviceEventsForDateRange, expandSlotForProposals } from '@/lib/calendar';
+import { getTripDaySchedule, getDeviceEventsForDateRange, expandSlotForProposals, SlotProposal } from '@/lib/calendar';
+import { classifyImportedEvent, filterDiningConflicts } from '@/lib/calendar-signals';
 import { guessTimezoneForCity } from '@/lib/timezones';
 import { searchCities, CityResult } from '@/lib/geocoding';
 import { searchHotelLocation, HotelLocationResult } from '@/lib/hotel-geocoding';
 import { CircleShareSelector } from '@/components/ui/circle-share-selector';
 import { FOOD_GENRES_CATEGORIZED, ACTIVITY_GENRES_CATEGORIZED, EVENT_GENRES_CATEGORIZED } from '@/constants/preferences';
-import { buildMapsUrl } from '@/lib/maps-link';
+import { buildMapsUrl, MapsDestination } from '@/lib/maps-link';
 import { TripEvent, InvitedTripEvent, TripBaseLocation, TripMock, formatDistanceLabel, placePhotoUri } from '@/lib/trip-types';
 import { PlaceCard } from '@/components/trips/place-card';
 import { RefineSearchCard } from '@/components/trips/refine-search-card';
+import { CalendarEventCard } from '@/components/trips/calendar-event-card';
 import { ContactPicker } from '@/components/trips/contact-picker';
 import { darkActionSheetStyle } from '@/components/ui/dark-action-sheet-style';
 
@@ -54,7 +56,7 @@ const formatTripDate = (d: Date, tz: string) => d.toLocaleDateString('en-CA', { 
 const toImportedCalendarEvents = (events: TripEvent[]) =>
   events
     .filter(e => e.source === 'imported')
-    .map(e => ({ id: e._id, title: e.title, startTime: new Date(e.start_time), endTime: new Date(e.end_time) }));
+    .map(e => ({ id: e._id, title: e.title, startTime: new Date(e.start_time), endTime: new Date(e.end_time), location: e.location }));
 
 // A local's own city needs no "what should I do here" AI proposals — they live there, they
 // know it. Same loose city-matching as cityNeedle/buildCityDurationQuery in
@@ -398,7 +400,15 @@ export default function TripsScreen() {
       const dismissedSlots = trip.dismissedSlots || [];
 
       visibleDays.forEach(day => {
-        const dayProposals = day.freeSlots.flatMap(slot => expandSlotForProposals(slot, trip.timezone, mealPrefs));
+        // A real dining event already on the calendar for this window means there's nothing
+        // useful to suggest — drop the competing AI Lunch/Dinner proposal rather than fetching
+        // recommendations for it. See docs/calendar-signal-detection-plan.md Part B item 2.
+        const dayProposals = filterDiningConflicts(
+          day.freeSlots.flatMap(slot => expandSlotForProposals(slot, trip.timezone, mealPrefs)),
+          day.importedEvents,
+          trip.timezone,
+          mealPrefs
+        );
 
         (async () => {
           let previousAnchor: { lat: number; lng: number } | null = null;
@@ -699,7 +709,13 @@ export default function TripsScreen() {
   // intercepts it at the OS level on iOS, Google Maps opens it directly on Android, and a
   // browser is the fallback either way if neither app is installed — no Platform.OS branching
   // needed.
-  const handleNavigate = (place: PlaceRecommendation) => {
+  //
+  // Typed against MapsDestination (buildMapsUrl's own minimal input shape) rather than
+  // PlaceRecommendation specifically — PlaceRecommendation structurally satisfies it, so every
+  // existing PlaceCard call site is unaffected, but this also lets CalendarEventCard (a real
+  // imported dining event, not a Place) reuse the exact same navigate plumbing instead of
+  // reinventing it.
+  const handleNavigate = (place: MapsDestination) => {
     Linking.openURL(buildMapsUrl(place)).catch(() => {
       Alert.alert('Error', 'Could not open Maps.');
     });
@@ -836,12 +852,20 @@ export default function TripsScreen() {
 
   const closeProposeModal = () => setProposeTripId(null);
 
-  const openRefineSearch = (trip: TripMock, day: { dayLabel: string, date: Date }, mealWindow: boolean) => {
-    setRefineSearchContext({ tripId: trip.id, destination: trip.destination, dayLabel: day.dayLabel, date: day.date, mealWindow });
-    setRefineDuration(90);
-    const defaultTime = new Date(day.date);
-    defaultTime.setHours(12, 0, 0, 0);
-    setRefineTime(defaultTime);
+  // Seeds the form's Time/Duration/mealWindow from the originating proposal's own
+  // startTime/durationMinutes/type — previously this hardcoded Time to 12:00 and Duration to
+  // 90 regardless of which slot/proposal was tapped, so the form shown after tapping e.g. an
+  // 18:00-19:00 evening slot still defaulted to noon. mealWindow is computed the same way
+  // RefineSearchCard already computes its own `mealWindow` prop (proposal.type === 'meal') —
+  // that part isn't changing, this just makes sure the form's initial state agrees with it.
+  //
+  // Time is seeded via `new Date(proposal.startTime)` directly (not date+setHours combined),
+  // matching the same pattern already used elsewhere for a tapped slot's date/time defaults
+  // (see setScheduleDate/setScheduleTime next to selectedPlace above).
+  const openRefineSearch = (trip: TripMock, day: { dayLabel: string, date: Date }, proposal: SlotProposal) => {
+    setRefineSearchContext({ tripId: trip.id, destination: trip.destination, dayLabel: day.dayLabel, date: day.date, mealWindow: proposal.type === 'meal' });
+    setRefineDuration(proposal.durationMinutes);
+    setRefineTime(new Date(proposal.startTime));
     setRefineTags([]);
     setRefineStep('form');
     setRefineResults([]);
@@ -1096,6 +1120,19 @@ export default function TripsScreen() {
                         // needing a place picked, so they never get the "Proposed…" treatment
                         // a genuine user-created event without a place yet does.
                         const isImported = event.source === 'imported';
+                        // A dining-classified imported event (classifyImportedEvent, lib/
+                        // calendar-signals.ts — real venue + meal-window timing, e.g. a
+                        // farewell dinner already sitting on the synced device calendar) gets
+                        // surfaced as a distinctly-styled CalendarEventCard instead of the
+                        // plain busy-row text every other imported event still gets — see
+                        // docs/calendar-signal-detection-plan.md Part B item 2/Part C.
+                        const importedSignal = isImported
+                          ? classifyImportedEvent(
+                              { id: event._id, title: event.title, startTime: new Date(event.start_time), endTime: new Date(event.end_time), location: event.location },
+                              trip.timezone,
+                              mealPrefs
+                            )
+                          : null;
                         const isResolved = !!event.place_name;
                         // Any resolved event gets the same rich PlaceCard treatment regardless
                         // of who's viewing it — previously this only happened to work for
@@ -1123,7 +1160,11 @@ export default function TripsScreen() {
                                 {new Date(event.start_time).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: trip.timezone })}
                               </Text>
                               {isImported ? (
-                                <Text style={styles.timelineEventName}>{event.title}</Text>
+                                importedSignal?.kind === 'dining' ? (
+                                  <CalendarEventCard event={event} onNavigate={handleNavigate} />
+                                ) : (
+                                  <Text style={styles.timelineEventName}>{event.title}</Text>
+                                )
                               ) : isResolved ? (
                                 resolvedPlace ? (
                                   <PlaceCard
@@ -1187,7 +1228,16 @@ export default function TripsScreen() {
                     return (
                       <>
                         {visibleDays.map(day => {
-                          const dayProposals = day.freeSlots.flatMap(slot => expandSlotForProposals(slot, trip.timezone, mealPrefs));
+                          // Same suppression as the fetch effect above — a real dining event
+                          // already on the calendar for this window is surfaced directly in
+                          // Current Schedule instead (see the CalendarEventCard branch below),
+                          // not duplicated as a competing AI meal proposal here.
+                          const dayProposals = filterDiningConflicts(
+                            day.freeSlots.flatMap(slot => expandSlotForProposals(slot, trip.timezone, mealPrefs)),
+                            day.importedEvents,
+                            trip.timezone,
+                            mealPrefs
+                          );
                           const rawKey = (p: typeof dayProposals[number]) => `${p.startTime.toISOString()}-${p.type}`;
                           const visibleProposals = dayProposals.filter(p => !dismissedSlotKeys.includes(rawKey(p)));
                           const dayDismissedKeys = dayProposals.map(rawKey).filter(k => dismissedSlotKeys.includes(k));
@@ -1223,7 +1273,7 @@ export default function TripsScreen() {
                                     <>
                                       <Text style={styles.emptyText}>No places fit this slot yet.</Text>
                                       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.hScroll}>
-                                        <RefineSearchCard trip={trip} day={day} mealWindow={proposal.type === 'meal'} onPress={openRefineSearch} />
+                                        <RefineSearchCard trip={trip} day={day} proposal={proposal} onPress={openRefineSearch} />
                                       </ScrollView>
                                     </>
                                   ) : (() => {
@@ -1239,7 +1289,7 @@ export default function TripsScreen() {
                                         {displayedRecs.map(p => (
                                           <PlaceCard key={`${proposal.startTime.getTime()}-${p.id}`} place={p} tripId={trip.id} slotStart={proposal.startTime} tripEvents={tripEvents} isPlaceScheduled={isPlaceScheduled} onPress={handlePlaceCardPress} onNavigate={handleNavigate} />
                                         ))}
-                                        <RefineSearchCard trip={trip} day={day} mealWindow={proposal.type === 'meal'} onPress={openRefineSearch} />
+                                        <RefineSearchCard trip={trip} day={day} proposal={proposal} onPress={openRefineSearch} />
                                       </ScrollView>
                                     );
                                   })()}
