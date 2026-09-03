@@ -5,6 +5,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { searchCities, CityResult } from '@/lib/geocoding';
 import { VibePicker, VibePickerHandle } from '@/components/ui/vibe-picker';
 import { SwipeDeck } from '@/components/ui/swipe-deck';
+import { CircleShareSelector } from '@/components/ui/circle-share-selector';
 import { buildSwipeCandidatePool, splitTagsByDomain } from '@/lib/onboarding-taste';
 
 export const COMMON_DIETS = ['Vegetarian', 'Vegan', 'Halal', 'Kosher', 'Gluten-Free', 'Keto', 'Nut-Free'];
@@ -19,11 +20,13 @@ const PACE_OPTIONS = [
 ];
 
 // Replaces the old 6-step linear form (Home city, Dietary, Pace, Food, Activity, Event tastes
-// as three separate 15-chip grids) with the 4-screen flow from docs/onboarding-redesign.md:
-// Home city (unchanged) -> Pick your vibe (circle picker) -> Anything else? (capped, skippable
-// swipe deck) -> Essentials (dietary + pace combined). See docs/circles-visual-language.md for
-// the circle motif and lib/onboarding-taste.ts for the pure tag/state logic behind steps 2-3.
-const TOTAL_STEPS = 4;
+// as three separate 15-chip grids) with the 5-screen flow from docs/onboarding-redesign.md
+// (extended per docs/taxonomy-and-social-notifications-plan.md Part 4): Home city (unchanged)
+// -> Pick your vibe (circle picker) -> Share your home city (new, skippable) -> Anything else?
+// (capped, skippable swipe deck) -> Essentials (dietary + pace combined). See
+// docs/circles-visual-language.md for the circle motif and lib/onboarding-taste.ts for the pure
+// tag/state logic behind steps 2 and 4.
+const TOTAL_STEPS = 5;
 
 export default function OnboardingScreen() {
   const router = useRouter();
@@ -31,13 +34,20 @@ export default function OnboardingScreen() {
 
   const [step, setStep] = useState(1);
   const [homebase, setHomebase] = useState('');
+  // "I live here" presence signal — same field/mechanic as Profile's CircleShareSelector
+  // (app/(tabs)/profile.tsx), just offered once, earlier, so the "friends nearby" feature isn't
+  // invisible until someone happens to find it in Profile after onboarding. Saved immediately
+  // on each toggle (mirrors profile.tsx's toggleHomebaseCircle — same field, same instant-save
+  // convention) rather than batched into finishOnboarding, so a skip genuinely leaves it as
+  // whatever it already was (empty/private by default) with nothing left half-applied.
+  const [homebaseSharedCircles, setHomebaseSharedCircles] = useState<string[]>([]);
   const [dietary, setDietary] = useState<string[]>([]);
   const [activity, setActivity] = useState<string>('Medium');
 
-  // The single cross-taxonomy tag pool steps 2 and 3 both read/write — per the task spec,
-  // the vibe picker and swipe deck treat foodGenres/activityGenres/eventGenres as one flat
-  // pool, only split back into the three separate buckets completeOnboarding() expects at
-  // the very end (see handleNext's step 4 branch below).
+  // The single cross-taxonomy tag pool steps 2 and 4 (vibe picker, swipe deck) both read/write
+  // — per the task spec, they treat foodGenres/activityGenres/eventGenres as one flat pool,
+  // only split back into the three separate buckets completeOnboarding() expects at the very
+  // end (see finishOnboarding below).
   const [tasteTags, setTasteTags] = useState<string[]>([]);
   // Which vibe circles the user has explicitly selected/drilled into — tracked separately
   // from tasteTags because the same real tag can be seeded by more than one vibe (see
@@ -47,8 +57,8 @@ export default function OnboardingScreen() {
   // in-picker "‹ Back" text link, reported live as "really badly placed, I almost missed it."
   const vibePickerRef = useRef<VibePickerHandle>(null);
 
-  // Computed once when entering step 3, not recomputed on every render, so swiping through
-  // the deck doesn't shuffle the remaining cards' order out from under the user.
+  // Computed once when entering step 4 (the swipe deck), not recomputed on every render, so
+  // swiping through the deck doesn't shuffle the remaining cards' order out from under the user.
   const [swipeCandidates, setSwipeCandidates] = useState<string[]>([]);
 
   // Home city validation/autocomplete — soft warning only, never blocks proceeding, since a
@@ -103,14 +113,36 @@ export default function OnboardingScreen() {
       updateUser({ homebase });
       setStep(2);
     } else if (step === 2) {
-      setSwipeCandidates(buildSwipeCandidatePool(tasteTags, 10));
       setStep(3);
-    } else {
-      // step 3 (the swipe deck) has no bottom Next button — it advances itself via
+    } else if (step === 3) {
+      setSwipeCandidates(buildSwipeCandidatePool(tasteTags, 10));
+      setStep(4);
+    } else if (step === 5) {
+      // step 4 (the swipe deck) has no bottom Next button — it advances itself via
       // handleSwipeDeckComplete (its own "Skip — use my picks" button or the last card
-      // resolving), so the only step that reaches here via the bottom button is step 4.
+      // resolving), so the only step that reaches here via the bottom button is step 5.
       finishOnboarding(tasteTags);
     }
+  };
+
+  // step > 1 just steps back one screen; step 1 has nowhere earlier in the flow to go back to,
+  // so it defers to the router — a no-op if onboarding has no prior screen in its history (the
+  // auth-gated redirect in app/_layout.tsx typically lands here directly), never a crash. Kept
+  // completely separate from step 2's own "tap outside a circle to go back" gesture below —
+  // that one only pops the vibe picker's internal drill-down path, never the onboarding step.
+  const handleBack = () => {
+    if (step > 1) setStep(step - 1);
+    else router.back();
+  };
+
+  // Same instant-save convention as profile.tsx's toggleHomebaseCircle — see the state comment
+  // above for why this isn't batched into finishOnboarding.
+  const toggleHomebaseCircle = (circle: string) => {
+    setHomebaseSharedCircles(prev => {
+      const next = prev.includes(circle) ? prev.filter(c => c !== circle) : [...prev, circle];
+      updateUser({ homebaseSharedCircles: next });
+      return next;
+    });
   };
 
   const handleSwipeDeckComplete = (acceptedTags: string[]) => {
@@ -119,7 +151,7 @@ export default function OnboardingScreen() {
       for (const tag of acceptedTags) if (!merged.includes(tag)) merged.push(tag);
       return merged;
     });
-    setStep(4);
+    setStep(5);
   };
 
   const toggleDiet = (diet: string) => {
@@ -134,6 +166,15 @@ export default function OnboardingScreen() {
           <View key={i} style={[styles.dot, i + 1 === step && styles.dotActive]} />
         ))}
       </View>
+
+      {/* Pinned above the scrollable step content, outside step 2's own Pressable wrapper below
+          — this is deliberate: it guarantees this control can never fight with, or be confused
+          for, the vibe picker's "tap outside a circle to go back" gesture, which only ever
+          fires on taps that land inside that step's own content area. This one always means
+          "leave this step," that one always means "pop one level of drill-down." */}
+      <TouchableOpacity onPress={handleBack} style={styles.backButton} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+        <Text style={styles.backButtonText}>‹ Back</Text>
+      </TouchableOpacity>
 
       <ScrollView style={styles.content} contentContainerStyle={styles.contentInner} showsVerticalScrollIndicator={false}>
 
@@ -186,13 +227,28 @@ export default function OnboardingScreen() {
 
         {step === 3 && (
           <View style={styles.stepContainer}>
+            <Text style={styles.title}>Let friends know you&apos;re home.</Text>
+            <Text style={styles.subtitle}>Share your home city with specific circles — people in those circles can see you&apos;re local when they&apos;re planning a trip your way. Private by default.</Text>
+            <CircleShareSelector
+              selected={homebaseSharedCircles}
+              onToggle={toggleHomebaseCircle}
+              label="Share My Home City With"
+            />
+            <TouchableOpacity onPress={() => setStep(4)} style={styles.skipLink}>
+              <Text style={styles.skipLinkText}><Text style={styles.skipLinkBold}>Skip for now</Text> — set this anytime from Profile</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {step === 4 && (
+          <View style={styles.stepContainer}>
             <Text style={styles.title}>Anything else?</Text>
             <Text style={styles.subtitle}>A few more, if you&apos;re up for it — swipe right to add, left to skip. Totally optional.</Text>
             <SwipeDeck candidates={swipeCandidates} onComplete={handleSwipeDeckComplete} />
           </View>
         )}
 
-        {step === 4 && (
+        {step === 5 && (
           <View style={styles.stepContainer}>
             <Text style={styles.title}>Essentials</Text>
             <Text style={styles.subtitle}>Medium pace, no restrictions — you can change either of these anytime in Profile.</Text>
@@ -224,7 +280,7 @@ export default function OnboardingScreen() {
         )}
       </ScrollView>
 
-      {step !== 3 && (
+      {step !== 4 && (
         <TouchableOpacity style={styles.nextButton} onPress={handleNext}>
           <Text style={styles.nextText}>{step === TOTAL_STEPS ? 'Complete Setup' : 'Next'}</Text>
         </TouchableOpacity>
@@ -245,6 +301,13 @@ const styles = StyleSheet.create({
   stepDots: { flexDirection: 'row', justifyContent: 'center', gap: 8, marginBottom: 8, marginTop: 8 },
   dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#1E293B' },
   dotActive: { backgroundColor: '#3B82F6' },
+
+  backButton: { alignSelf: 'flex-start', paddingVertical: 8, paddingHorizontal: 4, marginBottom: 4 },
+  backButtonText: { color: '#94A3B8', fontSize: 15, fontWeight: '600' },
+
+  skipLink: { marginTop: 4, paddingVertical: 8 },
+  skipLinkText: { color: '#64748B', fontSize: 14, lineHeight: 20 },
+  skipLinkBold: { color: '#3B82F6', fontWeight: '700' },
 
   input: { backgroundColor: '#1E293B', borderWidth: 1, borderColor: '#334155', borderRadius: 14, padding: 18, color: '#FFF', fontSize: 16, marginBottom: 28 },
 

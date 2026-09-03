@@ -5,48 +5,72 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 this is still pre-release/beta.
 
 ## [Unreleased]
+### Added
+- **Onboarding's vibe picker now reaches cuisine-level taste for 6 of the 8 vibes.**
+  `buildVibeTree()` (`lib/onboarding-taste.ts`) appends real `PreferenceCategoryGroup`
+  category nodes to a vibe's children alongside its existing flat leaves, rather than
+  flattening straight from vibe to leaf. Foodie keeps its 4 occasion leaves (Street
+  Food/Cafes/Local Markets/Festivals) and gains Asian/European/Americas cuisine categories —
+  tapping "Asian" bulk-selects Japanese/Chinese/Thai in one tap (matching every other parent
+  node's one-tap bulk-select), drilling once more shows them individually. Culture & Museums,
+  Outdoors & Active, Arts & Theater, and Scenic & Views each gain one further category
+  (`Arts & Culture`, `Tours & Excursions` ×2, `Entertainment`, respectively) — chosen where a
+  *_CATEGORIZED group is thematically core to that vibe's persona and not already ≥2/3
+  covered by its own flat tags. Nightlife & Live Music, Chill & Relax, and Shopping & Markets
+  deliberately keep today's pure-flat structure — their best-fitting group was already fully
+  covered by existing flat tags, so wrapping it would add a tap without exposing any new tag.
+  The tap/drill-down engine (`CircleNode`/`tapNode`/`shouldDrillIn`) needed zero changes,
+  confirming it really is depth-agnostic as designed; `vibe-picker.tsx`'s sub-cluster layout
+  table also needed no changes (its existing arc-layout fallback already handles the new,
+  larger child counts). `lib/onboarding-taste.test.ts` extended with coverage for the new
+  category nodes' bulk-select-then-prune behavior and for the untouched vibes staying flat.
+  Live-verified against the real API: `PUT /api/users/:id` round-trips a `foodGenres` array
+  containing newly-reachable cuisine tags (`Japanese`, `Thai`) alongside the original occasion
+  tags. Item 2 (the tag-redundancy audit) is a separate, still-undecided product call — not
+  touched this pass, see below.
+- **Profile's preference editor now uses the same drill-down/collapse interaction as
+  onboarding's vibe picker**, instead of a flat always-expanded 15-bubble list.
+  `components/profile/categorized-selection-modal.tsx` rebuilt to build a `CircleNode` tree
+  directly from `FOOD_GENRES_CATEGORIZED`/`ACTIVITY_GENRES_CATEGORIZED`/
+  `EVENT_GENRES_CATEGORIZED` (the same shape `buildVibeTree()` produces, minus the vibe-bundle
+  wrapper) and reuses `tapNode` rather than reimplementing bulk-select/toggle logic. A
+  category with nothing selected collapses to just its title + "+"; tapping it bulk-selects
+  the whole group and expands in place so it can be pruned down, mirroring the vibe circle's
+  tap-then-prune pattern (one deliberate difference from `vibe-picker.tsx`: expansion happens
+  on the same tap as the bulk-select rather than requiring a second tap, since a settings list
+  needs immediate visual feedback that something happened). Added an explicit "‹ Back to
+  circle view" button. `app/(tabs)/profile.tsx`'s three call sites switched from a per-item
+  `toggle` callback to `onSelectedChange(next: string[])` so a bulk-select commits atomically
+  instead of racing itself through repeated stale-closure `toggle` calls. Live-verified:
+  `PUT /api/users/:id` round-trips `activityGenres`/`eventGenres` picked through the new
+  drill-down (`Walking Tours`/`Boat Cruises`, `Comedy Shows`/`Cinema`).
+- **Home-city sharing moved into onboarding as a new, skippable step.** `app/onboarding.tsx`
+  gains a new step 3 — `CircleShareSelector`, the same component already used on Profile,
+  reused directly — positioned right after "Pick your vibe." A visible "Skip for now — set
+  this anytime from Profile" link sits below it, and each circle toggle saves instantly (same
+  instant-save convention as Profile's own `toggleHomebaseCircle`) rather than waiting for
+  onboarding to finish, so skipping never leaves a half-applied choice behind. `TOTAL_STEPS`
+  is now 5 and the swipe-deck/essentials steps shifted to 4/5 accordingly. Live-verified:
+  `PUT /api/users/:id` round-trips `homebaseSharedCircles` set from this new step.
+- **Onboarding now has a working "‹ Back" control on every step.** `app/onboarding.tsx` gains
+  `handleBack` (`setStep(step - 1)`, or `router.back()` — a safe no-op if there's no prior
+  screen to return to — on step 1), wired to a small "‹ Back" pinned above the step content
+  and structurally outside step 2's own `Pressable`, so it can never be confused with the vibe
+  picker's existing "tap outside a circle to go back" gesture — that one still only pops the
+  picker's internal drill-down path (now also covering item 1's new category-level drilling
+  above), never the onboarding step itself. The step-dots indicator stays purely visual,
+  unchanged, per the doc's proposal. The already-decided swipe-deck-resets-to-card-one-on-
+  back-navigation nuance is left exactly as accepted — `SwipeDeck`'s internal progress state
+  is not lifted to `onboarding.tsx`.
+
 ### Roadmap noted
-- **Onboarding's vibe picker never reaches cuisine-level taste, even though the data already
-  supports it.** Reported live from the "Pick your vibe" screen. `VIBE_PRESETS`
-  (`constants/preferences.ts`) — what onboarding actually renders — hand-picks flat occasion
-  tags per vibe (Foodie: Street Food/Cafes/Local Markets/Festivals); none of the 9 real
-  cuisine leaves in `FOOD_GENRES_CATEGORIZED` (Italian/Japanese/Chinese/Mexican/...) are
-  reachable from any vibe, confirmed by grep. The drill-down engine
-  (`lib/onboarding-taste.ts`'s `CircleNode`/`tapNode`/`shouldDrillIn`) is already
-  depth-agnostic by its own design, so this is a tree-construction gap
-  (`buildVibeTree()`), not an engine limitation. Also audited, per direct request: 8 of
-  `VIBE_PRESETS`' ~35 tag slots are reused across 2–3 vibes each (`Scenic Drives` alone
-  spans three) — mechanically harmless (tag-union dedup already handles it) but reads as
-  visual clutter. Not built here — full proposal (a 3rd tree level mixing category nodes
-  with existing leaves, the onboarding-length trade-off that comes with it, and 3 options
-  for the tag-overlap question, deliberately not resolved to one) in new
-  `docs/taxonomy-and-social-notifications-plan.md`.
-- **Profile's preference editor (`CategorizedSelectionModal`) shows all 15 leaves per
-  domain at once regardless of selection, and doesn't share onboarding's interaction at
-  all.** Reported live alongside the above. Proposed: replace it with the same
-  drill-down/collapse component onboarding uses — a category with nothing selected
-  collapses to just its title + "+" (e.g. "Performing Arts +"), with an explicit "back to
-  circle view" button. Same doc/mockup as above.
-- **Home-city sharing (`CircleShareSelector`) only exists on Profile — invisible until a
-  user separately discovers it after onboarding.** Confirmed by grep: `app/onboarding.tsx`
-  never imports `CircleShareSelector`, even though the whole "friends nearby" mechanic
-  depends on it being turned on. Proposed: add it as one more onboarding step, **must be
-  skippable** (privacy-sensitive opt-in) with a visible "Skip for now" affordance, not a
-  silent default. Same doc/mockup as above.
-- **No way to go back anywhere in onboarding — confirmed while scoping item 4 above, since
-  adding another skippable step makes this worse.** `app/onboarding.tsx`'s `handleNext` only
-  ever calls `setStep(2)`/`(3)`/`(4)` — no `handleBack` exists anywhere in the file, and the
-  step-dots progress indicator is purely visual, not tappable. Once a step is left — via
-  "Next," or via the swipe deck's "Skip — use my picks" button
-  (`components/ui/swipe-deck.tsx:125-126`, which jumps straight to step 4) — there's no way
-  back to reconsider it. Proposed: a visible "‹ Back" control on every step, wired to
-  `setStep(step - 1)`, kept distinct from step 2's existing "tap outside a circle to go
-  back" gesture (that one only pops the vibe picker's own internal drill-down, not the
-  onboarding step). One real nuance, since decided by the product owner: step 3's
-  `SwipeDeck` is conditionally rendered and unmounts on leaving, so going back shows a fresh
-  deck at card one rather than resuming progress — already-accepted tags aren't lost (merged
-  into parent state already), only the visual progress resets. **Decided: fine as-is**, no
-  need to lift the deck's progress state up just to preserve it. Same doc/mockup as above.
+- **Redundant tag reuse across `VIBE_PRESETS` vibes — audited, not resolved.** 8 of
+  `VIBE_PRESETS`' ~35 tag slots are reused across 2–3 vibes each (`Scenic Drives` alone spans
+  three) — mechanically harmless (tag-union dedup already handles it) but reads as visual
+  clutter. Three options laid out in `docs/taxonomy-and-social-notifications-plan.md` (keep
+  as-is, assign every tag one "primary" vibe, or prune case-by-case) — deliberately left
+  undecided, a taste/brand call more than a technical one. Not touched this pass;
+  `VIBE_PRESETS`' existing tag-overlap structure is untouched.
 - **No visual signal anywhere that a new friend request has arrived.** Reported live.
   `app/(tabs)/_layout.tsx`'s Circles tab has no `tabBarBadge` (Expo Router supports this
   natively — small addition), but `hooks/useFriendRequests.tsx` has no cached/reactive
