@@ -22,6 +22,12 @@ export interface TripEvent {
   end_time: string;
   place_id?: string;
   place_name?: string;
+  // Real venue/address text — present on both 'created' events (an optional free-text field
+  // at creation) and 'imported' ones (the device calendar event's own location). Used by
+  // lib/calendar-signals.ts's classifyImportedEvent (flight/ground-transit/lodging/dining
+  // detection) and, for a dining-classified imported event, to build its Navigate action the
+  // same way a real Place's address does (see components/trips/calendar-event-card.tsx).
+  location?: string;
   participants: EventParticipant[];
 }
 
