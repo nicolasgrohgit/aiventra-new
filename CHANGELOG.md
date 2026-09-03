@@ -6,6 +6,50 @@ this is still pre-release/beta.
 
 ## [Unreleased]
 ### Roadmap noted
+- **Onboarding's vibe picker never reaches cuisine-level taste, even though the data already
+  supports it.** Reported live from the "Pick your vibe" screen. `VIBE_PRESETS`
+  (`constants/preferences.ts`) — what onboarding actually renders — hand-picks flat occasion
+  tags per vibe (Foodie: Street Food/Cafes/Local Markets/Festivals); none of the 9 real
+  cuisine leaves in `FOOD_GENRES_CATEGORIZED` (Italian/Japanese/Chinese/Mexican/...) are
+  reachable from any vibe, confirmed by grep. The drill-down engine
+  (`lib/onboarding-taste.ts`'s `CircleNode`/`tapNode`/`shouldDrillIn`) is already
+  depth-agnostic by its own design, so this is a tree-construction gap
+  (`buildVibeTree()`), not an engine limitation. Also audited, per direct request: 8 of
+  `VIBE_PRESETS`' ~35 tag slots are reused across 2–3 vibes each (`Scenic Drives` alone
+  spans three) — mechanically harmless (tag-union dedup already handles it) but reads as
+  visual clutter. Not built here — full proposal (a 3rd tree level mixing category nodes
+  with existing leaves, the onboarding-length trade-off that comes with it, and 3 options
+  for the tag-overlap question, deliberately not resolved to one) in new
+  `docs/taxonomy-and-social-notifications-plan.md`.
+- **Profile's preference editor (`CategorizedSelectionModal`) shows all 15 leaves per
+  domain at once regardless of selection, and doesn't share onboarding's interaction at
+  all.** Reported live alongside the above. Proposed: replace it with the same
+  drill-down/collapse component onboarding uses — a category with nothing selected
+  collapses to just its title + "+" (e.g. "Performing Arts +"), with an explicit "back to
+  circle view" button. Same doc/mockup as above.
+- **Home-city sharing (`CircleShareSelector`) only exists on Profile — invisible until a
+  user separately discovers it after onboarding.** Confirmed by grep: `app/onboarding.tsx`
+  never imports `CircleShareSelector`, even though the whole "friends nearby" mechanic
+  depends on it being turned on. Proposed: add it as one more onboarding step, **must be
+  skippable** (privacy-sensitive opt-in) with a visible "Skip for now" affordance, not a
+  silent default. Same doc/mockup as above.
+- **No visual signal anywhere that a new friend request has arrived.** Reported live.
+  `app/(tabs)/_layout.tsx`'s Circles tab has no `tabBarBadge` (Expo Router supports this
+  natively — small addition), but `hooks/useFriendRequests.tsx` has no cached/reactive
+  count to drive one from (confirmed: thin imperative fetch-wrapper only, no polling).
+  Two ways to source the count, not resolved here: poll periodically (simple, adds a
+  recurring call), or drive it off this sprint's new push-notification arrival (no
+  polling, but coupled to finishing the still-flagged in-app notification-handling
+  follow-up first). Full detail in
+  `docs/taxonomy-and-social-notifications-plan.md`.
+- **Event invite cards show no indication of who invited you.** Reported live,
+  screenshot attached. Confirmed on both ends: the "Your Invites" modal
+  (`app/(tabs)/trips.tsx:1284-1324`) never renders `event.created_by`, and
+  `GET /api/events/invited` (`server.ts:571-579`) never resolves it to a name in the
+  first place (`Event.find(...)` with no populate/lookup) — a raw ObjectId reaches the
+  client either way. Two-part fix needed: resolve the organizer's `full_name`/
+  `avatar_url` server-side, render "Invited by ⟨name⟩" on the card. Unlike the items
+  above, no product ambiguity here — just the fix, not built yet.
 - **A short evening free slot that overlaps the dinner window gets no meal proposal at all,
   and "Looking for something else?" on it shows disconnected defaults.** Reported live
   against a real Paris trip (Sep 7) with a genuinely packed device calendar synced in.
