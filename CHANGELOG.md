@@ -33,7 +33,21 @@ this is still pre-release/beta.
   depends on it being turned on. Proposed: add it as one more onboarding step, **must be
   skippable** (privacy-sensitive opt-in) with a visible "Skip for now" affordance, not a
   silent default. Same doc/mockup as above.
+- **No way to go back anywhere in onboarding — confirmed while scoping item 4 above, since
+  adding another skippable step makes this worse.** `app/onboarding.tsx`'s `handleNext` only
+  ever calls `setStep(2)`/`(3)`/`(4)` — no `handleBack` exists anywhere in the file, and the
+  step-dots progress indicator is purely visual, not tappable. Once a step is left — via
+  "Next," or via the swipe deck's "Skip — use my picks" button
+  (`components/ui/swipe-deck.tsx:125-126`, which jumps straight to step 4) — there's no way
+  back to reconsider it. Proposed: a visible "‹ Back" control on every step, wired to
+  `setStep(step - 1)`, kept distinct from step 2's existing "tap outside a circle to go
+  back" gesture (that one only pops the vibe picker's own internal drill-down, not the
+  onboarding step). One real nuance flagged, not resolved: step 3's `SwipeDeck` is
+  conditionally rendered and unmounts on leaving, so going back would show a fresh deck at
+  card one rather than resume progress — already-accepted tags aren't lost (merged into
+  parent state already), but the visual progress would reset. Same doc/mockup as above.
 - **No visual signal anywhere that a new friend request has arrived.** Reported live.
+  `app/(tabs)/_layout.tsx`'s Circles tab has no `tabBarBadge` (Expo Router supports this
   `app/(tabs)/_layout.tsx`'s Circles tab has no `tabBarBadge` (Expo Router supports this
   natively — small addition), but `hooks/useFriendRequests.tsx` has no cached/reactive
   count to drive one from (confirmed: thin imperative fetch-wrapper only, no polling).

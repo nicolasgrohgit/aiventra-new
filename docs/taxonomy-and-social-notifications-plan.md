@@ -1,9 +1,10 @@
 # Taste taxonomy depth, profile/onboarding unification, and two notification gaps
 
-Not attempted this pass — proposals only, per direct instruction. Six related items reported
-live while testing: three about how the "Pick your vibe" taxonomy and the Profile preference
-editor represent taste data, and three narrower gaps (home-city sharing buried in Profile,
-no Circles-tab badge for new friend requests, invite cards with no inviter identity).
+Not attempted this pass — proposals only, per direct instruction. Seven related items
+reported live while testing: three about how the "Pick your vibe" taxonomy and the Profile
+preference editor represent taste data, and four narrower gaps (home-city sharing buried in
+Profile, no way to go back anywhere in onboarding, no Circles-tab badge for new friend
+requests, invite cards with no inviter identity).
 
 ## 1. The vibe picker never actually reaches cuisine-level granularity — even though the data already supports it
 
@@ -148,7 +149,36 @@ design goal (`docs/onboarding-redesign.md`) is staying short; forcing a decision
 against both. A visible "Skip for now — set this anytime from Profile" affordance, not just a
 silent default-to-nothing, so skipping is a legible choice rather than an accident.
 
-## 5. Circles-tab badge for new friend requests
+## 5. No way to go back anywhere in onboarding — a real gap, made worse by adding another skippable step
+
+Reported live, directly triggered by item 4 above: any step that can be skipped needs a way
+back in case that was a mistake, and today none exist at all. Confirmed by reading
+`app/onboarding.tsx` in full: `handleNext` only ever calls `setStep(2)`/`setStep(3)`/
+`setStep(4)` — there is no `handleBack`, no code path that ever decrements `step`, anywhere
+in the file. The step-dots progress indicator (`styles.stepDots`) is purely visual, not
+tappable. Once a step is left — by tapping "Next," or by the swipe deck's "Skip — use my
+picks" button (`components/ui/swipe-deck.tsx:125-126`, which calls `onComplete` and jumps
+straight to step 4) — there is no way back to it, full stop. Adding item 4's new sharing step
+without also fixing this means a user who skips it by reflex has no way to reconsider.
+
+Proposed: a `handleBack` (`step > 1 ? setStep(step - 1) : router.back()` or similar) wired to
+a visible back control on every step, distinct from — and not conflicting with — step 2's
+existing "tap outside a circle to go back" gesture, which is a *different* kind of back
+(popping one level out of the vibe picker's own drill-down, not leaving the step). The two
+need to coexist legibly: a small "‹ Back" control near the step-dots, pinned above the step
+content, handles step-to-step navigation; the vibe picker's outside-tap gesture keeps handling
+only its own internal drill state, exactly as it does today.
+
+One real implementation nuance worth flagging rather than deciding blind: step 3 (the swipe
+deck) is conditionally rendered (`{step === 3 && (...)}`), so leaving it unmounts `SwipeDeck`
+entirely — its own internal card-progress state isn't lifted to `onboarding.tsx`. Going back
+to step 3 would remount a *fresh* deck at its first card, not resume wherever the user had
+swiped to. The already-accepted tags aren't lost (`handleSwipeDeckComplete` already merged
+them into `tasteTags`, which lives in `onboarding.tsx` and isn't reset), but the visual
+progress would be. Whether that's fine (return to a fresh deck, previous picks already
+counted) or needs the deck's progress lifted up too is a real product call, not resolved here.
+
+## 6. Circles-tab badge for new friend requests
 
 Reported live: no visual signal exists anywhere that a new friend request has arrived —
 confirmed by reading `app/(tabs)/_layout.tsx`: `Tabs.Screen`'s `tabBarIcon` is a bare
@@ -176,7 +206,7 @@ Either way, the count itself is simple (length of `fetchIncomingRequests()`'s re
 dedicated lightweight `GET /api/friend-requests/incoming/count` if avoiding fetching full
 request objects just to count them matters).
 
-## 6. Event invite cards show no indication of who invited you
+## 7. Event invite cards show no indication of who invited you
 
 Reported live, screenshot attached: the "Your Invites" modal
 (`app/(tabs)/trips.tsx:1284-1324`) renders `event.title`, start time, and `event.place_name`
@@ -191,7 +221,7 @@ should render it plainly — "Invited by Nico" is the obvious bar, an avatar chi
 room. Small, contained, no design ambiguity here — unlike items 1–5, this one doesn't need a
 product decision, just the fix.
 
-## 7. Graphical proposal (items 1, 3, 4)
+## 8. Graphical proposal (items 1, 3, 4, 5)
 
 See the published mockup: **https://claude.ai/code/artifact/238def10-5b1c-4b4b-8771-fc4a87e0cdf6**
 ("Taste Depth Proposal"). Covers, using the app's real
