@@ -33,6 +33,31 @@ this is still pre-release/beta.
   `openRefineSearch`/`RefineSearchCard` should seed `Time`/`Duration`/`mealWindow` from the
   originating proposal's own `startTime`/`durationMinutes`/`type` rather than hardcoded
   defaults, so the form always reflects the slot the user actually tapped from.
+  **Refined by the entry directly below:** part (a)'s question is now answered — the 60-min
+  gap correctly is *not* dinner; the real dinner is a separate calendar event 40 minutes
+  later that the app currently has no way to recognize or surface at all. Part (b) (the
+  refine-defaults bug) still stands as-is regardless of that answer.
+- **Imported calendar events carry real travel signals (flights, ground transit, an
+  already-scheduled dinner) that the trip timeline is completely blind to — it only sees
+  "busy."** Direct follow-up to the entry above, after the product owner pointed out the
+  real shape of the data: the Sep 7 Paris trip's synced calendar includes a textbook
+  TripIt/Google-Calendar-auto-detected travel cluster (`Travel time to TLS airport` →
+  `Flight: TLS (TO7103) to ORY Confirmation O7Z5VR` → `Travel time from ORY airport`,
+  09:40–13:05) and a real farewell dinner (`Save The Date - Pot de depart Nico`, 19:00–21:00,
+  at a real street address). The timeline renders all of it as identical plain busy rows —
+  the flight cluster reads as three unrelated meetings, and the already-scheduled dinner is
+  invisible, which is *why* the app was trying (and failing) to invent a dinner proposal out
+  of the unrelated 60-minute gap beforehand in the entry above — it had no way to know dinner
+  was already handled. Not built here — full classification algorithm (`classifyImportedEvent()`
+  pattern rules for flight/ground-transit/lodging/dining, the dining heuristic being timing +
+  real-address-location rather than any title keyword — language-agnostic on purpose) and
+  scheduling integration (a detected flight should bound the day's effective free-time
+  window, not just subtract from a fixed one; a detected dining event should suppress the
+  competing AI meal proposal and be surfaced directly instead) written up in new
+  `docs/calendar-signal-detection-plan.md`. Graphical before/after proposal, using this
+  exact real trip's data and the app's actual color palette pulled from `trips.tsx`'s own
+  stylesheet:
+  https://claude.ai/code/artifact/48e7c5bc-41d6-4df4-8b26-8135927c8ee2 ("Journey Timeline").
 
 ## [0.0.38] - 2026-09-02
 ### Fixed
