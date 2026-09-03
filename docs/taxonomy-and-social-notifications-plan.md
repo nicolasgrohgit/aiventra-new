@@ -169,14 +169,14 @@ need to coexist legibly: a small "‹ Back" control near the step-dots, pinned a
 content, handles step-to-step navigation; the vibe picker's outside-tap gesture keeps handling
 only its own internal drill state, exactly as it does today.
 
-One real implementation nuance worth flagging rather than deciding blind: step 3 (the swipe
-deck) is conditionally rendered (`{step === 3 && (...)}`), so leaving it unmounts `SwipeDeck`
+One real implementation nuance, since resolved by the product owner: step 3 (the swipe deck)
+is conditionally rendered (`{step === 3 && (...)}`), so leaving it unmounts `SwipeDeck`
 entirely — its own internal card-progress state isn't lifted to `onboarding.tsx`. Going back
-to step 3 would remount a *fresh* deck at its first card, not resume wherever the user had
-swiped to. The already-accepted tags aren't lost (`handleSwipeDeckComplete` already merged
-them into `tasteTags`, which lives in `onboarding.tsx` and isn't reset), but the visual
-progress would be. Whether that's fine (return to a fresh deck, previous picks already
-counted) or needs the deck's progress lifted up too is a real product call, not resolved here.
+to step 3 remounts a *fresh* deck at its first card, not wherever the user had swiped to. The
+already-accepted tags aren't lost (`handleSwipeDeckComplete` already merged them into
+`tasteTags`, which lives in `onboarding.tsx` and isn't reset) — only the visual progress
+resets. **Decided: this is fine as-is** — no need to lift the deck's progress state up to
+`onboarding.tsx` just to preserve card position across a back-navigation.
 
 ## 6. Circles-tab badge for new friend requests
 

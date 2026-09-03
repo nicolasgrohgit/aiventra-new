@@ -42,10 +42,11 @@ this is still pre-release/beta.
   back to reconsider it. Proposed: a visible "‹ Back" control on every step, wired to
   `setStep(step - 1)`, kept distinct from step 2's existing "tap outside a circle to go
   back" gesture (that one only pops the vibe picker's own internal drill-down, not the
-  onboarding step). One real nuance flagged, not resolved: step 3's `SwipeDeck` is
-  conditionally rendered and unmounts on leaving, so going back would show a fresh deck at
-  card one rather than resume progress — already-accepted tags aren't lost (merged into
-  parent state already), but the visual progress would reset. Same doc/mockup as above.
+  onboarding step). One real nuance, since decided by the product owner: step 3's
+  `SwipeDeck` is conditionally rendered and unmounts on leaving, so going back shows a fresh
+  deck at card one rather than resuming progress — already-accepted tags aren't lost (merged
+  into parent state already), only the visual progress resets. **Decided: fine as-is**, no
+  need to lift the deck's progress state up just to preserve it. Same doc/mockup as above.
 - **No visual signal anywhere that a new friend request has arrived.** Reported live.
   `app/(tabs)/_layout.tsx`'s Circles tab has no `tabBarBadge` (Expo Router supports this
   `app/(tabs)/_layout.tsx`'s Circles tab has no `tabBarBadge` (Expo Router supports this
