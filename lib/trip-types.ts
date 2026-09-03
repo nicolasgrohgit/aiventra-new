@@ -25,6 +25,19 @@ export interface TripEvent {
   participants: EventParticipant[];
 }
 
+// The shape GET /api/events/invited actually returns: `created_by` comes back populated
+// (organizer full_name/avatar_url, so invite cards can render "Invited by <name>") rather
+// than as the bare id string every other event endpoint returns. A distinct type instead of
+// widening TripEvent.created_by itself, since every other event fetch (fetchTripEvents,
+// createEvent, ...) genuinely still returns a plain id string.
+export interface InvitedTripEvent extends Omit<TripEvent, 'created_by'> {
+  created_by: {
+    _id: string;
+    full_name: string;
+    avatar_url?: string;
+  };
+}
+
 export interface TripBaseLocation {
   label: string;
   lat: number;

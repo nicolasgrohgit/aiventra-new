@@ -5,6 +5,41 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 this is still pre-release/beta.
 
 ## [Unreleased]
+### Added
+- **Circles-tab badge for pending friend requests.** `app/(tabs)/_layout.tsx`'s Circles
+  `Tabs.Screen` now sets `tabBarBadge` to the live pending-incoming-request count (Expo
+  Router's native support for the prop). The count comes from a new piece of
+  cached/reactive state in `FriendRequestsProvider` (`hooks/useFriendRequests.tsx`):
+  `incomingRequestCount`, refreshed as a side effect of every `fetchIncomingRequests()`
+  call, plus its own poll loop (45s interval) and an `AppState` foreground trigger — same
+  pattern `useMutationQueueFlush.ts` uses for the mutation-queue retry, gated on `user`
+  from `useAuth()` so it only runs while logged in and resets to 0 on logout. Poll-based
+  rather than push-driven, per the plan doc's own call: the push alternative depends on
+  the in-app foreground-notification-handling follow-up
+  (`Notifications.setNotificationHandler`) that isn't built yet. Verified live end to end
+  against the local backend/MongoDB: created two real test accounts, sent a real friend
+  request between them, confirmed `GET /api/friend-requests/incoming` (what the count is
+  sourced from) returns length 1 for the pending request and drops to 0 immediately after
+  the recipient accepts it — matching what the badge would show at each step.
+
+### Fixed
+- **Event invite cards showed no indication of who invited you.** Two-part fix:
+  `GET /api/events/invited` (`server.ts`) now does
+  `.populate('created_by', 'full_name avatar_url')` so each invited event comes back with
+  the organizer's identity instead of a bare ObjectId; the shared `decryptEvents()` helper
+  (used by several other event routes that do *not* populate `created_by`) was adjusted
+  to resolve a creator id from either shape via a small `creatorIdOf()` helper, since a
+  populated sub-document's `.toString()` isn't the id. `models/Event.ts` gained a
+  `PopulatedEventCreator` type (kept distinct from `IEvent.created_by`'s bare-ObjectId
+  type, matching that every other route genuinely still returns the un-populated shape)
+  and `lib/trip-types.ts` gained an `InvitedTripEvent` type built the same way for the
+  client. The "Your Invites" modal (`app/(tabs)/trips.tsx`) now renders "Invited by
+  ⟨name⟩" with an avatar chip (initial-letter fallback when there's no `avatar_url`) on
+  each invite card. Verified live end to end against the local backend/MongoDB: created
+  two real test accounts, linked them as contacts, had one create a real trip + event and
+  invite the other, and confirmed `GET /api/events/invited` returned `created_by` as a
+  populated `{ _id, full_name, avatar_url }` object rather than an id string.
+
 ### Roadmap noted
 - **Onboarding's vibe picker never reaches cuisine-level taste, even though the data already
   supports it.** Reported live from the "Pick your vibe" screen. `VIBE_PRESETS`
@@ -47,23 +82,6 @@ this is still pre-release/beta.
   deck at card one rather than resuming progress — already-accepted tags aren't lost (merged
   into parent state already), only the visual progress resets. **Decided: fine as-is**, no
   need to lift the deck's progress state up just to preserve it. Same doc/mockup as above.
-- **No visual signal anywhere that a new friend request has arrived.** Reported live.
-  `app/(tabs)/_layout.tsx`'s Circles tab has no `tabBarBadge` (Expo Router supports this
-  natively — small addition), but `hooks/useFriendRequests.tsx` has no cached/reactive
-  count to drive one from (confirmed: thin imperative fetch-wrapper only, no polling).
-  Two ways to source the count, not resolved here: poll periodically (simple, adds a
-  recurring call), or drive it off this sprint's new push-notification arrival (no
-  polling, but coupled to finishing the still-flagged in-app notification-handling
-  follow-up first). Full detail in
-  `docs/taxonomy-and-social-notifications-plan.md`.
-- **Event invite cards show no indication of who invited you.** Reported live,
-  screenshot attached. Confirmed on both ends: the "Your Invites" modal
-  (`app/(tabs)/trips.tsx:1284-1324`) never renders `event.created_by`, and
-  `GET /api/events/invited` (`server.ts:571-579`) never resolves it to a name in the
-  first place (`Event.find(...)` with no populate/lookup) — a raw ObjectId reaches the
-  client either way. Two-part fix needed: resolve the organizer's `full_name`/
-  `avatar_url` server-side, render "Invited by ⟨name⟩" on the card. Unlike the items
-  above, no product ambiguity here — just the fix, not built yet.
 - **A short evening free slot that overlaps the dinner window gets no meal proposal at all,
   and "Looking for something else?" on it shows disconnected defaults.** Reported live
   against a real Paris trip (Sep 7) with a genuinely packed device calendar synced in.

@@ -15,6 +15,19 @@ const ParticipantSchema = new Schema<IEventParticipant>({
   status: { type: String, enum: ['pending', 'accepted', 'declined'], default: 'pending' }
 }, { _id: false });
 
+// Client-facing shape of `created_by` once a route populates it (see
+// GET /api/events/invited in server.ts, which does `.populate<{ created_by:
+// PopulatedEventCreator }>('created_by', 'full_name avatar_url')` so invite cards can show
+// "Invited by <name>") — the organizer's identity, not a bare ObjectId. Kept as a distinct
+// type rather than widening `IEvent.created_by` itself so the un-populated shape (every
+// other route) still type-checks as a plain ObjectId, matching what actually comes back at
+// runtime in each case.
+export interface PopulatedEventCreator {
+  _id: mongoose.Types.ObjectId;
+  full_name: string;
+  avatar_url?: string;
+}
+
 export interface IEvent extends Document {
   trip_id: mongoose.Types.ObjectId;
   created_by: mongoose.Types.ObjectId;
