@@ -5,6 +5,34 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 this is still pre-release/beta.
 
 ## [Unreleased]
+### Roadmap noted
+- **A short evening free slot that overlaps the dinner window gets no meal proposal at all,
+  and "Looking for something else?" on it shows disconnected defaults.** Reported live
+  against a real Paris trip (Sep 7) with a genuinely packed device calendar synced in.
+  Reproduced exactly by running `getTripDaySchedule`/`expandSlotForProposals`
+  (`lib/free-time.ts`) against the real event data: after a 16:00–18:00 meeting, the only
+  evening opening is a 60-minute gap (18:00–19:00) before back-to-back personal events run
+  19:00–21:30, leaving just 30 minutes before the day's 22:00 cutoff — too short to even
+  register as free time (`calculateFreeTimeSlots`'s 60-minute minimum gap). The 60-minute
+  slot does get labeled "Evening" (`labelFreeSlot`, since it touches the dinner window's
+  start), but `expandSlotForProposals` only carves a dedicated meal sub-proposal out of a
+  slot ≥150 minutes total — under that, it always returns a single generic `type: 'activity'`
+  proposal, even when the slot is unambiguously dinner-adjacent. Two compounding effects from
+  there: (1) no Restaurant-filtered Dinner card ever appears for a day like this, even though
+  a real 60-minute dinner window genuinely exists; (2) `components/trips/refine-search-card.tsx`
+  derives its `mealWindow` prop purely from `proposal.type === 'meal'`, so "Looking for
+  something else?" on this activity-typed proposal opens showing the non-meal tag set
+  (Attractions/Tours/Outdoor/etc.) instead of Food genres. Independently,
+  `openRefineSearch` (`app/(tabs)/trips.tsx:839`) hardcodes the form's default `Time` to
+  12:00 and `Duration` to 90 minutes unconditionally, regardless of which slot/proposal
+  triggered it — so even the clock and duration shown are disconnected from the real
+  18:00–19:00 slot that was tapped, on top of the tag-set issue. Not built here — two
+  separate fixes worth scoping: (a) whether a short slot overlapping a meal window should
+  still get a capped-duration meal proposal instead of being silently treated as generic
+  activity time (a threshold/product decision, not just a bug), and (b) regardless of (a),
+  `openRefineSearch`/`RefineSearchCard` should seed `Time`/`Duration`/`mealWindow` from the
+  originating proposal's own `startTime`/`durationMinutes`/`type` rather than hardcoded
+  defaults, so the form always reflects the slot the user actually tapped from.
 
 ## [0.0.38] - 2026-09-02
 ### Fixed
