@@ -24,13 +24,19 @@ Pulled via direct API call against the real Paris trip, not hypothetical:
 20:00-21:00  Claude Office Hours                 loc: (Zoom link)
 ```
 
-This is a textbook TripIt/Google-Calendar-auto-detected travel day: a `Travel time to X`
-event, a `Flight: ORIGIN (flight#) to DEST Confirmation CODE` event, and a matching
-`Travel time from X` event, always adjacent and sharing the same airport-code location. The
-`Stay:` pattern the same auto-detection produces for hotel bookings isn't present in this
-particular trip's data, but it's the same family (see below) — designed for, not guessed from
-nothing: it's the same well-known calendar-auto-add convention these `Flight:`/`Travel time`
-entries already come from.
+**Update, per the product owner:** this exact phrasing (`Travel time to X airport`,
+`Flight: ORIGIN (flight#) to DEST Confirmation CODE`) isn't a generic convention — it's
+specifically what Navan (corporate travel booking, formerly TripActions) auto-writes into a
+synced calendar for this user. That changes the design: a booking platform's calendar-text
+format is that vendor's own implementation detail, not a stable standard, and different
+platforms (TripIt, Concur, Egencia, an airline's own confirmation email, Google's native
+flight detection) all phrase the same information differently and can each change their own
+format independently, without warning. Baking one loose regex that tries to catch all of
+them at once means every vendor's quirks fight each other in the same pattern, and a format
+change from any one of them risks silently breaking detection for the others too. See the
+revised Part A below — this is now a two-tier design (a Navan-specific matcher, kept
+separate and versioned on its own, plus a looser generic fallback) rather than one shared
+regex family.
 
 The dinner insight: `Save The Date - Pot de depart Nico` has a real street address
 (`34 Rue Laffitte, 75009 Paris`) and sits in the dinner window — that combination (real venue
@@ -52,43 +58,103 @@ the timeline UI (Part C) render it without re-deriving the same regex match on e
 
 ```ts
 type TravelSignal =
-  | { kind: 'flight'; airline?: string; flightNumber?: string; from?: string; to?: string; confirmation?: string }
-  | { kind: 'ground-transit'; direction: 'to' | 'from'; place?: string }   // "Travel time to/from X"
-  | { kind: 'lodging'; place?: string }                                    // "Stay: X" / hotel keywords
-  | { kind: 'dining'; confidence: 'high' | 'medium' };                     // see heuristic below
+  | { kind: 'flight'; airline?: string; flightNumber?: string; from?: string; to?: string; confirmation?: string; source: SignalSource }
+  | { kind: 'ground-transit'; direction: 'to' | 'from'; place?: string; source: SignalSource }
+  | { kind: 'lodging'; place?: string; source: SignalSource }
+  | { kind: 'dining'; confidence: 'high' | 'medium'; source: SignalSource };
+
+// Which matcher produced this classification — kept on the result (not just internal) so a
+// future format change is traceable ("Navan events stopped classifying" is a much faster bug
+// report to act on than "some flights stopped classifying").
+type SignalSource = 'navan' | 'generic';
 ```
 
-Pattern rules, each tried in order (first match wins — a `Flight:` title should never also
-match the dining heuristic just because it happens to sit in a meal window during a long
-layover, for instance):
+### Two-tier matching, not one shared regex family
 
-1. **Flight** — `/^Flight:\s*(\w+)\s*\(([\w\d]+)\)\s*to\s*(\w+)/i` against the title, with a
-   trailing `Confirmation\s+(\S+)` capture if present. Matches the real example
-   (`Flight: TLS (TO7103) to ORY Confirmation O7Z5VR`) and the looser variants the same
-   auto-add convention produces (not every airline confirmation formats identically — the
-   regex should degrade gracefully to "it's a flight, direction unknown" rather than fail
-   closed when the exact sub-pattern doesn't match, since even a partial parse is more useful
-   than falling through to generic "busy").
-2. **Ground transit** — `/^Travel\s+time\s+(to|from)\s+(.+)/i` (tolerant of the double-space
-   typo already seen in real data — `Travel time  from ORY airport`). Direction and place both
-   captured for Part C's grouping logic.
-3. **Lodging** — `/^Stay:\s*(.+)/i` on the title, or (looser, since not every calendar tool
-   uses that literal prefix) `/\b(hotel|check-in|check-out|resort|airbnb)\b/i` against title
-   *or* location. Not present in this trip's sample data, but same family as the flight
-   pattern and worth having from day one rather than bolting on later.
-4. **Dining (the new insight)** — not a title-keyword match at all, deliberately, since that's
-   fragile across languages and phrasing. Instead: the event's own time window overlaps
-   `isMealWindow` (`lib/place-matching.ts`, already the single source of truth for what counts
-   as a meal-time instant) **and** `location` is non-empty and doesn't look like a URL/video-
-   call link (`/^https?:\/\//i` or a known video-call domain) or a bare generic phrase — i.e.,
-   it reads like a real place (has a comma-separated address shape, or at minimum isn't just a
-   Zoom/Meet URL). `confidence: 'high'` when the location has a street-number-shaped address
-   component; `'medium'` when it's just a named place with no street address (covers `Local
-   Marignac-Laspeyres Bistro` in the sample data — a real place, just less certain than a full
-   address).
+The `Travel time to X` / `Flight: ORIGIN (flight#) to DEST Confirmation CODE` phrasing in the
+real sample data is Navan's own auto-generated calendar text, not a universal convention —
+TripIt, Concur, Egencia, a bare airline confirmation email, and Google's native flight
+detection all phrase the same information differently, and each can change its own format
+independently, without warning, since it's every vendor's own implementation detail, not a
+standard. So `classifyImportedEvent` is a small ordered pipeline, not one regex per signal
+kind:
+
+```ts
+const PROVIDER_MATCHERS: Array<(e: CalendarEvent) => TravelSignal | null> = [
+  matchNavan,       // tight patterns, tuned exactly to Navan's known format
+  // future: matchConcur, matchTripIt, ... — append here, generic fallback untouched
+];
+
+function classifyImportedEvent(event: CalendarEvent): TravelSignal | null {
+  for (const matcher of PROVIDER_MATCHERS) {
+    const result = matcher(event);
+    if (result) return result;
+  }
+  return matchGeneric(event);
+}
+```
+
+Why split it this way rather than one looser pattern that happens to also catch Navan's
+output: a provider-specific matcher can be *tight* (safely assume Navan's exact punctuation
+and field order, since it's a known fixed format from one vendor's software, not free text),
+which means higher-confidence parses and room to extract more than the generic fallback ever
+safely could — the generic path has to stay loose specifically because it doesn't know who
+produced the text, so it should never assume a rigid shape. This is the same tiered-fallback
+shape this codebase already uses elsewhere (`lib/places-population.ts`: curated data → live
+Google results → synthetic filler, most-precise-first) — same principle, applied to signal
+detection instead of place data. It also isolates the maintenance risk: if Navan changes its
+export format, only `matchNavan`'s own tests (built from real Navan sample text, like the
+data already pulled from this trip) need updating — the generic fallback, and whatever other
+provider matchers exist by then, are untouched and keep working for everyone else's calendars.
+
+**`matchNavan`** — tight patterns against Navan's known format:
+
+- Flight: `/^Flight:\s*(\w+)\s*\(([\w\d]+)\)\s*to\s*(\w+)\s*Confirmation\s+(\S+)/i` against the
+  title. Matches the real example exactly
+  (`Flight: TLS (TO7103) to ORY Confirmation O7Z5VR`) — origin, flight number, destination,
+  and confirmation code all captured, since Navan's field order/punctuation here is known and
+  fixed, not guessed at.
+- Ground transit: `/^Travel\s+time\s+(to|from)\s+(.+)/i` (tolerant of the double-space typo
+  already seen in real data — `Travel time  from ORY airport`) — this exact "Travel time
+  to/from X" phrasing is itself part of Navan's convention, not a generic one.
+- Lodging: Navan's equivalent `Stay:`-prefixed hotel-booking text (not present in this trip's
+  sample data, but the same family/vendor — worth a matcher from day one rather than bolting
+  on later once a trip with a booked hotel actually surfaces the real format to test against).
+
+**`matchGeneric`** — deliberately looser, for anything `matchNavan` (or a future
+provider-specific matcher) doesn't claim:
+
+1. **Flight-shaped, loosely** — something like a bare airline-code + flight-number pattern
+   (`/\b([A-Z]{2})\s?(\d{2,4})\b/` near a "flight"/"vol"/"flug" keyword, language contexts
+   vary) plus a directional "to"/"→" between two things that look like airport codes or city
+   names. Lower confidence than the Navan match, degrades gracefully to "it's a flight,
+   details uncertain" rather than failing closed — even a partial parse beats falling through
+   to generic "busy" for a TripIt- or airline-email-sourced flight event.
+2. **Lodging keywords** — `/\b(hotel|check-in|check-out|resort|airbnb)\b/i` against title or
+   location, since not every source uses a `Stay:` prefix at all.
+3. **Dining (the new insight, and deliberately provider-agnostic)** — not a title-keyword
+   match at all, from either tier, since that's fragile across languages and phrasing.
+   Instead: the event's own time window overlaps `isMealWindow` (`lib/place-matching.ts`,
+   already the single source of truth for what counts as a meal-time instant) **and**
+   `location` is non-empty and doesn't look like a URL/video-call link (`/^https?:\/\//i` or a
+   known video-call domain) — i.e., it reads like a real place (a comma-separated address
+   shape, or at minimum not just a Zoom/Meet URL). `confidence: 'high'` when the location has
+   a street-number-shaped address component; `'medium'` when it's just a named place with no
+   street address (covers `Local Marignac-Laspeyres Bistro` in the sample data). This rule
+   stays in the generic tier permanently, even after a Navan-specific matcher exists — a
+   calendar invite to a real restaurant isn't something any booking platform generates, Navan
+   included, so there's no vendor-specific version of this one to write.
 
 Everything else — `PSA - FCTO Dashboard update`, `Kick-Off PG & Semaine`, `RSET Meeting`,
-`Claude Office Hours` — classifies as `null` (plain busy time), exactly as today.
+`Claude Office Hours` — classifies as `null` (plain busy time) from both tiers, exactly as
+today.
+
+### Testing implication
+
+Each provider matcher gets its own fixture file built from that vendor's real sample text —
+`matchNavan`'s fixtures are literally the event titles already pulled from this trip. A future
+Navan format change shows up as that matcher's own tests failing, not a silent misclassification
+discovered days later in production, and doesn't touch `matchGeneric`'s coverage at all.
 
 ## Part B — Feeding classification into the actual scheduling algorithm
 
@@ -160,3 +226,7 @@ invented):
   `Trip.baseLocations` (`source: 'hotel'`) — auto-filling vs. cross-checking vs. just
   displaying alongside — is a product decision this doc deliberately leaves open rather than
   guessing.
+- Only `matchNavan` is scoped here, since it's the only provider with real sample data to
+  design against. Other provider matchers (TripIt, Concur, Egencia, ...) are a "when a trip
+  with that data shows up" problem, not something to build blind ahead of real sample text —
+  the whole point of the two-tier split is that adding one later doesn't touch anything above.
