@@ -5,6 +5,8 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 this is still pre-release/beta.
 
 ## [Unreleased]
+
+## [0.0.39] - 2026-09-03
 ### Added
 - **Onboarding's vibe picker now reaches cuisine-level taste for 6 of the 8 vibes.**
   `buildVibeTree()` (`lib/onboarding-taste.ts`) appends real `PreferenceCategoryGroup`
