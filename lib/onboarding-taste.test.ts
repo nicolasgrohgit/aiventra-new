@@ -59,21 +59,20 @@ describe('TASTE_DOMAINS registry', () => {
 describe('buildVibeTree', () => {
   const tree = buildVibeTree();
 
-  test('produces one top-level node per vibe, each with a child per tag', () => {
+  test('produces one top-level node per vibe', () => {
     assert.equal(tree.length, VIBE_PRESETS.length);
-    tree.forEach((node, i) => {
-      assert.equal(node.key, VIBE_PRESETS[i].key);
-      assert.equal(node.children?.length, VIBE_PRESETS[i].tags.length);
-      assert.deepEqual(node.children?.map(c => c.tags[0]), VIBE_PRESETS[i].tags);
-    });
+    tree.forEach((node, i) => assert.equal(node.key, VIBE_PRESETS[i].key));
   });
 
-  test('leaf children have no further children', () => {
-    for (const node of tree) {
-      for (const child of node.children ?? []) {
-        assert.equal(child.children, undefined);
-      }
-    }
+  test('every vibe tag is represented by a leaf child at the front of the list, in order', () => {
+    // The flat leaves always come first and are never reordered/removed by the category-node
+    // augmentation below — this is the "still fast for the 1-tap path" guarantee.
+    tree.forEach((node, i) => {
+      const vibeTags = VIBE_PRESETS[i].tags;
+      const flatLeaves = node.children?.slice(0, vibeTags.length) ?? [];
+      assert.deepEqual(flatLeaves.map(c => c.tags[0]), vibeTags);
+      for (const leaf of flatLeaves) assert.equal(leaf.children, undefined);
+    });
   });
 
   test('nodeAtPath resolves a two-level path and returns null for a bad one', () => {
@@ -83,6 +82,61 @@ describe('buildVibeTree', () => {
     assert.equal(nodeAtPath(tree, ['not-a-vibe']), null);
     assert.equal(nodeAtPath(tree, []), null);
     assert.equal(nodeAtPath(tree, ['foodie']), foodie);
+  });
+});
+
+describe('buildVibeTree category-level drill-down augmentation (Part 1 of the taxonomy doc)', () => {
+  const tree = buildVibeTree();
+
+  test('foodie keeps its 4 existing occasion leaves AND gains Asian/European/Americas category nodes', () => {
+    const foodie = tree.find(n => n.key === 'foodie')!;
+    assert.deepEqual(
+      foodie.children!.slice(0, 4).map(c => c.label),
+      ['Street Food', 'Cafes', 'Local Markets', 'Festivals']
+    );
+    const categoryChildren = foodie.children!.filter(c => !!c.children);
+    assert.deepEqual(categoryChildren.map(c => c.label).sort(), ['Americas', 'Asian', 'European']);
+  });
+
+  test('a category node (e.g. Asian) bulk-selects its whole cuisine group in one tap, like any other parent', () => {
+    const foodie = tree.find(n => n.key === 'foodie')!;
+    const asian = foodie.children!.find(c => c.label === 'Asian')!;
+    assert.deepEqual(asian.tags.sort(), ['Chinese', 'Japanese', 'Thai']);
+    const { selectedTags, engagedKeys } = tapNode(asian, [], []);
+    assert.deepEqual(selectedTags.sort(), ['Chinese', 'Japanese', 'Thai']);
+    assert.deepEqual(engagedKeys, [asian.key]);
+    assert.equal(isNodeActive(asian, selectedTags, engagedKeys), true);
+  });
+
+  test('drilling once more into an engaged Asian exposes Japanese/Chinese/Thai as individually toggleable leaves', () => {
+    const foodie = tree.find(n => n.key === 'foodie')!;
+    const asian = foodie.children!.find(c => c.label === 'Asian')!;
+    const selected = [...asian.tags];
+    const engaged = [asian.key];
+    assert.equal(shouldDrillIn(asian, selected, engaged), true);
+    const japanese = asian.children!.find(c => c.label === 'Japanese')!;
+    assert.equal(japanese.children, undefined);
+    const next = tapNode(japanese, selected, engaged);
+    assert.deepEqual(next.selectedTags.sort(), ['Chinese', 'Thai']);
+  });
+
+  test('vibes without a clean category-group match keep a purely flat child list', () => {
+    for (const key of ['nightlife', 'chill', 'shopping']) {
+      const node = tree.find(n => n.key === key)!;
+      assert.ok(node.children!.every(c => c.children === undefined), `${key} should have no category-node children`);
+    }
+  });
+
+  test('every category node wraps a real *_CATEGORIZED group with real leaf tags', () => {
+    for (const node of tree) {
+      for (const child of node.children ?? []) {
+        if (!child.children) continue;
+        assert.ok(child.tags.length > 0);
+        for (const leaf of child.children) {
+          assert.ok(ALL_TAXONOMY_TAGS.has(leaf.tags[0]), `${node.key} -> ${child.label} -> ${leaf.label} is not a real taxonomy tag`);
+        }
+      }
+    }
   });
 });
 
@@ -125,9 +179,13 @@ describe('tap/drill-down state machine (generic, depth-agnostic)', () => {
 
   test('pruning an engaged parent down to zero of its tags drops it back to inactive', () => {
     // Simulate the user drilling into Foodie and toggling off every sub-tag one at a time.
+    // Only the flat leaves represent foodie.tags directly — the category nodes (Asian/etc.)
+    // are additional children that don't seed any of foodie.tags, so looping over them too
+    // would bulk-*add* cuisine tags instead of pruning, which isn't what this test simulates.
     let selectedTags: string[] = [...foodie.tags];
     let engagedKeys: string[] = ['foodie'];
-    for (const child of foodie.children!) {
+    const flatLeaves = foodie.children!.slice(0, foodie.tags.length);
+    for (const child of flatLeaves) {
       ({ selectedTags, engagedKeys } = tapNode(child, selectedTags, engagedKeys));
     }
     assert.deepEqual(selectedTags, []);

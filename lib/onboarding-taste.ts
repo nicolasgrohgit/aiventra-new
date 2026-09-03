@@ -3,7 +3,10 @@
 // so the drill-down state machine and tag merge/split logic are unit-testable without
 // mounting any component — see lib/onboarding-taste.test.ts.
 
-import { TASTE_DOMAINS, VIBE_PRESETS, TasteDomain } from '@/constants/preferences';
+import {
+  TASTE_DOMAINS, VIBE_PRESETS, TasteDomain,
+  PreferenceCategoryGroup, FOOD_GENRES_CATEGORIZED, ACTIVITY_GENRES_CATEGORIZED, EVENT_GENRES_CATEGORIZED,
+} from '@/constants/preferences';
 
 // --- Generic circle-cluster tree -------------------------------------------------------
 //
@@ -25,24 +28,110 @@ export interface CircleNode {
   children?: CircleNode[];
 }
 
+// --- Category-level drill-down augmentation (Part 1 of docs/taxonomy-and-social-notifications-plan.md) --
+//
+// VIBE_PRESETS' flat tag lists are broad, hand-curated bundles by design (see that file's own
+// comment) — they deliberately don't reach cuisine-level (Japanese vs. Chinese) or other
+// fine-grained leaves within a *_CATEGORIZED group. That's fine for the fast "just tap Foodie
+// and move on" path, but leaves no way for someone who *does* want to specify something finer
+// to do so from the vibe picker at all (reported live: tapping Foodie never surfaces a single
+// real cuisine tag). The table below appends real PreferenceCategoryGroup nodes as *additional*
+// children on specific vibes — it never removes or replaces any of a vibe's existing flat
+// leaves, only adds a further drill-in option alongside them, so the 1-tap "select the whole
+// vibe" path is completely unaffected and the new depth is purely opt-in.
+//
+// Each group listed here is thematically core to that vibe's persona AND not already
+// substantially reachable through the vibe's own flat tags (at most one incidental tag overlap
+// tolerated — the same "a real tag can legitimately signal more than one persona" reuse
+// philosophy VIBE_PRESETS' own comments already apply to cross-vibe tag sharing, e.g. `Scenic
+// Drives` appearing in 3 vibes). A group already 2-3/3 covered by a vibe's flat tags is
+// deliberately left alone: wrapping tags the vibe already exposes directly as top-level leaves
+// would just add a redundant extra tap to reach the exact same tags, not new depth. Only 5 of
+// the 8 vibes clear that bar — Nightlife & Live Music (`Live Music` is already 3/3 flat),
+// Chill & Relax (`Relaxation` is already 3/3 flat) and Shopping & Markets (no group is both
+// thematically tight and meaningfully under-covered) don't get a category node and keep
+// today's pure-flat structure, per the task's explicit "skip where it doesn't cleanly cluster."
+const VIBE_CATEGORY_LINKS: Record<string, PreferenceCategoryGroup[]> = {
+  // The doc's own worked example: Foodie's flat tags (Street Food/Cafes/Local Markets/
+  // Festivals) touch zero real cuisine leaves. Cuisine is the obvious "go one level deeper"
+  // axis for a food vibe, so all three cuisine groups are added (Dining Style/Specialty are
+  // deliberately left out — Street Food/Cafes already represent them at the top level).
+  foodie: [
+    findGroup(FOOD_GENRES_CATEGORIZED, 'Asian'),
+    findGroup(FOOD_GENRES_CATEGORIZED, 'European'),
+    findGroup(FOOD_GENRES_CATEGORIZED, 'Americas'),
+  ],
+  // Culture's own name is this activity category's name; only `Galleries` overlaps today —
+  // Workshops/Local Markets are net-new, museum-adjacent ways to engage with a city's culture.
+  culture: [findGroup(ACTIVITY_GENRES_CATEGORIZED, 'Arts & Culture')],
+  // Outdoor & Nature is already 3/3 covered by Outdoors' own flat tags (Hiking/Cycling/Water
+  // Sports), so wrapping it adds nothing. Tours & Excursions is zero-overlap and a natural
+  // "how do you want to explore" axis (walking/boat/bus tours) for an outdoors-minded vibe.
+  outdoors: [findGroup(ACTIVITY_GENRES_CATEGORIZED, 'Tours & Excursions')],
+  // Performing Arts is already 3/3 covered (Theater/Ballet/Opera). Entertainment is zero-
+  // overlap and a natural "arts, but lighter" axis (comedy/cinema/magic) for the same persona.
+  arts: [findGroup(EVENT_GENRES_CATEGORIZED, 'Entertainment')],
+  // Attractions & Sights is already 2/3 covered (Viewpoints/Monuments) so it's excluded per the
+  // already-covered rule above. Tours & Excursions has one incidental overlap (Boat Cruises,
+  // already a Scenic flat tag — the tolerated single-tag case) and fits "sightseeing via a
+  // guided tour" well for a scenic/viewing-focused vibe.
+  scenic: [findGroup(ACTIVITY_GENRES_CATEGORIZED, 'Tours & Excursions')],
+};
+
+function findGroup(groups: PreferenceCategoryGroup[], type: string): PreferenceCategoryGroup {
+  const group = groups.find(g => g.type === type);
+  if (!group) throw new Error(`onboarding-taste: unknown category group "${type}"`);
+  return group;
+}
+
+// Wraps one real PreferenceCategoryGroup as a CircleNode: the category itself is a parent node
+// (tags = every leaf it covers, for one-tap bulk-select, matching every other parent node's
+// behavior) whose children are that group's own leaves, individually toggleable one drill-in
+// deeper — e.g. Foodie -> Asian -> Japanese/Chinese/Thai.
+function buildCategoryNode(vibeKey: string, color: string, group: PreferenceCategoryGroup): CircleNode {
+  return {
+    key: `${vibeKey}:cat:${group.type}`,
+    label: group.type,
+    emoji: '',
+    color,
+    tags: [...group.activities],
+    children: group.activities.map(tag => ({
+      key: `${vibeKey}:cat:${group.type}:${tag}`,
+      label: tag,
+      emoji: '',
+      color,
+      tags: [tag],
+    })),
+  };
+}
+
 // Builds the top-level circle-cluster tree from VIBE_PRESETS. Each vibe's sub-circles are
-// derived mechanically from its own `tags` list (one leaf CircleNode per tag) rather than
-// being hand-declared per vibe, so adding a 9th vibe to VIBE_PRESETS needs no changes here.
+// derived mechanically from its own `tags` list (one leaf CircleNode per tag, in order) plus,
+// for the vibes named in VIBE_CATEGORY_LINKS above, one or more appended category nodes that
+// drill one level deeper into a real *_CATEGORIZED group — so adding a 9th vibe (or a 9th
+// category link) to either table needs no changes here. The flat leaves always come first and
+// are never reordered/removed, so any code relying on "the first N children mirror vibe.tags
+// in order" (see lib/onboarding-taste.test.ts) still holds regardless of what's appended after.
 export function buildVibeTree(): CircleNode[] {
-  return VIBE_PRESETS.map(vibe => ({
-    key: vibe.key,
-    label: vibe.label,
-    emoji: vibe.emoji,
-    color: vibe.color,
-    tags: vibe.tags,
-    children: vibe.tags.map(tag => ({
+  return VIBE_PRESETS.map(vibe => {
+    const flatLeaves: CircleNode[] = vibe.tags.map(tag => ({
       key: `${vibe.key}:${tag}`,
       label: tag,
       emoji: '',
       color: vibe.color,
       tags: [tag],
-    })),
-  }));
+    }));
+    const categoryNodes = (VIBE_CATEGORY_LINKS[vibe.key] ?? [])
+      .map(group => buildCategoryNode(vibe.key, vibe.color, group));
+    return {
+      key: vibe.key,
+      label: vibe.label,
+      emoji: vibe.emoji,
+      color: vibe.color,
+      tags: vibe.tags,
+      children: [...flatLeaves, ...categoryNodes],
+    };
+  });
 }
 
 // Tags are a flat, deliberately un-namespaced pool (per the task's own framing — the vibe
