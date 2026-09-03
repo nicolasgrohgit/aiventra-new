@@ -15,7 +15,7 @@ import { searchHotelLocation, HotelLocationResult } from '@/lib/hotel-geocoding'
 import { CircleShareSelector } from '@/components/ui/circle-share-selector';
 import { FOOD_GENRES_CATEGORIZED, ACTIVITY_GENRES_CATEGORIZED, EVENT_GENRES_CATEGORIZED } from '@/constants/preferences';
 import { buildMapsUrl } from '@/lib/maps-link';
-import { TripEvent, TripBaseLocation, TripMock, formatDistanceLabel, placePhotoUri } from '@/lib/trip-types';
+import { TripEvent, InvitedTripEvent, TripBaseLocation, TripMock, formatDistanceLabel, placePhotoUri } from '@/lib/trip-types';
 import { PlaceCard } from '@/components/trips/place-card';
 import { RefineSearchCard } from '@/components/trips/refine-search-card';
 import { ContactPicker } from '@/components/trips/contact-picker';
@@ -190,7 +190,7 @@ export default function TripsScreen() {
   // events are fetched separately and kept in local screen state — same pattern the Home
   // tab already uses for its own calendar/weather data.
   const [eventsByTrip, setEventsByTrip] = useState<Record<string, TripEvent[]>>({});
-  const [invitedEvents, setInvitedEvents] = useState<TripEvent[]>([]);
+  const [invitedEvents, setInvitedEvents] = useState<InvitedTripEvent[]>([]);
   const [showInvitedModal, setShowInvitedModal] = useState(false);
 
   // "Propose an event" — pick a slot, then either keep it as Me-Time (solo — the default,
@@ -1304,6 +1304,18 @@ export default function TripsScreen() {
                       {new Date(event.start_time).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                     </Text>
                     {event.place_name && <Text style={styles.eventSelectTime}>{event.place_name}</Text>}
+                    {event.created_by?.full_name && (
+                      <View style={styles.invitedByRow}>
+                        {event.created_by.avatar_url ? (
+                          <Image source={{ uri: event.created_by.avatar_url }} style={styles.invitedByAvatar} />
+                        ) : (
+                          <View style={styles.invitedByAvatarPlaceholder}>
+                            <Text style={styles.invitedByAvatarText}>{event.created_by.full_name.charAt(0)}</Text>
+                          </View>
+                        )}
+                        <Text style={styles.invitedByText}>Invited by {event.created_by.full_name}</Text>
+                      </View>
+                    )}
                     {myStatus === 'pending' ? (
                       <View style={{ flexDirection: 'row', gap: 12, marginTop: 16 }}>
                         <TouchableOpacity style={[styles.submitBtn, { flex: 1, backgroundColor: '#10B981' }]} onPress={() => handleRespond(event._id, 'accepted')}>
@@ -1868,6 +1880,12 @@ const styles = StyleSheet.create({
 
   friendConfigCard: { backgroundColor: '#1E293B', borderRadius: 20, padding: 20, marginBottom: 16, borderWidth: 1, borderColor: '#334155' },
   friendConfigName: { color: '#F8FAFC', fontSize: 18, fontWeight: '700', marginBottom: 8 },
+
+  invitedByRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8, gap: 8 },
+  invitedByAvatar: { width: 22, height: 22, borderRadius: 11 },
+  invitedByAvatarPlaceholder: { width: 22, height: 22, borderRadius: 11, backgroundColor: '#3B82F6', justifyContent: 'center', alignItems: 'center' },
+  invitedByAvatarText: { color: '#FFFFFF', fontSize: 11, fontWeight: '700' },
+  invitedByText: { color: '#94A3B8', fontSize: 13 },
 
   // eventSelectRow/checkboxNative/eventSelectName (+ Active variants) removed — those lived
   // only inside the extracted ContactPicker component (components/trips/contact-picker.tsx),

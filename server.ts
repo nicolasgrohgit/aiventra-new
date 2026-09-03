@@ -18,7 +18,7 @@ import { getOrCreateUserDataKey, getUserDataKeyIfExists } from './lib/user-data-
 import User from './models/User';
 import Trip from './models/Trip';
 import Contact from './models/Contact';
-import Event from './models/Event';
+import Event, { PopulatedEventCreator } from './models/Event';
 import FriendRequest from './models/FriendRequest';
 import Place from './models/Place';
 import { ensurePlacesForCity, refreshNearbyPlacesLive } from './lib/places-population';
@@ -546,15 +546,23 @@ function decryptField(value: string | undefined, key: Buffer | null): string | u
 // created by a different user (e.g. GET /api/events/invited spans many organizers) — fetching
 // each unique creator's data key at most once. Returns plain objects, not Mongoose documents,
 // since the encrypted fields are being rewritten with their decrypted values.
+// created_by is normally a bare ObjectId, but GET /api/events/invited populates it (to
+// return the organizer's name/avatar alongside each event) — in that case it's a
+// sub-document with its own _id instead. Handle both shapes so this stays the one shared
+// decrypt path for every route above rather than forking per-route.
+function creatorIdOf(createdBy: any): string {
+  return (createdBy && createdBy._id ? createdBy._id : createdBy).toString();
+}
+
 async function decryptEvents(events: any[]): Promise<any[]> {
-  const uniqueCreatorIds = Array.from(new Set(events.map(e => e.created_by.toString())));
+  const uniqueCreatorIds = Array.from(new Set(events.map(e => creatorIdOf(e.created_by))));
   const keysByCreator = new Map<string, Buffer | null>();
   for (const id of uniqueCreatorIds) {
     keysByCreator.set(id, await getUserDataKeyIfExists(id));
   }
   return events.map(e => {
     const obj = e.toObject ? e.toObject() : e;
-    const key = keysByCreator.get(obj.created_by.toString()) ?? null;
+    const key = keysByCreator.get(creatorIdOf(obj.created_by)) ?? null;
     return {
       ...obj,
       title: decryptField(obj.title, key),
@@ -570,7 +578,9 @@ async function decryptEvents(events: any[]): Promise<any[]> {
 // query instead of a full scan.
 app.get('/api/events/invited', authenticate, async (req: AuthedRequest, res: express.Response) => {
   try {
-    const events = await Event.find({ 'participants.user_id': req.userId }).sort({ start_time: 1 });
+    const events = await Event.find({ 'participants.user_id': req.userId })
+      .sort({ start_time: 1 })
+      .populate<{ created_by: PopulatedEventCreator }>('created_by', 'full_name avatar_url');
     res.json(await decryptEvents(events));
   } catch (error: any) {
     reportError(error, req, 'list invited events failed');

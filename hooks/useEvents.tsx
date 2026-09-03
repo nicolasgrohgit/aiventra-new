@@ -1,5 +1,6 @@
 import React, { createContext, useContext, ReactNode } from 'react';
 import { apiFetch, API_URL } from '@/lib/api-client';
+import { InvitedTripEvent } from '@/lib/trip-types';
 
 // Step 4 of the useAuth.tsx split (see docs/useauth-split-plan.md): events, next most
 // self-contained after contacts — all thin fetch wrappers, no local state, no dependency on
@@ -16,7 +17,9 @@ interface EventsContextType {
   // events aren't cached/offline-synced like trips and contacts are, they're simple,
   // foreground, user-initiated actions.
   fetchTripEvents: (tripId: string) => Promise<any[]>;
-  fetchInvitedEvents: () => Promise<any[]>;
+  // created_by comes back populated (organizer full_name/avatar_url) — see
+  // GET /api/events/invited in server.ts.
+  fetchInvitedEvents: () => Promise<InvitedTripEvent[]>;
   createEvent: (tripId: string, payload: any) => Promise<any>;
   // Opportunistic device-calendar sync — swallows errors to [] rather than throwing, same
   // reasoning as getFriendsNearby: a background nicety, not a blocking action, shouldn't
@@ -80,7 +83,7 @@ export const EventsProvider = ({ children }: { children: ReactNode }) => {
     return res.json();
   };
 
-  const fetchInvitedEvents = async () => {
+  const fetchInvitedEvents = async (): Promise<InvitedTripEvent[]> => {
     const res = await apiFetch(`${API_URL}/api/events/invited`);
     if (!res.ok) throw new Error('Failed to load invited events');
     return res.json();

@@ -3,8 +3,11 @@ import React from 'react';
 
 import { HapticTab } from '@/components/haptic-tab';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { useFriendRequests } from '@/hooks/useFriendRequests';
 
 export default function TabLayout() {
+  const { incomingRequestCount } = useFriendRequests();
+
   return (
     <Tabs
       screenOptions={{
@@ -38,6 +41,7 @@ export default function TabLayout() {
         options={{
           title: 'Circles',
           tabBarIcon: ({ color }) => <IconSymbol size={28} name="building.columns.fill" color={color} />,
+          tabBarBadge: incomingRequestCount > 0 ? incomingRequestCount : undefined,
         }}
       />
       <Tabs.Screen
