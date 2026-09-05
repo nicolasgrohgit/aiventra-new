@@ -74,6 +74,21 @@ this is still pre-release/beta.
   product) and sending transactional mail from `server.ts` (a SendGrid/Mailgun/SES-style relay).
   Directly blocks the RFE/suggestion-form feature below from actually delivering mail. Full
   detail added to `docs/gcp-migration.md`'s local-only-needs-replacement table.
+- **Proposal: a "Have a suggestion for Odys.ai?" link on Profile**, opening a form with the
+  user's name auto-filled (read-only, from `user?.full_name` — `models/User.ts:6`), a
+  1500-character text box with a live remaining-character counter, and Send/Back buttons.
+  Investigated, not built — full design in `docs/rfe-suggestion-form-plan.md`. Proposed slot:
+  a new card between the existing "About" card and "Save Changes" in
+  `app/(tabs)/profile.tsx:348-363`, as a new `components/profile/suggestion-form-modal.tsx`
+  following the exact `VersionHistoryModal` extraction pattern. Confirmed no `multiline`/
+  `maxLength` `TextInput` usage exists anywhere in `app/`/`components/` today — this is a
+  net-new input pattern for the app. Blocked on the email-server-on-GCP item directly above for
+  actually delivering mail to `admin@odys.ai`; proposed workaround follows this codebase's own
+  "build it, no-op until configured" precedent (`lib/google-places-client.ts`, `SENTRY_DSN`):
+  persist every submission immediately to a new `models/Suggestion.ts` via a new
+  `authenticate`-gated `POST /api/suggestions`, with a `lib/mailer.ts` wrapper that safely no-ops
+  until a real mail relay exists, so the feature isn't fully blocked on that infra landing first.
+  Not built here.
 
 ## [0.0.39] - 2026-09-03
 ### Added
