@@ -41,6 +41,29 @@ this is still pre-release/beta.
   circle tab (not "All") is active — less critical there since the tab itself already implies
   one circle, but still loses visibility into a multi-tagged contact's *other* circles. **Slated
   for the next sprint** — not built here yet.
+- **Proposal: auto-discover a trip from flight/lodging calendar signals and bubble it up for
+  the user to acknowledge**, instead of requiring a manual "create trip" for a trip the synced
+  calendar already fully describes. Investigated, not built — full design in
+  `docs/auto-trip-discovery-plan.md`. Confirmed every calendar-reading path today is reactive,
+  scoped to a date range the user already told the app about (`getDeviceEventsForDateRange`,
+  `lib/calendar.ts`, deliberately never prompts and is only ever called per-existing-Trip from
+  `syncDeviceCalendarForTrip` in `app/(tabs)/trips.tsx:290-306`) — nothing scans ahead for an
+  untriaged signal with no matching Trip yet. Proposed: a new proactive scan
+  (`scanForUpcomingTripSignals`, `lib/calendar.ts`) run on app foreground, reusing
+  `classifyImportedEvent` (`lib/calendar-signals.ts`) against each event, then a new pure
+  inference step resolving destination (needs a new small static IATA-code→city table — neither
+  `lib/geocoding.ts` nor `lib/hotel-geocoding.ts` resolve airport codes today) and trip start/end
+  from an arrival flight + return flight pair, or directly from a lodging signal's own event
+  time range when present. Surfaced as a new opt-in Home-tab card (extending the existing
+  `connectCalendarCard` pattern in `app/(tabs)/index.tsx`) that prefills `trips.tsx`'s real
+  create-trip state (`newDestination`/`newDestinationCoords`/`newHotelSelected`) rather than
+  handing over a blank form. Dismissal needs a new client-only AsyncStorage key
+  (`@dismissedTripSuggestions`) keyed by the anchoring `CalendarEvent.id`, since the existing
+  `Trip.dismissedSlots` pattern is server-persisted per-*existing*-trip and doesn't fit a
+  suggestion for a trip that doesn't exist yet. Explicitly calls out the permission trade-off
+  (a broad, earlier, opt-in calendar-access ask vs. today's silent/scoped reads) and flags
+  multi-city itineraries and true OS-level background scanning as unsolved/out of scope. Not
+  built here. Mockup: https://claude.ai/code/artifact/bc001545-a8d9-4415-a575-2c3c14ed5761
 
 ## [0.0.39] - 2026-09-03
 ### Added
