@@ -6,6 +6,22 @@ this is still pre-release/beta.
 
 ## [Unreleased]
 ### Roadmap noted
+- **Profile's "‹ Back to circle view" button sits too close to the status bar.** Reported live
+  from a real device screenshot (the "Dining Contexts" categorized-selection modal, new this
+  sprint). Confirmed in `components/profile/categorized-selection-modal.tsx:159-161`: the
+  modal uses a hardcoded `paddingTop: Platform.OS === 'ios' ? 40 : 24` rather than the device's
+  actual safe-area/status-bar inset, so on a device whose real status bar is taller than that
+  fixed guess, the back button renders flush against (or overlapping) it. This app has hit and
+  fixed this exact class of bug before — CHANGELOG 0.0.31/0.0.32 both fixed a modal
+  "Cancel"/header sitting too close to the status bar in `trips.tsx`/`social.tsx` by bumping
+  their hardcoded `paddingTop` values higher, the same pattern this file already uses, just
+  with a value that isn't tall enough here. Two ways to fix, not resolved here: (a) bump this
+  file's `paddingTop` higher, matching the existing precedent exactly; or (b) switch to
+  `useSafeAreaInsets()` (`react-native-safe-area-context`, already a dependency) so the padding
+  adapts to the actual device inset instead of a hardcoded guess, fixing this class of bug for
+  good rather than needing another manual bump the next time a taller status bar shows up. Not
+  built here — small, low-risk, verification-limited to a real device/screenshot (no
+  simulator in this environment).
 - **The "All" view on the Circles tab shows a generic "Odys.ai User" badge instead of the
   contact's actual circle.** Reported live from a real device screenshot after 0.0.39 shipped
   — a known project gap that predates this session's sprints, never previously picked up.
