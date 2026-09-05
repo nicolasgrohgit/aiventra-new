@@ -18,14 +18,13 @@ this is still pre-release/beta.
   tag should be if they have been invited but haven't accepted yet" matches today's actual
   behavior for a non-app-user contact. Proposed: for an accepted (`isAppUser: true`) contact,
   replace the generic badge with the contact's real circle name(s) from `circleTags` instead.
-  One real design question this raises, not resolved here: `circleTags` can now legitimately
-  hold more than one circle since this session's own multi-circle-tagging work (a colleague
-  who's also a genuine friend can be tagged both `Work` and `Family and Friends`) — whether
-  the badge should list every circle a multi-tagged contact belongs to, or just one, needs a
-  call. Whether this badge should also show while a specific circle tab (not "All") is active
-  — where it's less critical since the tab itself already implies one circle, but still loses
-  visibility into a multi-tagged contact's *other* circles — is a related, also-unresolved
-  question. Not built here.
+  **Decided:** show every circle a multi-tagged contact belongs to, not just one — relevant
+  since this session's own multi-circle-tagging work means `circleTags` can legitimately hold
+  more than one circle (a colleague who's also a genuine friend can be tagged both `Work` and
+  `Family and Friends`). Still open: whether this badge should also render while a specific
+  circle tab (not "All") is active — less critical there since the tab itself already implies
+  one circle, but still loses visibility into a multi-tagged contact's *other* circles. **Slated
+  for the next sprint** — not built here yet.
 
 ## [0.0.39] - 2026-09-03
 ### Added
