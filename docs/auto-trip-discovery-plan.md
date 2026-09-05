@@ -96,12 +96,22 @@ existing Home tab already has exactly this visual pattern to extend:
 bordered opt-in banner for calendar connection in general; auto-discovery is a natural,
 consistent extension of that same card/flow rather than a separate ask.
 
-**Trigger cadence**: app-foreground is the pragmatic choice — matches this app's existing
-`AppState`-foreground-triggered patterns (`hooks/useMutationQueueFlush.ts`, and this sprint's
-own friend-request-badge polling) rather than inventing a true background task (React
-Native background execution for calendar scanning is a much bigger lift — a native background
-task with OS-level scheduling — genuinely out of scope for a first pass, not just deferred for
-convenience).
+**Trigger cadence — corrected 2026-08-31, not every foreground.** An earlier draft of this
+doc proposed scanning on every `AppState` foreground event, matching this app's existing
+foreground-triggered patterns (`hooks/useMutationQueueFlush.ts`, the friend-request-badge
+polling). Nico pushed back on that directly: scanning 60 days of calendar on literally every
+app open is unnecessary and a needless permission/battery cost for something that only ever
+changes over days, not minutes. **Decided instead: throttle to roughly once every 7 days.**
+Concretely — the foreground check still fires (no new OS-level trigger needed, avoiding the
+bigger background-task lift below), but it first reads a new AsyncStorage timestamp (e.g.
+`@lastTripDiscoveryScan`) and only actually runs `scanForUpcomingTripSignals` when 7+ days
+have elapsed since that stored value (updating it after each real scan); a foreground event
+inside that window is a no-op. This reads naturally as "check once a week, like on Monday"
+without needing actual day-of-week logic or a true background task — it's a rolling 7-day
+debounce anchored to whenever the user happens to open the app, not a calendar-day boundary.
+True OS-level background execution (React Native background tasks with OS-level scheduling)
+remains out of scope for the reasons already given below — a much bigger lift than this
+debounce.
 
 ## Part C — Surfacing it: prefill the real create-trip flow, don't hand over a blank form
 

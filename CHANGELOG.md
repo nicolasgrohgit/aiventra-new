@@ -57,13 +57,23 @@ this is still pre-release/beta.
   time range when present. Surfaced as a new opt-in Home-tab card (extending the existing
   `connectCalendarCard` pattern in `app/(tabs)/index.tsx`) that prefills `trips.tsx`'s real
   create-trip state (`newDestination`/`newDestinationCoords`/`newHotelSelected`) rather than
-  handing over a blank form. Dismissal needs a new client-only AsyncStorage key
+  handing over a blank form. **Trigger cadence corrected 2026-08-31:** not every app-foreground
+  event — throttled to roughly once every 7 days via a new AsyncStorage timestamp
+  (`@lastTripDiscoveryScan`), so opening the app doesn't re-scan 60 days of calendar on every
+  launch. Dismissal needs a new client-only AsyncStorage key
   (`@dismissedTripSuggestions`) keyed by the anchoring `CalendarEvent.id`, since the existing
   `Trip.dismissedSlots` pattern is server-persisted per-*existing*-trip and doesn't fit a
   suggestion for a trip that doesn't exist yet. Explicitly calls out the permission trade-off
   (a broad, earlier, opt-in calendar-access ask vs. today's silent/scoped reads) and flags
   multi-city itineraries and true OS-level background scanning as unsolved/out of scope. Not
   built here. Mockup: https://claude.ai/code/artifact/bc001545-a8d9-4415-a575-2c3c14ed5761
+- **Need a real email server on GCP for `support@odys.ai` and `admin@odys.ai`.** No email
+  infrastructure exists anywhere in this codebase today (no nodemailer/SendGrid/SES dependency,
+  no outbound-mail code path). This is two separate needs: receiving mail at those addresses
+  (Google Workspace or similar pointed at the `odys.ai` domain's MX records — not a GCP-native
+  product) and sending transactional mail from `server.ts` (a SendGrid/Mailgun/SES-style relay).
+  Directly blocks the RFE/suggestion-form feature below from actually delivering mail. Full
+  detail added to `docs/gcp-migration.md`'s local-only-needs-replacement table.
 
 ## [0.0.39] - 2026-09-03
 ### Added
