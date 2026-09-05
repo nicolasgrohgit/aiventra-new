@@ -89,6 +89,20 @@ this is still pre-release/beta.
   `authenticate`-gated `POST /api/suggestions`, with a `lib/mailer.ts` wrapper that safely no-ops
   until a real mail relay exists, so the feature isn't fully blocked on that infra landing first.
   Not built here.
+- **Refreshed the competitive landscape analysis**, extending `docs/monetization-strategy.md`'s
+  competitor table (previously scoped to monetization models only) into a full capability/
+  positioning "tour of the horizon," including AI-native trip-planning agents not covered
+  before (Mindtrip, Vacay, GuideGeek, Expedia's "Romie," Gemini, Kayak AI, TripIt) plus ANEAR
+  (the closest single-pillar match to Odys's own "friends nearby" premise). Full writeup in
+  `docs/competitive-landscape.md`: confirms Odys's three-pillar combination (work-calendar-
+  aware free time + recommendations + social circles) has no single direct competitor, but
+  every individual pillar already has one (TripSuite for calendar/conflict detection alone,
+  iMean for bleisure-specific recommendations alone, ANEAR for travel-proximity social alone) —
+  a real but narrower differentiator than "nobody does this." Flags the biggest concrete gaps:
+  no conversational/generative entry point (every AI-native competitor leads with this), no
+  booking/ticketing integration, a narrower calendar-signal net than TripIt's inbox-scanning,
+  no automatic friend-proximity detection, and the local-infra reliability gap versus every
+  well-funded competitor named. Investigated, not built.
 
 ## [0.0.39] - 2026-09-03
 ### Added
