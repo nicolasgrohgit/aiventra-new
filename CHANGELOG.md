@@ -5,6 +5,27 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 this is still pre-release/beta.
 
 ## [Unreleased]
+### Roadmap noted
+- **The "All" view on the Circles tab shows a generic "Odys.ai User" badge instead of the
+  contact's actual circle.** Reported live from a real device screenshot after 0.0.39 shipped
+  — a known project gap that predates this session's sprints, never previously picked up.
+  Confirmed in `app/(tabs)/social.tsx:358-368`: the badge is driven purely by
+  `contact.isAppUser` (`"Odys.ai User"` if true, `"Pending — invited ⟨date⟩"`/`"Pending —
+  hasn't joined yet"` if false) — `contact.circleTags` (`string[]`, `lib/contacts.ts`,
+  `models/Contact.ts`) is never read for display anywhere in this card, only used for
+  filtering `displayedContacts` and for the Move Contact sheet's own ✓ marks. The pending-
+  invite text is already exactly right and shouldn't change — confirmed directly: "only other
+  tag should be if they have been invited but haven't accepted yet" matches today's actual
+  behavior for a non-app-user contact. Proposed: for an accepted (`isAppUser: true`) contact,
+  replace the generic badge with the contact's real circle name(s) from `circleTags` instead.
+  One real design question this raises, not resolved here: `circleTags` can now legitimately
+  hold more than one circle since this session's own multi-circle-tagging work (a colleague
+  who's also a genuine friend can be tagged both `Work` and `Family and Friends`) — whether
+  the badge should list every circle a multi-tagged contact belongs to, or just one, needs a
+  call. Whether this badge should also show while a specific circle tab (not "All") is active
+  — where it's less critical since the tab itself already implies one circle, but still loses
+  visibility into a multi-tagged contact's *other* circles — is a related, also-unresolved
+  question. Not built here.
 
 ## [0.0.39] - 2026-09-03
 ### Added
