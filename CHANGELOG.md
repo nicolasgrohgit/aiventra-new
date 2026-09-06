@@ -5,6 +5,30 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 this is still pre-release/beta.
 
 ## [Unreleased]
+### Roadmap noted
+- **Need a real email server on GCP for `support@odys.ai` and `admin@odys.ai`.** No email
+  infrastructure exists anywhere in this codebase today (no nodemailer/SendGrid/SES dependency,
+  no outbound-mail code path). This is two separate needs: receiving mail at those addresses
+  (Google Workspace or similar pointed at the `odys.ai` domain's MX records — not a GCP-native
+  product) and sending transactional mail from `server.ts` (a SendGrid/Mailgun/SES-style relay).
+  Directly blocks the RFE/suggestion-form feature (shipped in 0.0.40) from actually delivering
+  mail. Full detail added to `docs/gcp-migration.md`'s local-only-needs-replacement table.
+- **Refreshed the competitive landscape analysis**, extending `docs/monetization-strategy.md`'s
+  competitor table (previously scoped to monetization models only) into a full capability/
+  positioning "tour of the horizon," including AI-native trip-planning agents not covered
+  before (Mindtrip, Vacay, GuideGeek, Expedia's "Romie," Gemini, Kayak AI, TripIt) plus ANEAR
+  (the closest single-pillar match to Odys's own "friends nearby" premise). Full writeup in
+  `docs/competitive-landscape.md`: confirms Odys's three-pillar combination (work-calendar-
+  aware free time + recommendations + social circles) has no single direct competitor, but
+  every individual pillar already has one (TripSuite for calendar/conflict detection alone,
+  iMean for bleisure-specific recommendations alone, ANEAR for travel-proximity social alone) —
+  a real but narrower differentiator than "nobody does this." Flags the biggest concrete gaps:
+  no conversational/generative entry point (every AI-native competitor leads with this), no
+  booking/ticketing integration, a narrower calendar-signal net than TripIt's inbox-scanning,
+  no automatic friend-proximity detection, and the local-infra reliability gap versus every
+  well-funded competitor named. Investigated, not built.
+
+## [0.0.40] - 2026-09-06
 ### Added
 - **"Have a suggestion for Odys.ai?" form on Profile.** A new card between "About" and "Save
   Changes" opens `components/profile/suggestion-form-modal.tsx` (following the
@@ -14,7 +38,7 @@ this is still pre-release/beta.
   submission to a new `models/Suggestion.ts` collection and attempts to notify
   `admin@odys.ai` via a new `lib/mailer.ts`. **Email delivery is inert for now** — `lib/mailer.ts`
   is a safe no-op (logs what it would send, `emailed: false`) until the separate "email server
-  on GCP" roadmap item below lands with a real relay; the suggestion itself is never lost in
+  on GCP" roadmap item (see `[Unreleased]` above) lands with a real relay; the suggestion itself is never lost in
   the meantime, since it's saved to Mongo regardless of email outcome.
 - **Proactive trip discovery from calendar flight/lodging signals.** The app now notices an
   unplanned trip on its own instead of requiring a manual "create trip": a new
@@ -54,29 +78,6 @@ this is still pre-release/beta.
   circle gets its own accent color for quick scanning. Renders the same way on a specific
   circle tab too, not just "All". The "Pending — invited ⟨date⟩" / "Pending — hasn't joined
   yet" text for a not-yet-joined contact is unchanged.
-
-### Roadmap noted
-- **Need a real email server on GCP for `support@odys.ai` and `admin@odys.ai`.** No email
-  infrastructure exists anywhere in this codebase today (no nodemailer/SendGrid/SES dependency,
-  no outbound-mail code path). This is two separate needs: receiving mail at those addresses
-  (Google Workspace or similar pointed at the `odys.ai` domain's MX records — not a GCP-native
-  product) and sending transactional mail from `server.ts` (a SendGrid/Mailgun/SES-style relay).
-  Directly blocks the RFE/suggestion-form feature below from actually delivering mail. Full
-  detail added to `docs/gcp-migration.md`'s local-only-needs-replacement table.
-- **Refreshed the competitive landscape analysis**, extending `docs/monetization-strategy.md`'s
-  competitor table (previously scoped to monetization models only) into a full capability/
-  positioning "tour of the horizon," including AI-native trip-planning agents not covered
-  before (Mindtrip, Vacay, GuideGeek, Expedia's "Romie," Gemini, Kayak AI, TripIt) plus ANEAR
-  (the closest single-pillar match to Odys's own "friends nearby" premise). Full writeup in
-  `docs/competitive-landscape.md`: confirms Odys's three-pillar combination (work-calendar-
-  aware free time + recommendations + social circles) has no single direct competitor, but
-  every individual pillar already has one (TripSuite for calendar/conflict detection alone,
-  iMean for bleisure-specific recommendations alone, ANEAR for travel-proximity social alone) —
-  a real but narrower differentiator than "nobody does this." Flags the biggest concrete gaps:
-  no conversational/generative entry point (every AI-native competitor leads with this), no
-  booking/ticketing integration, a narrower calendar-signal net than TripIt's inbox-scanning,
-  no automatic friend-proximity detection, and the local-infra reliability gap versus every
-  well-funded competitor named. Investigated, not built.
 
 ## [0.0.39] - 2026-09-03
 ### Added
