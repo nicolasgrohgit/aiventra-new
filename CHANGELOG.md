@@ -5,42 +5,26 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 this is still pre-release/beta.
 
 ## [Unreleased]
+### Fixed
+- **Profile's "‹ Back to circle view" button sits too close to the status bar.** The
+  "Dining Contexts" categorized-selection modal (`components/profile/categorized-selection-
+  modal.tsx`) used a hardcoded `paddingTop: Platform.OS === 'ios' ? 40 : 24`, so on a device
+  whose real status bar is taller than that guess the back button rendered flush against (or
+  overlapping) it. Switched to `useSafeAreaInsets()` (`react-native-safe-area-context`) so the
+  padding tracks the device's actual inset instead of a hardcoded number — fixes this class of
+  bug for good rather than needing another manual bump the next time a taller status bar
+  shows up.
+
+### Changed
+- **Circles "All" view now shows a contact's real circle(s) instead of a generic "Odys.ai
+  User" badge.** An accepted (`isAppUser: true`) contact's card now renders one small pill per
+  entry in `contact.circleTags` — every circle a multi-tagged contact belongs to, not just
+  one, since a contact can legitimately be tagged both `Work` and `Family and Friends`. Each
+  circle gets its own accent color for quick scanning. Renders the same way on a specific
+  circle tab too, not just "All". The "Pending — invited ⟨date⟩" / "Pending — hasn't joined
+  yet" text for a not-yet-joined contact is unchanged.
+
 ### Roadmap noted
-- **Profile's "‹ Back to circle view" button sits too close to the status bar.** Reported live
-  from a real device screenshot (the "Dining Contexts" categorized-selection modal, new this
-  sprint). Confirmed in `components/profile/categorized-selection-modal.tsx:159-161`: the
-  modal uses a hardcoded `paddingTop: Platform.OS === 'ios' ? 40 : 24` rather than the device's
-  actual safe-area/status-bar inset, so on a device whose real status bar is taller than that
-  fixed guess, the back button renders flush against (or overlapping) it. This app has hit and
-  fixed this exact class of bug before — CHANGELOG 0.0.31/0.0.32 both fixed a modal
-  "Cancel"/header sitting too close to the status bar in `trips.tsx`/`social.tsx` by bumping
-  their hardcoded `paddingTop` values higher, the same pattern this file already uses, just
-  with a value that isn't tall enough here. Two ways to fix, not resolved here: (a) bump this
-  file's `paddingTop` higher, matching the existing precedent exactly; or (b) switch to
-  `useSafeAreaInsets()` (`react-native-safe-area-context`, already a dependency) so the padding
-  adapts to the actual device inset instead of a hardcoded guess, fixing this class of bug for
-  good rather than needing another manual bump the next time a taller status bar shows up. Not
-  built here — small, low-risk, verification-limited to a real device/screenshot (no
-  simulator in this environment).
-- **The "All" view on the Circles tab shows a generic "Odys.ai User" badge instead of the
-  contact's actual circle.** Reported live from a real device screenshot after 0.0.39 shipped
-  — a known project gap that predates this session's sprints, never previously picked up.
-  Confirmed in `app/(tabs)/social.tsx:358-368`: the badge is driven purely by
-  `contact.isAppUser` (`"Odys.ai User"` if true, `"Pending — invited ⟨date⟩"`/`"Pending —
-  hasn't joined yet"` if false) — `contact.circleTags` (`string[]`, `lib/contacts.ts`,
-  `models/Contact.ts`) is never read for display anywhere in this card, only used for
-  filtering `displayedContacts` and for the Move Contact sheet's own ✓ marks. The pending-
-  invite text is already exactly right and shouldn't change — confirmed directly: "only other
-  tag should be if they have been invited but haven't accepted yet" matches today's actual
-  behavior for a non-app-user contact. Proposed: for an accepted (`isAppUser: true`) contact,
-  replace the generic badge with the contact's real circle name(s) from `circleTags` instead.
-  **Decided:** show every circle a multi-tagged contact belongs to, not just one — relevant
-  since this session's own multi-circle-tagging work means `circleTags` can legitimately hold
-  more than one circle (a colleague who's also a genuine friend can be tagged both `Work` and
-  `Family and Friends`). Still open: whether this badge should also render while a specific
-  circle tab (not "All") is active — less critical there since the tab itself already implies
-  one circle, but still loses visibility into a multi-tagged contact's *other* circles. **Slated
-  for the next sprint** — not built here yet.
 - **Proposal: auto-discover a trip from flight/lodging calendar signals and bubble it up for
   the user to acknowledge**, instead of requiring a manual "create trip" for a trip the synced
   calendar already fully describes. Investigated, not built — full design in

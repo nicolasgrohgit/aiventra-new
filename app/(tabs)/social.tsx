@@ -20,6 +20,21 @@ interface NearbyFriend {
   matches: { type: 'lives_here' | 'visiting'; startDate?: string; endDate?: string }[];
 }
 
+// Small distinct accent per default circle so a multi-tagged contact's pills scan quickly at a
+// glance. There's no broader circle-color system elsewhere to reuse — the vibe-picker palette
+// in lib/onboarding-taste.ts/constants/preferences.ts colors taste "vibes" (Foodie, Culture,
+// etc.), a completely different taxonomy from these circle names — so this is a lightweight,
+// local-to-this-screen map. Falls back to a neutral gray for any tag outside DEFAULT_CIRCLES
+// (circles aren't user-creatable today, so this shouldn't hit, but keeps a stray/legacy tag
+// from rendering with no color at all).
+const CIRCLE_TAG_COLORS: Record<string, string> = {
+  'Family and Friends': '#10B981',
+  'Relatives': '#F59E0B',
+  'Work': '#8B5CF6',
+};
+const DEFAULT_TAG_COLOR = '#64748B';
+const circleTagColor = (tag: string) => CIRCLE_TAG_COLORS[tag] ?? DEFAULT_TAG_COLOR;
+
 const formatShortDate = (iso?: string) => {
   if (!iso) return null;
   const d = new Date(iso);
@@ -356,8 +371,18 @@ export default function SocialScreen() {
                 <View style={styles.contactInfo}>
                   <Text style={styles.contactName}>{contact.name}</Text>
                   {contact.isAppUser ? (
-                    <View style={styles.appUserBadge}>
-                       <Text style={styles.appUserText}>Odys.ai User</Text>
+                    <View style={styles.circleTagRow}>
+                      {contact.circleTags.map(tag => {
+                        const color = circleTagColor(tag);
+                        return (
+                          <View
+                            key={tag}
+                            style={[styles.circleTagPill, { borderColor: color, backgroundColor: `${color}33` }]}
+                          >
+                            <Text style={[styles.circleTagText, { color }]}>{tag}</Text>
+                          </View>
+                        );
+                      })}
                     </View>
                   ) : (
                     <Text style={styles.inviteText}>
@@ -609,8 +634,11 @@ const styles = StyleSheet.create({
   avatarText: { color: '#FFFFFF', fontSize: 20, fontWeight: 'bold' },
   contactInfo: { flex: 1 },
   contactName: { color: '#F8FAFC', fontSize: 18, fontWeight: '700', marginBottom: 4 },
-  appUserBadge: { backgroundColor: 'rgba(16, 185, 129, 0.2)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, alignSelf: 'flex-start' },
-  appUserText: { color: '#10B981', fontSize: 11, fontWeight: 'bold' },
+  // Replaced the old single generic "Odys.ai User" badge — an accepted contact now shows a
+  // small pill per circle they're actually tagged in (see circleTagColor above).
+  circleTagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 2 },
+  circleTagPill: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1 },
+  circleTagText: { fontSize: 11, fontWeight: 'bold' },
   inviteText: { color: '#64748B', fontSize: 13, marginTop: 4 },
   locationBadge: { backgroundColor: 'rgba(59, 130, 246, 0.15)', padding: 12, paddingVertical: 10, borderRadius: 12, alignItems: 'center', justifyContent: 'center', borderLeftWidth: 3, borderLeftColor: '#3B82F6', marginLeft: 12 },
   locationTitle: { color: '#3B82F6', fontSize: 11, fontWeight: '800', marginBottom: 2, textTransform: 'uppercase' },

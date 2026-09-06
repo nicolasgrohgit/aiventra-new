@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
-import { View, Text, TouchableOpacity, ScrollView, Modal, StyleSheet, Platform } from 'react-native';
+import { View, Text, TouchableOpacity, ScrollView, Modal, StyleSheet } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { hasGoogleMatch } from '@/lib/google-places-types';
 import { PreferenceCategoryGroup } from '@/constants/preferences';
 import { CircleNode, tapNode } from '@/lib/onboarding-taste';
@@ -60,6 +61,7 @@ function buildCategoryTree(groups: PreferenceCategoryGroup[]): CircleNode[] {
 export function CategorizedSelectionModal({
   visible, close, title, description, groupedOptions, selected, onSelectedChange, category,
 }: CategorizedSelectionModalProps) {
+  const insets = useSafeAreaInsets();
   const tree = useMemo(() => buildCategoryTree(groupedOptions), [groupedOptions]);
 
   // Seeded from whatever's already selected, so a category with existing picks opens already
@@ -87,7 +89,7 @@ export function CategorizedSelectionModal({
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={close}>
-      <View style={styles.modalContainer}>
+      <View style={[styles.modalContainer, { paddingTop: insets.top + 16 }]}>
         <TouchableOpacity onPress={close} style={styles.backButton} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
           <Text style={styles.backButtonText}>‹ Back to circle view</Text>
         </TouchableOpacity>
@@ -156,7 +158,9 @@ export function CategorizedSelectionModal({
 }
 
 const styles = StyleSheet.create({
-  modalContainer: { flex: 1, backgroundColor: '#0F172A', padding: 24, paddingTop: Platform.OS === 'ios' ? 40 : 24 },
+  // paddingTop is overridden inline with useSafeAreaInsets().top (see render) so the back
+  // button clears the device's actual status bar/notch instead of a hardcoded guess.
+  modalContainer: { flex: 1, backgroundColor: '#0F172A', padding: 24 },
   backButton: { marginBottom: 12, alignSelf: 'flex-start' },
   backButtonText: { color: '#64748B', fontSize: 14, fontWeight: '600' },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
