@@ -283,6 +283,24 @@ app.post('/api/users/me/push-token', authenticate, async (req: AuthedRequest, re
   }
 });
 
+// Bumps this user's lastAppAccess counter (see models/User.ts, docs/auto-trip-discovery-plan.md
+// Part B) — called from the first-calendar-permission-grant path and, when it decides to
+// actually scan, the ~weekly foreground-gated path (both in app/(tabs)/index.tsx). Same
+// "deliberately its own endpoint, not folded into PUT /api/users/:id" reasoning as
+// POST /api/users/me/push-token above: lastAppAccess is a server-observed fact, never a
+// client-editable preference, so it must never go through USER_UPDATABLE_FIELDS. Scoped to
+// req.userId (never a client-supplied id), same as every other authenticated route here.
+app.post('/api/users/me/app-access', authenticate, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    const lastAppAccess = new Date();
+    await User.findByIdAndUpdate(req.userId, { $set: { lastAppAccess } });
+    res.json({ success: true, lastAppAccess });
+  } catch (error: any) {
+    reportError(error, req, 'save app access timestamp failed');
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Validates + converts the client's baseLocations payload (date strings) into the shape
 // Trip.baseLocations expects — never throws on malformed input, just drops invalid entries,
 // since a bad anchor point should degrade to "no anchor for this trip" (the existing

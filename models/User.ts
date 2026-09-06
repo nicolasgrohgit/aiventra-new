@@ -46,6 +46,15 @@ export interface IUser extends Document {
   // for a user who has never triggered that path, or for every user if ENCRYPTION_MASTER_KEY
   // isn't configured at all.
   encryptedDataKey?: string;
+  // Server-observed "last time this user's app opened trip auto-discovery counted as caught
+  // up" timestamp — see docs/auto-trip-discovery-plan.md Part B. Written only by
+  // POST /api/users/me/app-access (never by the generic PUT /api/users/:id — deliberately
+  // NOT in USER_UPDATABLE_FIELDS below, since this is a fact the server observes, not a
+  // client-editable preference), and read client-side to gate the ~weekly proactive
+  // calendar-scan trigger. A real Mongo field rather than an AsyncStorage flag specifically so
+  // it survives a reinstall/new device and can double as a later engagement/retention signal
+  // (not built here — see the changelog entry for this feature).
+  lastAppAccess?: Date;
 }
 
 const UserSchema = new Schema<IUser>({
@@ -67,7 +76,8 @@ const UserSchema = new Schema<IUser>({
   },
   homebaseSharedCircles: { type: [String], default: [] },
   expoPushToken: { type: String },
-  encryptedDataKey: { type: String }
+  encryptedDataKey: { type: String },
+  lastAppAccess: { type: Date }
 }, { timestamps: true, strict: false }); // strict: false only needed now for top-level ad hoc fields (firstName, homebase, etc.) — preferences.* is fully declared above
 
 export default mongoose.models.User || mongoose.model<IUser>('User', UserSchema);

@@ -11,6 +11,7 @@ import { TripsProvider } from '@/hooks/useTrips';
 import { ContactsProvider } from '@/hooks/useContacts';
 import { EventsProvider } from '@/hooks/useEvents';
 import { FriendRequestsProvider } from '@/hooks/useFriendRequests';
+import { TripDiscoveryProvider } from '@/hooks/useTripDiscovery';
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -75,19 +76,24 @@ function RootLayout() {
     // current user from AuthProvider to sync/clear their own data (see
     // docs/useauth-split-plan.md). Order among them doesn't matter functionally, none depend
     // on each other. FriendRequestsProvider is stateless like EventsProvider (no local cache
-    // to sync/clear), so it's placed alongside it.
+    // to sync/clear), so it's placed alongside it. TripDiscoveryProvider is nested inside
+    // TripsProvider specifically because it reads `trips` (for its "already have a matching
+    // trip" overlap check, see docs/auto-trip-discovery-plan.md Part D) — it's otherwise a
+    // leaf, nothing else depends on it.
     <AuthProvider>
       <TripsProvider>
-        <ContactsProvider>
-          <EventsProvider>
-            <FriendRequestsProvider>
-              <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-                <InitialLayout />
-                <StatusBar style="auto" />
-              </ThemeProvider>
-            </FriendRequestsProvider>
-          </EventsProvider>
-        </ContactsProvider>
+        <TripDiscoveryProvider>
+          <ContactsProvider>
+            <EventsProvider>
+              <FriendRequestsProvider>
+                <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+                  <InitialLayout />
+                  <StatusBar style="auto" />
+                </ThemeProvider>
+              </FriendRequestsProvider>
+            </EventsProvider>
+          </ContactsProvider>
+        </TripDiscoveryProvider>
       </TripsProvider>
     </AuthProvider>
   );

@@ -2,6 +2,7 @@ import { DateTime } from 'luxon';
 import type { CalendarEvent, SlotProposal } from './free-time';
 import { DEVICE_TIMEZONE } from './timezones';
 import { isMealWindow, getMealWindows, type MealTimePreferences } from './place-matching';
+import { resolveAirportCity } from './iata-airports';
 
 // Classifies an imported (device-calendar-synced) event into a travel-relevant signal —
 // flight/ground-transit/lodging/dining — so the trip timeline and free-time algorithm can
@@ -249,4 +250,275 @@ export function filterDiningConflicts(
 ): SlotProposal[] {
   if (dayEvents.length === 0) return proposals;
   return proposals.filter(p => !hasDiningConflict(p, dayEvents, timezone, mealPrefs));
+}
+
+// --- Proactive trip discovery: inferring a whole trip from flight/lodging signals ----------
+//
+// See docs/auto-trip-discovery-plan.md Part A for the full reasoning/edge-case catalogue.
+// Deliberately kept in this pure/RN-decoupled file, not lib/calendar.ts — the actual device-
+// calendar scan (which classifies every event via classifyImportedEvent above, then hands the
+// flight/lodging hits here) lives in lib/calendar.ts's scanForUpcomingTripSignals, since only
+// that file can touch expo-calendar. This function does no I/O and only ever deals with
+// already-classified signals, so it's unit-testable in plain Node (see
+// lib/calendar-signals.test.ts) exactly like everything else in this file.
+
+// A classified signal paired with the raw CalendarEvent it came from — classifyImportedEvent
+// only returns the signal itself, but trip inference also needs the event's own id (for
+// dismissal-key stability, see Part D of the design doc) and start/end times (a flight signal
+// carries no date info of its own; a lodging signal's dates ARE the underlying event's own
+// start/end, per Part A).
+export interface ClassifiedSignal {
+  event: CalendarEvent;
+  signal: TravelSignal;
+}
+
+export interface InferredTrip {
+  // Best-guess display name for the create-trip form's destination field. For a flight-
+  // anchored trip this is the IATA-resolved city ("Rome, Italy"); for a lodging-only trip
+  // (Part A case 3) there's no airport to resolve, so this is the lodging signal's own raw
+  // `place` text verbatim — good enough to prefill an editable field (Part C), not a promise
+  // of a real, geocodable city string.
+  destination: string;
+  // Only present when `destination` came from a resolved airport code — a raw lodging `place`
+  // string has no known lat/lng without an actual geocoding call, which this pure function
+  // deliberately never makes.
+  destinationCoords?: { lat: number; lng: number };
+  startDate: Date;
+  endDate: Date;
+  // True when endDate came from the "arrival + 3 days" fallback (Part A case 2) rather than a
+  // real return-flight/lodging-checkout signal — lets a caller flag it as extra-rough if it
+  // wants to, though Part C's own framing is that every field here is editable regardless.
+  endDateIsDefault: boolean;
+  // Set whenever a lodging signal contributed to this trip (paired with a flight, or lodging-
+  // only) — carries just enough for app/(tabs)/trips.tsx's newHotelSelected shape once a
+  // caller adds real coordinates via lib/hotel-geocoding.ts (this function never geocodes).
+  hotel?: { label: string };
+  // The primary CalendarEvent.id this suggestion is keyed on for @dismissedTripSuggestions
+  // (Part D) — the outbound flight's event for a flight-anchored trip, or the lodging event's
+  // own id for a lodging-only trip.
+  anchorEventId: string;
+  // Every CalendarEvent.id that contributed to this suggestion (outbound + return + lodging,
+  // where applicable) — a caller dismissing a suggestion may want to suppress re-surfacing
+  // from any one of these signals individually, not just the anchor.
+  sourceEventIds: string[];
+}
+
+// Tolerance either side when deciding whether a lodging signal "belongs" to a given flight (or
+// flight pair) — real bookings rarely line up to the minute (e.g. a hotel checkout instant
+// vs. a return flight's own scheduled departure), so a same-day-ish window is treated as a
+// match rather than requiring exact alignment. Not researched against real booking-gap data —
+// a first reasonable guess, same spirit as lib/free-time.ts's FLIGHT_BUFFER_MINUTES.
+const LODGING_ASSOCIATION_BUFFER_MS = 24 * 60 * 60 * 1000;
+
+// Part A case 2's fallback when an outbound flight has no return flight AND no lodging signal
+// to derive a real checkout date from.
+const DEFAULT_TRIP_LENGTH_DAYS = 3;
+
+type FlightSignal = Extract<TravelSignal, { kind: 'flight' }>;
+type LodgingSignal = Extract<TravelSignal, { kind: 'lodging' }>;
+
+function normalizeAirportCode(code?: string): string | undefined {
+  const trimmed = code?.trim().toUpperCase();
+  return trimmed || undefined;
+}
+
+// True when two flight signals' own airport codes are exact reverses of each other (A→B and
+// B→A) — the only pairing signal used; genuinely ambiguous cases (different city pairs, a
+// connecting/multi-city itinerary) are deliberately left unpaired per Part A case 4, not
+// guessed at.
+function isReverseFlightPair(a: TravelSignal, b: TravelSignal): boolean {
+  if (a.kind !== 'flight' || b.kind !== 'flight') return false;
+  const aFrom = normalizeAirportCode(a.from), aTo = normalizeAirportCode(a.to);
+  const bFrom = normalizeAirportCode(b.from), bTo = normalizeAirportCode(b.to);
+  if (!aFrom || !aTo || !bFrom || !bTo) return false;
+  return aFrom === bTo && aTo === bFrom;
+}
+
+// Finds the first not-yet-consumed lodging signal whose own [startTime, endTime] falls inside
+// [windowStart, windowEnd] (with the buffer above applied on both sides), marks it consumed,
+// and returns it — or undefined if nothing matches. Shared by the round-trip and standalone-
+// flight builders below so both consult (and mutate) the same `consumedLodgingIdx` set, which
+// is what actually prevents one lodging signal from being double-counted into two different
+// trip suggestions.
+function claimMatchingLodging(
+  lodgings: ClassifiedSignal[],
+  consumedLodgingIdx: Set<number>,
+  windowStart: Date,
+  windowEnd: Date
+): ClassifiedSignal | undefined {
+  const idx = lodgings.findIndex((l, i) =>
+    !consumedLodgingIdx.has(i) &&
+    l.event.startTime.getTime() >= windowStart.getTime() - LODGING_ASSOCIATION_BUFFER_MS &&
+    l.event.endTime.getTime() <= windowEnd.getTime() + LODGING_ASSOCIATION_BUFFER_MS
+  );
+  if (idx === -1) return undefined;
+  consumedLodgingIdx.add(idx);
+  return lodgings[idx];
+}
+
+function lodgingHotelInfo(signal: TravelSignal): { label: string } | undefined {
+  const place = (signal as LodgingSignal).place;
+  return place ? { label: place } : undefined;
+}
+
+// Part A case 1 (+ a same-window lodging signal, if any): a matched outbound/return flight
+// pair. Returns null when the outbound's arrival airport isn't in lib/iata-airports.ts's
+// table — per Part A, an unresolvable airport means no auto-discovery for this trip, not a
+// wrong guess, so this deliberately doesn't fall back to treating the pair as two standalone
+// flights.
+function buildRoundTripSuggestion(
+  outbound: ClassifiedSignal,
+  inbound: ClassifiedSignal,
+  lodgings: ClassifiedSignal[],
+  consumedLodgingIdx: Set<number>
+): InferredTrip | null {
+  const outboundSignal = outbound.signal as FlightSignal;
+  const airport = resolveAirportCity(outboundSignal.to);
+  if (!airport) return null;
+
+  const startDate = outbound.event.endTime; // when they land
+  let endDate = inbound.event.startTime; // when they leave the destination again
+  const sourceEventIds = [outbound.event.id, inbound.event.id];
+
+  // A lodging signal's own endTime is a cleaner checkout instant than the return flight's
+  // departure time (Part A), so prefer it when one falls within this trip's window.
+  const lodging = claimMatchingLodging(lodgings, consumedLodgingIdx, startDate, endDate);
+  let hotel: { label: string } | undefined;
+  if (lodging) {
+    endDate = lodging.event.endTime;
+    hotel = lodgingHotelInfo(lodging.signal);
+    sourceEventIds.push(lodging.event.id);
+  }
+
+  return {
+    destination: airport.city,
+    destinationCoords: { lat: airport.latitude, lng: airport.longitude },
+    startDate,
+    endDate,
+    endDateIsDefault: false,
+    hotel,
+    anchorEventId: outbound.event.id,
+    sourceEventIds,
+  };
+}
+
+// Part A case 2 (no matching return flight found) and, when no lodging signal follows it
+// either, the fully-unpaired half of Part A case 4 (two flights that don't form a round trip —
+// each unpaired leg's own arrival becomes its own independent candidate trip start, rather
+// than forcing a single, possibly-wrong round-trip inference across them).
+function buildStandaloneFlightSuggestion(
+  flight: ClassifiedSignal,
+  lodgings: ClassifiedSignal[],
+  consumedLodgingIdx: Set<number>
+): InferredTrip | null {
+  const flightSignal = flight.signal as FlightSignal;
+  const airport = resolveAirportCity(flightSignal.to);
+  if (!airport) return null;
+
+  const startDate = flight.event.endTime;
+  const sourceEventIds = [flight.event.id];
+
+  // No return flight to bound the window with, so look for a lodging signal starting any time
+  // at/after arrival — checkout (whenever it is) becomes the end date.
+  const lodging = claimMatchingLodging(
+    lodgings, consumedLodgingIdx, startDate, new Date(8640000000000000) // effectively unbounded
+  );
+
+  if (lodging) {
+    return {
+      destination: airport.city,
+      destinationCoords: { lat: airport.latitude, lng: airport.longitude },
+      startDate,
+      endDate: lodging.event.endTime,
+      endDateIsDefault: false,
+      hotel: lodgingHotelInfo(lodging.signal),
+      anchorEventId: flight.event.id,
+      sourceEventIds: [...sourceEventIds, lodging.event.id],
+    };
+  }
+
+  return {
+    destination: airport.city,
+    destinationCoords: { lat: airport.latitude, lng: airport.longitude },
+    startDate,
+    endDate: new Date(startDate.getTime() + DEFAULT_TRIP_LENGTH_DAYS * 24 * 60 * 60 * 1000),
+    endDateIsDefault: true,
+    anchorEventId: flight.event.id,
+    sourceEventIds,
+  };
+}
+
+// Part A case 3: a lodging signal with no flight at all (driving, train, already-known
+// transit) — still a perfectly good trip signal on its own, dates and (best-effort)
+// destination coming entirely from the lodging event itself.
+function buildLodgingOnlySuggestion(lodging: ClassifiedSignal): InferredTrip {
+  const lodgingSignal = lodging.signal as LodgingSignal;
+  const destination = lodgingSignal.place?.trim() || 'Unknown destination';
+  return {
+    destination,
+    startDate: lodging.event.startTime,
+    endDate: lodging.event.endTime,
+    endDateIsDefault: false,
+    hotel: lodgingHotelInfo(lodgingSignal),
+    anchorEventId: lodging.event.id,
+    sourceEventIds: [lodging.event.id],
+  };
+}
+
+/**
+ * Turns a batch of already-classified device-calendar signals (flight/lodging only — dining
+ * and ground-transit carry no trip-shaping information) into zero or more trip suggestions.
+ * Called by lib/calendar.ts's scanForUpcomingTripSignals against everything a scan window
+ * turned up; kept pure/synchronous so it's directly unit-testable (lib/calendar-signals.test.ts)
+ * without any RN/device-calendar dependency.
+ *
+ * Handles, per docs/auto-trip-discovery-plan.md Part A: an outbound+return flight pair (with
+ * or without a lodging signal sharpening the end date), an outbound flight with a lodging
+ * signal but no return flight, a lodging signal with no flight at all, and two flight signals
+ * that don't form a sensible round trip (each becomes its own independent candidate rather
+ * than a forced, possibly-wrong pairing). Every signal that can't resolve a real destination
+ * (an airport code missing from lib/iata-airports.ts's table) is silently dropped, not guessed
+ * at — per Part A, that's a deliberate coverage trade-off, not a bug.
+ */
+export function inferTripFromSignals(signals: ClassifiedSignal[]): InferredTrip[] {
+  const flights = signals
+    .filter(s => s.signal.kind === 'flight')
+    .sort((a, b) => a.event.startTime.getTime() - b.event.startTime.getTime());
+  const lodgings = signals.filter(s => s.signal.kind === 'lodging');
+
+  const consumedFlightIdx = new Set<number>();
+  const consumedLodgingIdx = new Set<number>();
+  const trips: InferredTrip[] = [];
+
+  // Pass 1: pair up round trips — earliest unconsumed outbound with the earliest unconsumed
+  // reverse-matching return after it.
+  for (let i = 0; i < flights.length; i++) {
+    if (consumedFlightIdx.has(i)) continue;
+    for (let j = i + 1; j < flights.length; j++) {
+      if (consumedFlightIdx.has(j)) continue;
+      if (isReverseFlightPair(flights[i].signal, flights[j].signal)) {
+        consumedFlightIdx.add(i);
+        consumedFlightIdx.add(j);
+        const trip = buildRoundTripSuggestion(flights[i], flights[j], lodgings, consumedLodgingIdx);
+        if (trip) trips.push(trip);
+        break;
+      }
+    }
+  }
+
+  // Pass 2: every flight left over (no reverse-matching partner found) is treated
+  // independently — Part A case 4.
+  flights.forEach((flight, idx) => {
+    if (consumedFlightIdx.has(idx)) return;
+    const trip = buildStandaloneFlightSuggestion(flight, lodgings, consumedLodgingIdx);
+    if (trip) trips.push(trip);
+  });
+
+  // Pass 3: any lodging signal not already claimed by a flight above stands on its own.
+  lodgings.forEach((lodging, idx) => {
+    if (consumedLodgingIdx.has(idx)) return;
+    trips.push(buildLodgingOnlySuggestion(lodging));
+  });
+
+  return trips;
 }
