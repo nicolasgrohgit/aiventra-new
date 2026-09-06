@@ -4,10 +4,13 @@ import { useRouter } from 'expo-router';
 import { ThemedText } from '@/components/themed-text';
 import { useAuth } from '@/hooks/useAuth';
 import { useTrips } from '@/hooks/useTrips';
+import { useTripDiscovery } from '@/hooks/useTripDiscovery';
 import { calculateFreeTimeSlots, generateMockEventsForToday, getDeviceEventsForToday, FreeTimeSlot, CalendarEvent } from '@/lib/calendar';
 import * as Location from 'expo-location';
 import * as Calendar from 'expo-calendar';
 import { fetchWeather, WeatherData } from '@/lib/weather';
+
+const formatSuggestionDate = (d: Date) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
 // ─── Greeting helpers ────────────────────────────────────────────────────────
 function getGreeting(): { text: string; emoji: string } {
@@ -21,6 +24,7 @@ function getGreeting(): { text: string; emoji: string } {
 export default function HomeScreen() {
   const { user } = useAuth();
   const { trips } = useTrips();
+  const { suggestion, dismissSuggestion, acceptSuggestion, handleFirstCalendarGrant } = useTripDiscovery();
   const router = useRouter();
 
   // Calendar
@@ -124,7 +128,21 @@ export default function HomeScreen() {
       const finalEvents = evts.length > 0 ? evts : generateMockEventsForToday();
       setEvents(finalEvents);
       setFreeSlots(calculateFreeTimeSlots(finalEvents, 8, 22, 60));
+
+      // Trip-discovery path 1 (docs/auto-trip-discovery-plan.md Part B): this handler only
+      // ever runs while calendarPermissionStatus isn't already 'granted' (see the card's own
+      // render guard below), so a successful grant here is exactly the "first moment the app
+      // can read the calendar" moment the design doc means — the natural trigger for an
+      // immediate ~30-day discovery scan and starting the server-side lastAppAccess counter.
+      // Fire-and-forget: never block/delay the calendar-connect flow itself on this.
+      handleFirstCalendarGrant().catch((err) => console.warn('First-grant trip discovery scan failed:', err));
     }
+  };
+
+  const handleAcceptSuggestion = () => {
+    if (!suggestion) return;
+    acceptSuggestion();
+    router.push('/(tabs)/trips' as any);
   };
 
   const handleSuggest = (slot: FreeTimeSlot) => {
@@ -242,6 +260,34 @@ export default function HomeScreen() {
               </View>
             </View>
           </TouchableOpacity>
+        )}
+
+        {/* ── Proactive trip-discovery suggestion (docs/auto-trip-discovery-plan.md Part C) ──
+            Extends connectCalendarCard's same blue-bordered treatment rather than inventing a
+            new visual language for it. Accepting prefills app/(tabs)/trips.tsx's real
+            create-trip modal (via useTripDiscovery's pendingProposal handoff) — the user still
+            reviews/edits every field before anything is actually created. */}
+        {suggestion && (
+          <View style={styles.connectCalendarCard}>
+            <View style={styles.connectCalendarContent}>
+              <ThemedText style={{fontSize: 24, marginRight: 12}}>✈️</ThemedText>
+              <View style={{flex: 1}}>
+                <ThemedText style={styles.connectCalendarTitle}>Looks like you&apos;re planning a trip</ThemedText>
+                <ThemedText style={styles.connectCalendarDesc}>
+                  {suggestion.destination}, {formatSuggestionDate(suggestion.startDate)} – {formatSuggestionDate(suggestion.endDate)}
+                  {suggestion.hotel ? ` · ${suggestion.hotel.label}` : ''} — found in your calendar.
+                </ThemedText>
+                <View style={styles.suggestionActions}>
+                  <TouchableOpacity style={styles.suggestionAcceptBtn} onPress={handleAcceptSuggestion}>
+                    <ThemedText style={styles.suggestionAcceptText}>Add this trip</ThemedText>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.suggestionDismissBtn} onPress={dismissSuggestion}>
+                    <ThemedText style={styles.suggestionDismissText}>Not this time</ThemedText>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </View>
         )}
 
         {/* ── Today's Schedule: free slots (green) and busy conflicts (red), merged into one chronological view ── */}
@@ -363,6 +409,11 @@ const styles = StyleSheet.create({
   connectCalendarContent: { flexDirection: 'row', alignItems: 'center' },
   connectCalendarTitle: { color: '#3B82F6', fontSize: 16, fontWeight: '800', marginBottom: 4 },
   connectCalendarDesc: { color: '#BFDBFE', fontSize: 13, lineHeight: 18 },
+  suggestionActions: { flexDirection: 'row', gap: 10, marginTop: 12 },
+  suggestionAcceptBtn: { backgroundColor: '#3B82F6', borderRadius: 12, paddingVertical: 8, paddingHorizontal: 14 },
+  suggestionAcceptText: { color: '#FFFFFF', fontSize: 13, fontWeight: '700' },
+  suggestionDismissBtn: { paddingVertical: 8, paddingHorizontal: 14 },
+  suggestionDismissText: { color: '#BFDBFE', fontSize: 13, fontWeight: '600' },
 
   // Slots
   sectionTitle: { color: '#FFFFFF', fontSize: 20, marginBottom: 20, fontWeight: '700' },

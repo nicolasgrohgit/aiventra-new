@@ -12,11 +12,12 @@ import {
   expandSlotForProposals,
   generateMockEventsForToday,
 } from './free-time';
+import { classifyImportedEvent, inferTripFromSignals, ClassifiedSignal, InferredTrip } from './calendar-signals';
 
 // The pure free-time-slot math lives in lib/free-time.ts (kept RN-independent so it's
 // testable in plain Node — this file can't be, since expo-calendar transitively pulls in
 // react-native). Re-exported here so existing `@/lib/calendar` imports are unaffected.
-export type { CalendarEvent, FreeTimeSlot, DaySchedule, SlotProposal, MealTimePreferences };
+export type { CalendarEvent, FreeTimeSlot, DaySchedule, SlotProposal, MealTimePreferences, InferredTrip };
 export { calculateFreeTimeSlots, getHardcodedFreeSlots, getTripDaySchedule, labelFreeSlot, expandSlotForProposals, generateMockEventsForToday };
 
 /**
@@ -86,6 +87,67 @@ export async function getDeviceEventsForDateRange(startDate: Date, endDate: Date
     }));
   } catch (error) {
     console.warn("Failed to fetch native calendar events for range: ", error);
+    return [];
+  }
+}
+
+/**
+ * Proactive trip discovery — see docs/auto-trip-discovery-plan.md Parts A/B. Unlike
+ * getDeviceEventsForDateRange above, this is the one calendar read in the app allowed to run
+ * BEFORE the user has told it anything about a trip, so every caller is responsible for
+ * gating it behind its own explicit trigger (first calendar-connect opt-in, a throttled
+ * foreground check, or a manual pull-to-refresh — see app/(tabs)/index.tsx and
+ * app/(tabs)/trips.tsx) rather than calling it unconditionally.
+ *
+ * Reads every device calendar event from now through `daysAhead` days out, classifies each one
+ * (classifyImportedEvent, lib/calendar-signals.ts) and hands the flight/lodging hits to the
+ * pure inferTripFromSignals to produce trip suggestions. `daysAhead` is a real parameter, not a
+ * fixed default, because callers use two different widths: ~30 days for the permission-grant
+ * and weekly-foreground paths, ~7 days for the trips-tab pull-to-refresh (a narrower, cheaper
+ * window appropriate for an explicit "check right now" action).
+ *
+ * Deliberately does NOT prompt for permission (same reasoning as getDeviceEventsForDateRange)
+ * — every caller only ever invokes this after calendar access is already granted (path 1 calls
+ * it immediately after its own requestCalendarPermissionsAsync succeeds). Fails safe on any
+ * error (a malformed event that throws mid-classification, a permission read that errors) by
+ * returning an empty array rather than aborting a caller's own refresh flow.
+ */
+export async function scanForUpcomingTripSignals(daysAhead: number): Promise<InferredTrip[]> {
+  try {
+    const { status } = await Calendar.getCalendarPermissionsAsync();
+    if (status !== 'granted') return [];
+
+    const allCalendars = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
+    const calendarIds = allCalendars.map(c => c.id);
+    if (calendarIds.length === 0) return [];
+
+    const startDate = new Date();
+    const endDate = new Date(startDate.getTime() + daysAhead * 24 * 60 * 60 * 1000);
+    const deviceEvents = await Calendar.getEventsAsync(calendarIds, startDate, endDate);
+
+    const signals: ClassifiedSignal[] = [];
+    for (const evt of deviceEvents) {
+      try {
+        const event: CalendarEvent = {
+          id: evt.id,
+          title: evt.title,
+          startTime: new Date(evt.startDate),
+          endTime: new Date(evt.endDate),
+          location: evt.location,
+        };
+        const signal = classifyImportedEvent(event);
+        if (signal && (signal.kind === 'flight' || signal.kind === 'lodging')) {
+          signals.push({ event, signal });
+        }
+      } catch (error) {
+        // One malformed event shouldn't sink the whole scan — skip it and keep going.
+        console.warn('Skipping unclassifiable calendar event during trip discovery scan:', error);
+      }
+    }
+
+    return inferTripFromSignals(signals);
+  } catch (error) {
+    console.warn('Trip discovery scan failed:', error);
     return [];
   }
 }

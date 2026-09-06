@@ -6,6 +6,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { useTrips } from '@/hooks/useTrips';
 import { useContacts } from '@/hooks/useContacts';
 import { useEvents } from '@/hooks/useEvents';
+import { useTripDiscovery } from '@/hooks/useTripDiscovery';
 import { PlaceRecommendation, displayCategory } from '@/lib/recommendations';
 import { NativeDatePicker } from '@/components/ui/NativeDatePicker';
 import { getTripDaySchedule, getDeviceEventsForDateRange, expandSlotForProposals, SlotProposal } from '@/lib/calendar';
@@ -74,6 +75,7 @@ const isHomeTurf = (homebase: string | undefined, destination: string) =>
 export default function TripsScreen() {
   const { user } = useAuth();
   const { trips, setTrips, toggleDismissedSlot } = useTrips();
+  const { pendingProposal, consumePendingProposal, runDiscoveryScan } = useTripDiscovery();
   const mealPrefs = { earliestLunchTime: user?.preferences?.earliestLunchTime, earliestDinnerTime: user?.preferences?.earliestDinnerTime };
   const { contacts, refreshContacts } = useContacts();
   const {
@@ -344,11 +346,58 @@ export default function TripsScreen() {
         refreshInvitedEvents(),
         ...trips.map(t => refreshTripEvents(t.id)),
         ...trips.map(t => refreshNearbyFriends(t)),
+        // Trip-discovery path 3 (docs/auto-trip-discovery-plan.md Part B): a narrower ~7-day-
+        // ahead scan, independent of and without resetting the server-side lastAppAccess
+        // counter the foreground-gated path uses — a manual pull is an explicit "check right
+        // now," not a substitute for the automatic weekly check.
+        runDiscoveryScan(7),
       ]);
     } finally {
       setIsPullRefreshing(false);
     }
   };
+
+  // Trip-discovery Part C (docs/auto-trip-discovery-plan.md): a suggestion accepted on the
+  // Home tab hands its InferredTrip over via useTripDiscovery's pendingProposal — prefill the
+  // real create-trip state from it and open the same modal handleSaveTrip is already wired to,
+  // exactly as if the user had tapped "+ New Trip" and filled it in themselves, so every field
+  // still gets reviewed/edited before anything is actually created.
+  useEffect(() => {
+    if (!pendingProposal) return;
+    const proposal = pendingProposal;
+    consumePendingProposal(); // one-shot — never re-trigger this on a later re-render
+
+    setEditTripId(null);
+    setNewDestination(proposal.destination);
+    setStartDate(proposal.startDate);
+    setEndDate(proposal.endDate);
+    setNewSharedWithCircles([]);
+    setNewDestinationCoords(proposal.destinationCoords ? { ...proposal.destinationCoords } : null);
+    resetDestinationLookup();
+
+    if (proposal.hotel) {
+      // inferTripFromSignals never geocodes (it's a pure, network-free function) — it only
+      // ever hands back the lodging signal's raw place text. Resolve real coordinates here,
+      // the same way the manual hotel-search field already does, so accepting a suggestion
+      // with a lodging signal can prefill newHotelSelected properly, not just the text query.
+      setNewHotelQuery(proposal.hotel.label);
+      setNewHotelSelected(null);
+      searchHotelLocation(proposal.hotel.label, proposal.destinationCoords ?? undefined)
+        .then(results => {
+          if (results[0]) {
+            setNewHotelSelected({ label: results[0].label, lat: results[0].latitude, lng: results[0].longitude });
+          }
+        })
+        .catch((err) => console.warn('Failed to geocode suggested hotel:', err));
+    } else {
+      setNewHotelQuery('');
+      setNewHotelSelected(null);
+    }
+    resetHotelLookup();
+
+    setShowCreateModal(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingProposal]);
 
   // One city-photo lookup per trip, cached by trip id so switching tabs/re-rendering doesn't
   // refetch — same ref-guard shape as fetchedSlotKeys below.

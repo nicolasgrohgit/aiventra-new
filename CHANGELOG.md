@@ -16,6 +16,25 @@ this is still pre-release/beta.
   is a safe no-op (logs what it would send, `emailed: false`) until the separate "email server
   on GCP" roadmap item below lands with a real relay; the suggestion itself is never lost in
   the meantime, since it's saved to Mongo regardless of email outcome.
+- **Proactive trip discovery from calendar flight/lodging signals.** The app now notices an
+  unplanned trip on its own instead of requiring a manual "create trip": a new
+  `scanForUpcomingTripSignals` (`lib/calendar.ts`) reads the device calendar, classifies each
+  event (`classifyImportedEvent`), and runs the flight/lodging hits through a new pure
+  `inferTripFromSignals` (`lib/calendar-signals.ts`) that resolves destination/dates from an
+  outbound+return flight pair, a flight plus a lodging signal, or a lodging signal alone — each
+  handled independently rather than force-pairing an ambiguous multi-city itinerary. Airport
+  codes resolve via a new small static table, `lib/iata-airports.ts` (neither
+  `lib/geocoding.ts` nor `lib/hotel-geocoding.ts` handled bare IATA codes before). Three
+  triggers: the first calendar-permission grant (`app/(tabs)/index.tsx`) runs an immediate
+  ~30-day scan and starts a new server-side `User.lastAppAccess` counter (`models/User.ts`,
+  `POST /api/users/me/app-access`, deliberately its own endpoint like `push-token` rather than
+  added to `USER_UPDATABLE_FIELDS`); app foreground re-runs that scan only once the counter
+  shows 7+ days elapsed; pulling to refresh the Trips tab runs a lighter ~7-day scan every
+  time, independent of the counter. A find surfaces as a new opt-in Home-tab card (extending
+  `connectCalendarCard`'s styling) that prefills and opens the real create-trip modal —
+  accepting or dismissing (`@dismissedTripSuggestions`, keyed by the anchoring
+  `CalendarEvent.id`s) both go through a new `TripDiscoveryProvider`
+  (`hooks/useTripDiscovery.tsx`) shared between the Home and Trips tabs.
 
 ### Fixed
 - **Profile's "‹ Back to circle view" button sits too close to the status bar.** The
@@ -37,46 +56,6 @@ this is still pre-release/beta.
   yet" text for a not-yet-joined contact is unchanged.
 
 ### Roadmap noted
-- **Proposal: auto-discover a trip from flight/lodging calendar signals and bubble it up for
-  the user to acknowledge**, instead of requiring a manual "create trip" for a trip the synced
-  calendar already fully describes. Investigated, not built — full design in
-  `docs/auto-trip-discovery-plan.md`. Confirmed every calendar-reading path today is reactive,
-  scoped to a date range the user already told the app about (`getDeviceEventsForDateRange`,
-  `lib/calendar.ts`, deliberately never prompts and is only ever called per-existing-Trip from
-  `syncDeviceCalendarForTrip` in `app/(tabs)/trips.tsx:290-306`) — nothing scans ahead for an
-  untriaged signal with no matching Trip yet. Proposed: a new proactive scan
-  (`scanForUpcomingTripSignals`, `lib/calendar.ts`) run on app foreground, reusing
-  `classifyImportedEvent` (`lib/calendar-signals.ts`) against each event, then a new pure
-  inference step resolving destination (needs a new small static IATA-code→city table — neither
-  `lib/geocoding.ts` nor `lib/hotel-geocoding.ts` resolve airport codes today) and trip start/end
-  from an arrival flight + return flight pair, or directly from a lodging signal's own event
-  time range when present. Surfaced as a new opt-in Home-tab card (extending the existing
-  `connectCalendarCard` pattern in `app/(tabs)/index.tsx`) that prefills `trips.tsx`'s real
-  create-trip state (`newDestination`/`newDestinationCoords`/`newHotelSelected`) rather than
-  handing over a blank form. **Trigger cadence revised 2026-09-06, superseding the
-  2026-08-31 client-only-throttle draft — now server-side, three distinct paths:** (1) the
-  first successful calendar-permission grant (`handleConnectCalendar`,
-  `app/(tabs)/index.tsx`) runs an immediate ~30-day-ahead scan and writes a new per-user
-  `lastAppAccess` timestamp to Mongo (`models/User.ts`), starting the counter; (2) app
-  foreground re-runs the same ~30-day scan only when the server-recorded counter shows 7+
-  days elapsed, then resets it — the counter is server state, not a client AsyncStorage flag,
-  so it survives a reinstall/new device and isn't spoofable client-side; (3) pulling down to
-  refresh the trips list (`handlePullRefresh`, `app/(tabs)/trips.tsx:340-351` — already exists,
-  already `Promise.all`s several refreshes together, this joins that list) runs a lighter
-  ~7-day-ahead scan every time, independent of and without resetting the 7-day counter from
-  path (2). `lastAppAccess` deliberately isn't added to the `PUT /api/users/:id`
-  `USER_UPDATABLE_FIELDS` allowlist — it's a server-observed fact, not a user-editable
-  preference, so it needs its own small endpoint (precedent: `POST /api/users/me/push-token`,
-  which exists for the identical reason). Nico's own framing, worth keeping: a per-user
-  `lastAppAccess` is also generally useful for engagement/retention stats later, independent
-  of gating this feature. **Ready for the next sprint.** Dismissal needs a new client-only
-  AsyncStorage key (`@dismissedTripSuggestions`) keyed by the anchoring `CalendarEvent.id`,
-  since the existing `Trip.dismissedSlots` pattern is server-persisted per-*existing*-trip and
-  doesn't fit a suggestion for a trip that doesn't exist yet. Explicitly calls out the
-  permission trade-off (a broad, earlier, opt-in calendar-access ask vs. today's silent/scoped
-  reads) and flags multi-city itineraries and true OS-level background scanning as
-  unsolved/out of scope. Not built here. Mockup:
-  https://claude.ai/code/artifact/bc001545-a8d9-4415-a575-2c3c14ed5761
 - **Need a real email server on GCP for `support@odys.ai` and `admin@odys.ai`.** No email
   infrastructure exists anywhere in this codebase today (no nodemailer/SendGrid/SES dependency,
   no outbound-mail code path). This is two separate needs: receiving mail at those addresses

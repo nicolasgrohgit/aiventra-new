@@ -1,8 +1,9 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyImportedEvent, hasDiningConflict, filterDiningConflicts } from './calendar-signals';
+import { classifyImportedEvent, hasDiningConflict, filterDiningConflicts, inferTripFromSignals } from './calendar-signals';
 import type { CalendarEvent } from './free-time';
 import type { SlotProposal } from './free-time';
+import type { ClassifiedSignal } from './calendar-signals';
 
 const ZONE = 'Europe/Paris';
 
@@ -231,5 +232,151 @@ describe('hasDiningConflict / filterDiningConflicts', () => {
     // A lunch reservation shouldn't suppress an unrelated Dinner proposal the same day.
     const lunchDining = evt('Lunch with a client', '12:00', '13:00', '10 Rue de Rivoli, 75001 Paris, France');
     assert.equal(hasDiningConflict(mealProposal, [lunchDining], ZONE), false);
+  });
+});
+
+describe('inferTripFromSignals — docs/auto-trip-discovery-plan.md Part A cases', () => {
+  // Independent of the `evt`/`at`/D helpers above (all fixed to one day) — trip inference
+  // needs signals spanning many real days, so these build CalendarEvents (and the
+  // ClassifiedSignal wrapper) directly rather than reusing classifyImportedEvent, keeping each
+  // test's dates/airport codes explicit and easy to read.
+  let nextId = 0;
+  function ce(startIso: string, endIso: string, location?: string): CalendarEvent {
+    nextId += 1;
+    return { id: `evt-${nextId}`, title: 'irrelevant', startTime: new Date(startIso), endTime: new Date(endIso), location };
+  }
+  function flight(from: string, to: string, startIso: string, endIso: string): ClassifiedSignal {
+    const event = ce(startIso, endIso);
+    return { event, signal: { kind: 'flight', from, to, source: 'generic' } };
+  }
+  function lodging(place: string, startIso: string, endIso: string): ClassifiedSignal {
+    const event = ce(startIso, endIso);
+    return { event, signal: { kind: 'lodging', place, source: 'generic' } };
+  }
+  function dining(startIso: string, endIso: string, location: string): ClassifiedSignal {
+    return { event: ce(startIso, endIso, location), signal: { kind: 'dining', confidence: 'high', source: 'generic' } };
+  }
+
+  test('case 1: outbound + return flight, no lodging — dates from the two flights, no hotel', () => {
+    const outbound = flight('JFK', 'FCO', '2030-03-10T08:00:00Z', '2030-03-10T22:00:00Z');
+    const inbound = flight('FCO', 'JFK', '2030-03-17T09:00:00Z', '2030-03-17T14:00:00Z');
+    const [trip, ...rest] = inferTripFromSignals([inbound, outbound]); // order-independent
+
+    assert.equal(rest.length, 0);
+    assert.equal(trip.destination, 'Rome, Italy');
+    assert.deepEqual(trip.destinationCoords, { lat: 41.8003, lng: 12.2389 });
+    assert.equal(trip.startDate.toISOString(), outbound.event.endTime.toISOString());
+    assert.equal(trip.endDate.toISOString(), inbound.event.startTime.toISOString());
+    assert.equal(trip.endDateIsDefault, false);
+    assert.equal(trip.hotel, undefined);
+    assert.equal(trip.anchorEventId, outbound.event.id);
+    assert.deepEqual(trip.sourceEventIds, [outbound.event.id, inbound.event.id]);
+  });
+
+  test('case 1b: outbound + return flight, WITH a lodging signal in between — lodging checkout wins over the return flight for the end date', () => {
+    const outbound = flight('JFK', 'FCO', '2030-03-10T08:00:00Z', '2030-03-10T22:00:00Z');
+    const stay = lodging('Hotel Artemide', '2030-03-11T15:00:00Z', '2030-03-16T10:00:00Z');
+    const inbound = flight('FCO', 'JFK', '2030-03-17T09:00:00Z', '2030-03-17T14:00:00Z');
+    const trips = inferTripFromSignals([outbound, stay, inbound]);
+
+    assert.equal(trips.length, 1);
+    const [trip] = trips;
+    assert.equal(trip.destination, 'Rome, Italy');
+    assert.equal(trip.endDate.toISOString(), stay.event.endTime.toISOString());
+    assert.deepEqual(trip.hotel, { label: 'Hotel Artemide' });
+    assert.deepEqual(trip.sourceEventIds, [outbound.event.id, inbound.event.id, stay.event.id]);
+  });
+
+  test('case 2: outbound flight + lodging, no return flight — end date from lodging checkout', () => {
+    const outbound = flight('JFK', 'FCO', '2030-04-01T08:00:00Z', '2030-04-01T20:00:00Z');
+    const stay = lodging('Hotel Artemide', '2030-04-01T22:00:00Z', '2030-04-06T10:00:00Z');
+    const trips = inferTripFromSignals([outbound, stay]);
+
+    assert.equal(trips.length, 1);
+    const [trip] = trips;
+    assert.equal(trip.destination, 'Rome, Italy');
+    assert.equal(trip.startDate.toISOString(), outbound.event.endTime.toISOString());
+    assert.equal(trip.endDate.toISOString(), stay.event.endTime.toISOString());
+    assert.equal(trip.endDateIsDefault, false);
+    assert.deepEqual(trip.hotel, { label: 'Hotel Artemide' });
+    assert.deepEqual(trip.sourceEventIds, [outbound.event.id, stay.event.id]);
+  });
+
+  test('case 2b: outbound flight, no return flight, no lodging — end date defaults to arrival + 3 days', () => {
+    const outbound = flight('JFK', 'FCO', '2030-04-01T08:00:00Z', '2030-04-01T20:00:00Z');
+    const trips = inferTripFromSignals([outbound]);
+
+    assert.equal(trips.length, 1);
+    const [trip] = trips;
+    assert.equal(trip.destination, 'Rome, Italy');
+    assert.equal(trip.startDate.toISOString(), outbound.event.endTime.toISOString());
+    assert.equal(trip.endDate.getTime() - trip.startDate.getTime(), 3 * 24 * 60 * 60 * 1000);
+    assert.equal(trip.endDateIsDefault, true);
+    assert.equal(trip.hotel, undefined);
+  });
+
+  test('case 3: lodging signal with no flight at all — destination/dates come entirely from the lodging event', () => {
+    const stay = lodging('Le Grand Hotel Paris', '2030-05-01T15:00:00Z', '2030-05-05T10:00:00Z');
+    const trips = inferTripFromSignals([stay]);
+
+    assert.equal(trips.length, 1);
+    const [trip] = trips;
+    assert.equal(trip.destination, 'Le Grand Hotel Paris'); // raw place text, good enough to prefill an editable field
+    assert.equal(trip.destinationCoords, undefined); // never geocoded by this pure function
+    assert.equal(trip.startDate.toISOString(), stay.event.startTime.toISOString());
+    assert.equal(trip.endDate.toISOString(), stay.event.endTime.toISOString());
+    assert.equal(trip.anchorEventId, stay.event.id);
+    assert.deepEqual(trip.sourceEventIds, [stay.event.id]);
+  });
+
+  test('case 4: two flights that do not form a round trip — each becomes its own independent candidate, not a forced pairing', () => {
+    const legA = flight('JFK', 'FCO', '2030-06-01T08:00:00Z', '2030-06-01T20:00:00Z');
+    const legB = flight('CDG', 'LHR', '2030-06-15T09:00:00Z', '2030-06-15T10:00:00Z');
+    const trips = inferTripFromSignals([legA, legB]);
+
+    assert.equal(trips.length, 2);
+    const destinations = trips.map(t => t.destination).sort();
+    assert.deepEqual(destinations, ['London, United Kingdom', 'Rome, Italy']);
+    trips.forEach(t => assert.equal(t.endDateIsDefault, true)); // no return/lodging for either leg
+  });
+
+  test('an unresolvable airport code drops the whole pair rather than guessing', () => {
+    const outbound = flight('JFK', 'ZZZ', '2030-03-10T08:00:00Z', '2030-03-10T22:00:00Z');
+    const inbound = flight('ZZZ', 'JFK', '2030-03-17T09:00:00Z', '2030-03-17T14:00:00Z');
+    assert.deepEqual(inferTripFromSignals([outbound, inbound]), []);
+  });
+
+  test('an unresolvable standalone flight (no known destination) produces no suggestion', () => {
+    const outbound = flight('JFK', 'ZZZ', '2030-03-10T08:00:00Z', '2030-03-10T22:00:00Z');
+    assert.deepEqual(inferTripFromSignals([outbound]), []);
+  });
+
+  test('dining and ground-transit signals are ignored entirely', () => {
+    const meal = dining('2030-03-10T19:00:00Z', '2030-03-10T20:00:00Z', '34 Rue Laffitte, Paris');
+    assert.deepEqual(inferTripFromSignals([meal]), []);
+  });
+
+  test('a lodging signal already claimed by one flight pairing is not reused for an unrelated standalone flight', () => {
+    const outbound = flight('JFK', 'FCO', '2030-03-10T08:00:00Z', '2030-03-10T20:00:00Z');
+    const stay = lodging('Hotel Artemide', '2030-03-10T22:00:00Z', '2030-03-15T10:00:00Z');
+    const inbound = flight('FCO', 'JFK', '2030-03-16T09:00:00Z', '2030-03-16T14:00:00Z');
+    // An unrelated later leg to a different city — should NOT pick up the already-claimed stay.
+    const unrelatedLeg = flight('CDG', 'LHR', '2030-07-01T09:00:00Z', '2030-07-01T10:00:00Z');
+
+    const trips = inferTripFromSignals([outbound, stay, inbound, unrelatedLeg]);
+    assert.equal(trips.length, 2);
+    const romeTrip = trips.find(t => t.destination === 'Rome, Italy')!;
+    const londonTrip = trips.find(t => t.destination === 'London, United Kingdom')!;
+    assert.deepEqual(romeTrip.hotel, { label: 'Hotel Artemide' });
+    assert.equal(londonTrip.hotel, undefined);
+    assert.equal(londonTrip.endDateIsDefault, true);
+  });
+
+  test('multiple independent lodging-only signals each produce their own suggestion', () => {
+    const stayA = lodging('Hotel A', '2030-08-01T15:00:00Z', '2030-08-03T10:00:00Z');
+    const stayB = lodging('Hotel B', '2030-09-01T15:00:00Z', '2030-09-03T10:00:00Z');
+    const trips = inferTripFromSignals([stayA, stayB]);
+    assert.equal(trips.length, 2);
+    assert.deepEqual(trips.map(t => t.destination).sort(), ['Hotel A', 'Hotel B']);
   });
 });
