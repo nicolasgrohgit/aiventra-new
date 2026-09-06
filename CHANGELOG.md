@@ -27,6 +27,17 @@ this is still pre-release/beta.
   booking/ticketing integration, a narrower calendar-signal net than TripIt's inbox-scanning,
   no automatic friend-proximity detection, and the local-infra reliability gap versus every
   well-funded competitor named. Investigated, not built.
+- **`expo doctor` reports real dependency drift against the installed Expo SDK (54), surfaced
+  during the 0.0.40 local build.** Non-fatal today (the local build proceeds past it), but
+  worth resolving before it becomes blocking: major-version mismatches on
+  `@sentry/react-native` (declared `^8.23.0` in `package.json`, SDK 54 expects `~7.2.0`) and
+  `expo-calendar` (declared `~14.0.4`, SDK 54 expects `~15.0.8`), plus patch-level drift on six
+  more `expo-*` packages (`expo`, `expo-constants`, `expo-font`, `expo-linking`,
+  `expo-router`, `expo-web-browser`). Pre-existing — confirmed via `git diff` against the
+  0.0.39 release commit that `package.json` was untouched by the 0.0.40 sprint, so this drift
+  predates it. Not investigated further here (which direction is safe to bump, especially the
+  Sentry major-version jump, needs its own look) — `npx expo install --check` is the fastest
+  way to see current recommendations when this gets picked up.
 
 ## [0.0.40] - 2026-09-06
 ### Added
