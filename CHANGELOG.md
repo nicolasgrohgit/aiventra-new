@@ -57,16 +57,30 @@ this is still pre-release/beta.
   time range when present. Surfaced as a new opt-in Home-tab card (extending the existing
   `connectCalendarCard` pattern in `app/(tabs)/index.tsx`) that prefills `trips.tsx`'s real
   create-trip state (`newDestination`/`newDestinationCoords`/`newHotelSelected`) rather than
-  handing over a blank form. **Trigger cadence corrected 2026-08-31:** not every app-foreground
-  event — throttled to roughly once every 7 days via a new AsyncStorage timestamp
-  (`@lastTripDiscoveryScan`), so opening the app doesn't re-scan 60 days of calendar on every
-  launch. Dismissal needs a new client-only AsyncStorage key
-  (`@dismissedTripSuggestions`) keyed by the anchoring `CalendarEvent.id`, since the existing
-  `Trip.dismissedSlots` pattern is server-persisted per-*existing*-trip and doesn't fit a
-  suggestion for a trip that doesn't exist yet. Explicitly calls out the permission trade-off
-  (a broad, earlier, opt-in calendar-access ask vs. today's silent/scoped reads) and flags
-  multi-city itineraries and true OS-level background scanning as unsolved/out of scope. Not
-  built here. Mockup: https://claude.ai/code/artifact/bc001545-a8d9-4415-a575-2c3c14ed5761
+  handing over a blank form. **Trigger cadence revised 2026-09-06, superseding the
+  2026-08-31 client-only-throttle draft — now server-side, three distinct paths:** (1) the
+  first successful calendar-permission grant (`handleConnectCalendar`,
+  `app/(tabs)/index.tsx`) runs an immediate ~30-day-ahead scan and writes a new per-user
+  `lastAppAccess` timestamp to Mongo (`models/User.ts`), starting the counter; (2) app
+  foreground re-runs the same ~30-day scan only when the server-recorded counter shows 7+
+  days elapsed, then resets it — the counter is server state, not a client AsyncStorage flag,
+  so it survives a reinstall/new device and isn't spoofable client-side; (3) pulling down to
+  refresh the trips list (`handlePullRefresh`, `app/(tabs)/trips.tsx:340-351` — already exists,
+  already `Promise.all`s several refreshes together, this joins that list) runs a lighter
+  ~7-day-ahead scan every time, independent of and without resetting the 7-day counter from
+  path (2). `lastAppAccess` deliberately isn't added to the `PUT /api/users/:id`
+  `USER_UPDATABLE_FIELDS` allowlist — it's a server-observed fact, not a user-editable
+  preference, so it needs its own small endpoint (precedent: `POST /api/users/me/push-token`,
+  which exists for the identical reason). Nico's own framing, worth keeping: a per-user
+  `lastAppAccess` is also generally useful for engagement/retention stats later, independent
+  of gating this feature. **Ready for the next sprint.** Dismissal needs a new client-only
+  AsyncStorage key (`@dismissedTripSuggestions`) keyed by the anchoring `CalendarEvent.id`,
+  since the existing `Trip.dismissedSlots` pattern is server-persisted per-*existing*-trip and
+  doesn't fit a suggestion for a trip that doesn't exist yet. Explicitly calls out the
+  permission trade-off (a broad, earlier, opt-in calendar-access ask vs. today's silent/scoped
+  reads) and flags multi-city itineraries and true OS-level background scanning as
+  unsolved/out of scope. Not built here. Mockup:
+  https://claude.ai/code/artifact/bc001545-a8d9-4415-a575-2c3c14ed5761
 - **Need a real email server on GCP for `support@odys.ai` and `admin@odys.ai`.** No email
   infrastructure exists anywhere in this codebase today (no nodemailer/SendGrid/SES dependency,
   no outbound-mail code path). This is two separate needs: receiving mail at those addresses

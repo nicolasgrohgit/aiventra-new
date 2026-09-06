@@ -96,22 +96,79 @@ existing Home tab already has exactly this visual pattern to extend:
 bordered opt-in banner for calendar connection in general; auto-discovery is a natural,
 consistent extension of that same card/flow rather than a separate ask.
 
-**Trigger cadence — corrected 2026-08-31, not every foreground.** An earlier draft of this
-doc proposed scanning on every `AppState` foreground event, matching this app's existing
-foreground-triggered patterns (`hooks/useMutationQueueFlush.ts`, the friend-request-badge
-polling). Nico pushed back on that directly: scanning 60 days of calendar on literally every
-app open is unnecessary and a needless permission/battery cost for something that only ever
-changes over days, not minutes. **Decided instead: throttle to roughly once every 7 days.**
-Concretely — the foreground check still fires (no new OS-level trigger needed, avoiding the
-bigger background-task lift below), but it first reads a new AsyncStorage timestamp (e.g.
-`@lastTripDiscoveryScan`) and only actually runs `scanForUpcomingTripSignals` when 7+ days
-have elapsed since that stored value (updating it after each real scan); a foreground event
-inside that window is a no-op. This reads naturally as "check once a week, like on Monday"
-without needing actual day-of-week logic or a true background task — it's a rolling 7-day
-debounce anchored to whenever the user happens to open the app, not a calendar-day boundary.
+**Trigger cadence — revised 2026-09-06, superseding the 2026-08-31 client-only-throttle
+draft below.** That draft (kept here for the reasoning trail) proposed a client-only
+AsyncStorage debounce. Nico's follow-up reframes this around a server-observed per-user
+counter instead, plus a third, narrower trigger tied to the trips screen's existing
+pull-to-refresh — closer to his actual mental model: "the user gets a trip schedule
+(Egencia/Navan/whatever) and comes to the app to start planning," so the app should notice
+on its own roughly weekly, but also let the user force an immediate check. **Three distinct
+trigger paths, two scan widths, one server-side counter:**
+
+1. **First calendar-permission grant** — the existing `handleConnectCalendar` opt-in flow
+   (`app/(tabs)/index.tsx`, see below) is, by construction, the very first moment the app can
+   read the calendar at all. On that first successful grant: run an immediate scan looking
+   **~30 days ahead**, and write a new server-side timestamp — `lastAppAccess` on `User`
+   (`models/User.ts`) — starting the counter. This has to be a Mongo field, not
+   AsyncStorage: Nico's own framing ("log it in mongo... this will also give us stats
+   afterwards") wants it to survive a reinstall or a new device, and to be usable later for
+   engagement/retention analysis unrelated to this one feature — a genuinely useful side
+   effect of modeling it server-side, not scope creep to design here (the actual stats views
+   are a separate, later ask).
+2. **App foreground, gated on the server-recorded counter.** The foreground event still
+   fires on every open (reusing the existing `AppState` 'active' pattern —
+   `hooks/useMutationQueueFlush.ts`, the friend-request-badge polling in
+   `hooks/useFriendRequests.tsx` — no new OS-level trigger needed), but before scanning it
+   checks `lastAppAccess`: only run the ~30-day-ahead scan (and reset `lastAppAccess`) when
+   7+ days have elapsed; otherwise it's a no-op. Functionally the same "check about once a
+   week" behavior as the earlier draft, just backed by server state instead of a client flag
+   — a stronger version, since a reinstall no longer silently resets the throttle window to
+   zero.
+3. **Pull-to-refresh on the trips screen — new, narrower, and independent of the 7-day
+   counter.** `app/(tabs)/trips.tsx:340-351` already has `handlePullRefresh`/
+   `isPullRefreshing` wired to the screen's `RefreshControl`
+   (`trips.tsx:1016`), currently `Promise.all`-ing `refreshInvitedEvents`,
+   per-trip `refreshTripEvents`, and per-trip `refreshNearbyFriends`. This is where the new
+   discovery scan hooks in — no new gesture/handler to build, just one more call added to
+   that existing `Promise.all`. Scoped to **~7 days ahead only** (Nico: "the next calendar
+   week"), reflecting that a manual pull is an explicit "check right now," not a background
+   sweep, so a narrower/cheaper window is the right trade — and it deliberately does **not**
+   read or reset `lastAppAccess`/the 7-day counter from path 2, since it's a separate,
+   user-initiated action, not a substitute for the automatic check.
+
+This means `scanForUpcomingTripSignals` needs an actual `daysAhead` parameter used two
+different ways by its callers (30 for paths 1–2, 7 for path 3), not the single fixed-default
+shape (`daysAhead = 60`) an earlier pass of this doc assumed.
+
+**Server-side plumbing this implies, not yet built:** `lastAppAccess` must NOT be added to
+`server.ts`'s `USER_UPDATABLE_FIELDS` allowlist (`server.ts:234-237`) — it's a fact the
+server itself observes, never a client-supplied preference, and that allowlist exists
+specifically to gate what a client can set via the generic `PUT /api/users/:id`. The
+matching precedent already in this codebase is `POST /api/users/me/push-token`
+(`server.ts:272-284`) — its own comment explains it's a deliberately separate endpoint for
+exactly this reason (avoiding the unscoped generic update path for server-observed/
+device-specific state). A new small endpoint in that same shape (e.g. `POST
+/api/users/me/app-access`, `authenticate`-gated, scoped to `req.userId` never a client-
+supplied id) is the natural fit — called from path 1 and, when it decides to actually scan,
+path 2.
+
 True OS-level background execution (React Native background tasks with OS-level scheduling)
-remains out of scope for the reasons already given below — a much bigger lift than this
-debounce.
+remains out of scope for the reasons already given below — a much bigger lift than any of
+the three foreground-triggered paths above.
+
+<details>
+<summary>Superseded 2026-08-31 draft (client-only throttle, kept for the reasoning trail)</summary>
+
+An earlier draft proposed scanning on every `AppState` foreground event, matching this app's
+existing foreground-triggered patterns (`hooks/useMutationQueueFlush.ts`, the
+friend-request-badge polling). Nico pushed back: scanning 60 days of calendar on literally
+every app open is unnecessary and a needless permission/battery cost for something that only
+ever changes over days, not minutes. That pass proposed throttling via a client-only
+AsyncStorage timestamp (`@lastTripDiscoveryScan`) instead — functionally similar to path 2
+above, but client-side, not server-observed, and without the separate pull-to-refresh path.
+Superseded by the server-side design above.
+
+</details>
 
 ## Part C — Surfacing it: prefill the real create-trip flow, don't hand over a blank form
 
@@ -164,3 +221,15 @@ states side by side: today's Home tab with no discovery, the new suggestion card
 - Whether auto-discovery should be on by default (with an opt-out) vs. the opt-in banner
   proposed in Part B is a product call this doc makes a recommendation on (opt-in, given the
   permission-scope trade-off) but doesn't treat as fully settled.
+- The new `POST /api/users/me/app-access`-style endpoint's exact name/shape isn't finalized —
+  the doc only establishes that it must be its own endpoint, not a `USER_UPDATABLE_FIELDS`
+  addition, following the `push-token` precedent.
+- Whether the pull-to-refresh path (3) should also bump `lastAppAccess`/reset the 7-day
+  counter isn't decided — this doc's recommendation is "no, it's a separate signal," but it's
+  a judgment call, not a hard requirement from Nico's message.
+- Retry/failure behavior if a scan errors partway (e.g. calendar read succeeds but the
+  inference step throws on one malformed event) isn't designed — should fail safely
+  (skip that event, don't abort the whole scan) but the exact handling is an implementation
+  detail.
+- The `lastAppAccess` field's later use for engagement/retention stats is flagged as a nice
+  side effect, not designed here — no stats dashboard, query, or reporting is proposed.
