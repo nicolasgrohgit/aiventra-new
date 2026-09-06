@@ -5,6 +5,18 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 this is still pre-release/beta.
 
 ## [Unreleased]
+### Added
+- **"Have a suggestion for Odys.ai?" form on Profile.** A new card between "About" and "Save
+  Changes" opens `components/profile/suggestion-form-modal.tsx` (following the
+  `VersionHistoryModal` extraction pattern): the user's name (read-only, `user?.full_name`),
+  a 1500-character `TextInput` with a live remaining-character counter, and Send/Back buttons.
+  Send posts to a new `authenticate`-gated `POST /api/suggestions`, which durably saves the
+  submission to a new `models/Suggestion.ts` collection and attempts to notify
+  `admin@odys.ai` via a new `lib/mailer.ts`. **Email delivery is inert for now** — `lib/mailer.ts`
+  is a safe no-op (logs what it would send, `emailed: false`) until the separate "email server
+  on GCP" roadmap item below lands with a real relay; the suggestion itself is never lost in
+  the meantime, since it's saved to Mongo regardless of email outcome.
+
 ### Fixed
 - **Profile's "‹ Back to circle view" button sits too close to the status bar.** The
   "Dining Contexts" categorized-selection modal (`components/profile/categorized-selection-
@@ -72,21 +84,6 @@ this is still pre-release/beta.
   product) and sending transactional mail from `server.ts` (a SendGrid/Mailgun/SES-style relay).
   Directly blocks the RFE/suggestion-form feature below from actually delivering mail. Full
   detail added to `docs/gcp-migration.md`'s local-only-needs-replacement table.
-- **Proposal: a "Have a suggestion for Odys.ai?" link on Profile**, opening a form with the
-  user's name auto-filled (read-only, from `user?.full_name` — `models/User.ts:6`), a
-  1500-character text box with a live remaining-character counter, and Send/Back buttons.
-  Investigated, not built — full design in `docs/rfe-suggestion-form-plan.md`. Proposed slot:
-  a new card between the existing "About" card and "Save Changes" in
-  `app/(tabs)/profile.tsx:348-363`, as a new `components/profile/suggestion-form-modal.tsx`
-  following the exact `VersionHistoryModal` extraction pattern. Confirmed no `multiline`/
-  `maxLength` `TextInput` usage exists anywhere in `app/`/`components/` today — this is a
-  net-new input pattern for the app. Blocked on the email-server-on-GCP item directly above for
-  actually delivering mail to `admin@odys.ai`; proposed workaround follows this codebase's own
-  "build it, no-op until configured" precedent (`lib/google-places-client.ts`, `SENTRY_DSN`):
-  persist every submission immediately to a new `models/Suggestion.ts` via a new
-  `authenticate`-gated `POST /api/suggestions`, with a `lib/mailer.ts` wrapper that safely no-ops
-  until a real mail relay exists, so the feature isn't fully blocked on that infra landing first.
-  Not built here.
 - **Refreshed the competitive landscape analysis**, extending `docs/monetization-strategy.md`'s
   competitor table (previously scoped to monetization models only) into a full capability/
   positioning "tour of the horizon," including AI-native trip-planning agents not covered

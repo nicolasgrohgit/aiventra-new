@@ -21,9 +21,11 @@ import Contact from './models/Contact';
 import Event, { PopulatedEventCreator } from './models/Event';
 import FriendRequest from './models/FriendRequest';
 import Place from './models/Place';
+import Suggestion from './models/Suggestion';
 import { ensurePlacesForCity, refreshNearbyPlacesLive } from './lib/places-population';
 import { searchCities } from './lib/geocoding';
 import { sendPushNotification } from './lib/push-notifications';
+import { sendMail } from './lib/mailer';
 
 dotenv.config({ quiet: true });
 
@@ -1265,6 +1267,52 @@ app.delete('/api/contacts/:id', authenticate, async (req: AuthedRequest, res: ex
     res.json({ success: true, message: 'Contact deleted successfully' });
   } catch (error: any) {
     reportError(error, req, 'delete contact failed');
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// 4a. Suggestions — the "Have a suggestion for Odys.ai?" form on Profile (see
+// components/profile/suggestion-form-modal.tsx). The suggestion is durably saved to Mongo the
+// moment this succeeds; the admin-notification email is best-effort on top of that (see
+// lib/mailer.ts — a safe no-op until a real mail relay is configured), never a precondition
+// for a 200 here. Read the user from the authenticated request, never a client-supplied name —
+// same hardening as every other write route in this file.
+app.post('/api/suggestions', authenticate, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
+    if (!text) {
+      return res.status(400).json({ error: 'text is required' });
+    }
+    if (text.length > 1500) {
+      return res.status(400).json({ error: 'text must be 1500 characters or fewer' });
+    }
+
+    // The suggestion itself is the one thing that must succeed for a 200 here — it's the
+    // durable source of truth (see models/Suggestion.ts). Any failure below this point (the
+    // best-effort admin-notification email) is caught separately and never turns into a
+    // client-facing error, per the doc's explicit call: the user shouldn't see an error for
+    // an email-relay gap that isn't their problem to know about.
+    const suggestion = await Suggestion.create({ user: req.userId, text });
+
+    try {
+      const user = await User.findById(req.userId).select('full_name email');
+      const { sent } = await sendMail({
+        to: 'admin@odys.ai',
+        subject: 'New Odys.ai suggestion',
+        text: `From: ${user?.full_name || user?.email || req.userId}\n\n${text}`
+      });
+      if (sent) {
+        suggestion.emailed = true;
+        await suggestion.save();
+      }
+      req.log.info({ event: 'suggestion_submitted', userId: req.userId, suggestionId: suggestion._id.toString(), emailed: sent }, 'suggestion submitted');
+    } catch (mailError: any) {
+      reportError(mailError, req, 'suggestion email notification failed');
+    }
+
+    res.json({ success: true });
+  } catch (error: any) {
+    reportError(error, req, 'create suggestion failed');
     res.status(500).json({ error: 'Internal server error' });
   }
 });

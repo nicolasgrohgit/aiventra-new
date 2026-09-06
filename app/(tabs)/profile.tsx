@@ -16,6 +16,7 @@ import { ConfigRowModal } from '@/components/profile/config-row-modal';
 import { CategorizedSelectionModal } from '@/components/profile/categorized-selection-modal';
 import { GenericSelectionModal } from '@/components/profile/generic-selection-modal';
 import { VersionHistoryModal } from '@/components/profile/version-history-modal';
+import { SuggestionFormModal } from '@/components/profile/suggestion-form-modal';
 
 export const COMMON_DIETS = ['Vegetarian', 'Vegan', 'Halal', 'Kosher', 'Gluten-Free', 'Keto', 'Nut-Free'];
 
@@ -114,6 +115,7 @@ export default function ProfileScreen() {
   const [showActivityModal, setShowActivityModal] = useState(false);
   const [showEventModal, setShowEventModal] = useState(false);
   const [showVersionModal, setShowVersionModal] = useState(false);
+  const [showSuggestionModal, setShowSuggestionModal] = useState(false);
   // Disables the avatar tap target and swaps in a spinner while the pick -> crop -> resize ->
   // compress pipeline runs, so a slow device/large source photo can't be tapped again mid-flight
   // (which would kick off a second concurrent updateUser call).
@@ -354,6 +356,15 @@ export default function ProfileScreen() {
             <Text style={styles.cardDesc}>App Version: v{appVersion} (View Changelog)</Text>
          </TouchableOpacity>
 
+        <TouchableOpacity
+           style={styles.engineConfigCard}
+           activeOpacity={0.7}
+           onPress={() => setShowSuggestionModal(true)}
+         >
+            <Text style={styles.cardHeader}>Have a suggestion for Odys.ai?</Text>
+            <Text style={styles.cardDesc}>Tell us what&apos;s missing or what could be better.</Text>
+         </TouchableOpacity>
+
         <TouchableOpacity style={styles.saveButton} onPress={handleSave}>
           <Text style={styles.saveButtonText}>Save Changes</Text>
         </TouchableOpacity>
@@ -367,6 +378,7 @@ export default function ProfileScreen() {
       <CategorizedSelectionModal visible={showActivityModal} close={() => setShowActivityModal(false)} title="Activity Genres" description="Choose the types of outdoor and indoor activities you enjoy most." groupedOptions={ACTIVITY_GENRES_CATEGORIZED} selected={activityGenres} onSelectedChange={setActivityGenres} category="Activity" />
       <CategorizedSelectionModal visible={showEventModal} close={() => setShowEventModal(false)} title="Event Types" description="Select the categories of live entertainment and events you would like to discover." groupedOptions={EVENT_GENRES_CATEGORIZED} selected={eventGenres} onSelectedChange={setEventGenres} category="Event" />
       <VersionHistoryModal visible={showVersionModal} close={() => setShowVersionModal(false)} history={CHANGELOG_HISTORY} />
+      <SuggestionFormModal visible={showSuggestionModal} close={() => setShowSuggestionModal(false)} />
 
     </View>
   );
