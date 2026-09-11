@@ -316,6 +316,15 @@ const DEFAULT_TRIP_LENGTH_DAYS = 3;
 
 type FlightSignal = Extract<TravelSignal, { kind: 'flight' }>;
 type LodgingSignal = Extract<TravelSignal, { kind: 'lodging' }>;
+type GroundTransitSignal = Extract<TravelSignal, { kind: 'ground-transit' }>;
+
+// A "Travel time to/from <airport>" ground-transit signal is only trusted to refine a trip's
+// leave-home/return-home instant (see claimHomeDepartureTransit/claimHomeReturnTransit below)
+// when it falls within this window of the flight it's supposedly attached to — otherwise an
+// unrelated same-day appointment that happens to be near an airport (sharing only the
+// 'to'/'from' keyword) could wrongly shift a trip's own dates. Not researched against real
+// airport-transit-time data, same spirit as lib/free-time.ts's FLIGHT_BUFFER_MINUTES.
+const AIRPORT_TRANSIT_WINDOW_MS = 6 * 60 * 60 * 1000;
 
 function normalizeAirportCode(code?: string): string | undefined {
   const trimmed = code?.trim().toUpperCase();
@@ -361,31 +370,100 @@ function lodgingHotelInfo(signal: TravelSignal): { label: string } | undefined {
   return place ? { label: place } : undefined;
 }
 
+// A 'to'-direction ground-transit event ending at/shortly before a flight's own departure —
+// its own startTime (when they actually left home/the office for the airport) is a more
+// precise "left home" instant than the flight's own boarding time. Mirrors
+// claimMatchingLodging's consumed-index pattern so the same transit signal can't be claimed by
+// two different trip suggestions.
+function claimHomeDepartureTransit(
+  transits: ClassifiedSignal[],
+  consumedTransitIdx: Set<number>,
+  flightDeparture: Date
+): ClassifiedSignal | undefined {
+  const idx = transits.findIndex((t, i) => {
+    if (consumedTransitIdx.has(i)) return false;
+    if ((t.signal as GroundTransitSignal).direction !== 'to') return false;
+    const gapMs = flightDeparture.getTime() - t.event.endTime.getTime();
+    return gapMs >= 0 && gapMs <= AIRPORT_TRANSIT_WINDOW_MS;
+  });
+  if (idx === -1) return undefined;
+  consumedTransitIdx.add(idx);
+  return transits[idx];
+}
+
+// Symmetric to claimHomeDepartureTransit: a 'from'-direction ground-transit event starting
+// at/shortly after a flight's own arrival — its own endTime (when they actually walked in the
+// door) is a more precise "back home" instant than the flight's landing time.
+function claimHomeReturnTransit(
+  transits: ClassifiedSignal[],
+  consumedTransitIdx: Set<number>,
+  flightArrival: Date
+): ClassifiedSignal | undefined {
+  const idx = transits.findIndex((t, i) => {
+    if (consumedTransitIdx.has(i)) return false;
+    if ((t.signal as GroundTransitSignal).direction !== 'from') return false;
+    const gapMs = t.event.startTime.getTime() - flightArrival.getTime();
+    return gapMs >= 0 && gapMs <= AIRPORT_TRANSIT_WINDOW_MS;
+  });
+  if (idx === -1) return undefined;
+  consumedTransitIdx.add(idx);
+  return transits[idx];
+}
+
 // Part A case 1 (+ a same-window lodging signal, if any): a matched outbound/return flight
 // pair. Returns null when the outbound's arrival airport isn't in lib/iata-airports.ts's
 // table — per Part A, an unresolvable airport means no auto-discovery for this trip, not a
 // wrong guess, so this deliberately doesn't fall back to treating the pair as two standalone
 // flights.
+//
+// A trip's own startDate/endDate are "when they leave home" / "when they're back home" — the
+// outbound flight's departure and the return flight's arrival — not the narrower destination-
+// only window (landing abroad to leaving abroad again). This matters beyond just what the
+// suggestion displays: app/(tabs)/trips.tsx's syncDeviceCalendarForTrip uses trip.startDate as
+// the left edge of the device-calendar query that (re-)imports this trip's real events, so an
+// arrival-anchored startDate would put that query boundary AFTER the very outbound flight that
+// anchored this suggestion in the first place — the day's free-time computation would then
+// never see that flight as busy time and could propose something during it. Anchoring on the
+// actual leave-home/return-home instants keeps the query (and everything downstream that keys
+// off "the trip's first/last day," see lib/free-time.ts's getTripDaySchedule) consistent with
+// the real journey, not just the destination portion of it.
+//
+// A flight's own boarding/landing time is only a proxy for "left home"/"back home" though —
+// when a real `Travel time to/from <airport>` ground-transit signal exists right next to it
+// (claimHomeDepartureTransit/claimHomeReturnTransit), that event's own startTime/endTime is a
+// more precise instant and wins.
 function buildRoundTripSuggestion(
   outbound: ClassifiedSignal,
   inbound: ClassifiedSignal,
   lodgings: ClassifiedSignal[],
-  consumedLodgingIdx: Set<number>
+  consumedLodgingIdx: Set<number>,
+  groundTransits: ClassifiedSignal[],
+  consumedTransitIdx: Set<number>
 ): InferredTrip | null {
   const outboundSignal = outbound.signal as FlightSignal;
   const airport = resolveAirportCity(outboundSignal.to);
   if (!airport) return null;
 
-  const startDate = outbound.event.endTime; // when they land
-  let endDate = inbound.event.startTime; // when they leave the destination again
+  const destinationArrival = outbound.event.endTime; // when they land abroad
+  const destinationDeparture = inbound.event.startTime; // when they leave abroad again
   const sourceEventIds = [outbound.event.id, inbound.event.id];
 
-  // A lodging signal's own endTime is a cleaner checkout instant than the return flight's
-  // departure time (Part A), so prefer it when one falls within this trip's window.
-  const lodging = claimMatchingLodging(lodgings, consumedLodgingIdx, startDate, endDate);
+  const departureTransit = claimHomeDepartureTransit(groundTransits, consumedTransitIdx, outbound.event.startTime);
+  const startDate = departureTransit?.event.startTime ?? outbound.event.startTime; // when they leave home
+  if (departureTransit) sourceEventIds.push(departureTransit.event.id);
+
+  const returnTransit = claimHomeReturnTransit(groundTransits, consumedTransitIdx, inbound.event.endTime);
+  const endDate = returnTransit?.event.endTime ?? inbound.event.endTime; // when they're back home
+  if (returnTransit) sourceEventIds.push(returnTransit.event.id);
+
+  // A real return flight's own arrival is already the most direct "back home" signal there
+  // is, so — unlike the standalone-flight case below, which has no return flight to anchor
+  // on — a lodging signal here only ever contributes hotel metadata for the create-trip form,
+  // never the end date itself. Matched against the destination-only window (arrival abroad to
+  // departure abroad), which is where a hotel stay actually happens.
+  const lodging = claimMatchingLodging(lodgings, consumedLodgingIdx, destinationArrival, destinationDeparture);
   let hotel: { label: string } | undefined;
   if (lodging) {
-    endDate = lodging.event.endTime;
     hotel = lodgingHotelInfo(lodging.signal);
     sourceEventIds.push(lodging.event.id);
   }
@@ -409,19 +487,25 @@ function buildRoundTripSuggestion(
 function buildStandaloneFlightSuggestion(
   flight: ClassifiedSignal,
   lodgings: ClassifiedSignal[],
-  consumedLodgingIdx: Set<number>
+  consumedLodgingIdx: Set<number>,
+  groundTransits: ClassifiedSignal[],
+  consumedTransitIdx: Set<number>
 ): InferredTrip | null {
   const flightSignal = flight.signal as FlightSignal;
   const airport = resolveAirportCity(flightSignal.to);
   if (!airport) return null;
 
-  const startDate = flight.event.endTime;
-  const sourceEventIds = [flight.event.id];
+  const arrivalAtDestination = flight.event.endTime;
+  // When they leave home — see buildRoundTripSuggestion for why a preceding ground-transit
+  // signal, if one exists, wins over the flight's own departure time.
+  const departureTransit = claimHomeDepartureTransit(groundTransits, consumedTransitIdx, flight.event.startTime);
+  const startDate = departureTransit?.event.startTime ?? flight.event.startTime;
+  const sourceEventIds = departureTransit ? [flight.event.id, departureTransit.event.id] : [flight.event.id];
 
   // No return flight to bound the window with, so look for a lodging signal starting any time
   // at/after arrival — checkout (whenever it is) becomes the end date.
   const lodging = claimMatchingLodging(
-    lodgings, consumedLodgingIdx, startDate, new Date(8640000000000000) // effectively unbounded
+    lodgings, consumedLodgingIdx, arrivalAtDestination, new Date(8640000000000000) // effectively unbounded
   );
 
   if (lodging) {
@@ -441,7 +525,10 @@ function buildStandaloneFlightSuggestion(
     destination: airport.city,
     destinationCoords: { lat: airport.latitude, lng: airport.longitude },
     startDate,
-    endDate: new Date(startDate.getTime() + DEFAULT_TRIP_LENGTH_DAYS * 24 * 60 * 60 * 1000),
+    // Guessed trip length is a guess about time spent AT the destination, so it's counted
+    // from arrival there, not from the (generally very close, but not identical) home-leaving
+    // startDate above.
+    endDate: new Date(arrivalAtDestination.getTime() + DEFAULT_TRIP_LENGTH_DAYS * 24 * 60 * 60 * 1000),
     endDateIsDefault: true,
     anchorEventId: flight.event.id,
     sourceEventIds,
@@ -466,15 +553,21 @@ function buildLodgingOnlySuggestion(lodging: ClassifiedSignal): InferredTrip {
 }
 
 /**
- * Turns a batch of already-classified device-calendar signals (flight/lodging only — dining
- * and ground-transit carry no trip-shaping information) into zero or more trip suggestions.
- * Called by lib/calendar.ts's scanForUpcomingTripSignals against everything a scan window
- * turned up; kept pure/synchronous so it's directly unit-testable (lib/calendar-signals.test.ts)
- * without any RN/device-calendar dependency.
+ * Turns a batch of already-classified device-calendar signals into zero or more trip
+ * suggestions. A trip only ever gets ANCHORED by a flight or a lodging signal (dining carries
+ * no trip-shaping information at all, and a ground-transit signal alone — with no flight
+ * nearby to attach to — produces no trip either); a ground-transit signal only ever refines an
+ * already-anchoring flight's own leave-home/return-home instant, see
+ * claimHomeDepartureTransit/claimHomeReturnTransit. Called by lib/calendar.ts's
+ * scanForUpcomingTripSignals against everything a scan window turned up; kept pure/synchronous
+ * so it's directly unit-testable (lib/calendar-signals.test.ts) without any RN/device-calendar
+ * dependency.
  *
- * Handles, per docs/auto-trip-discovery-plan.md Part A: an outbound+return flight pair (with
- * or without a lodging signal sharpening the end date), an outbound flight with a lodging
- * signal but no return flight, a lodging signal with no flight at all, and two flight signals
+ * Handles, per docs/auto-trip-discovery-plan.md Part A: an outbound+return flight pair (dates
+ * from the flights' own leave-home/return-home instants; a lodging signal in between only
+ * contributes hotel metadata, not the end date — see buildRoundTripSuggestion), an outbound
+ * flight with a lodging signal but no return flight, a lodging signal with no flight at all,
+ * and two flight signals
  * that don't form a sensible round trip (each becomes its own independent candidate rather
  * than a forced, possibly-wrong pairing). Every signal that can't resolve a real destination
  * (an airport code missing from lib/iata-airports.ts's table) is silently dropped, not guessed
@@ -485,9 +578,11 @@ export function inferTripFromSignals(signals: ClassifiedSignal[]): InferredTrip[
     .filter(s => s.signal.kind === 'flight')
     .sort((a, b) => a.event.startTime.getTime() - b.event.startTime.getTime());
   const lodgings = signals.filter(s => s.signal.kind === 'lodging');
+  const groundTransits = signals.filter(s => s.signal.kind === 'ground-transit');
 
   const consumedFlightIdx = new Set<number>();
   const consumedLodgingIdx = new Set<number>();
+  const consumedTransitIdx = new Set<number>();
   const trips: InferredTrip[] = [];
 
   // Pass 1: pair up round trips — earliest unconsumed outbound with the earliest unconsumed
@@ -499,7 +594,7 @@ export function inferTripFromSignals(signals: ClassifiedSignal[]): InferredTrip[
       if (isReverseFlightPair(flights[i].signal, flights[j].signal)) {
         consumedFlightIdx.add(i);
         consumedFlightIdx.add(j);
-        const trip = buildRoundTripSuggestion(flights[i], flights[j], lodgings, consumedLodgingIdx);
+        const trip = buildRoundTripSuggestion(flights[i], flights[j], lodgings, consumedLodgingIdx, groundTransits, consumedTransitIdx);
         if (trip) trips.push(trip);
         break;
       }
@@ -510,7 +605,7 @@ export function inferTripFromSignals(signals: ClassifiedSignal[]): InferredTrip[
   // independently — Part A case 4.
   flights.forEach((flight, idx) => {
     if (consumedFlightIdx.has(idx)) return;
-    const trip = buildStandaloneFlightSuggestion(flight, lodgings, consumedLodgingIdx);
+    const trip = buildStandaloneFlightSuggestion(flight, lodgings, consumedLodgingIdx, groundTransits, consumedTransitIdx);
     if (trip) trips.push(trip);
   });
 

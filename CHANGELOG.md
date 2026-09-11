@@ -39,6 +39,59 @@ this is still pre-release/beta.
   Sentry major-version jump, needs its own look) — `npx expo install --check` is the fastest
   way to see current recommendations when this gets picked up.
 
+## [0.0.41] - 2026-09-11
+### Added
+- **"Past trips" view.** A trip used to never leave the main Trips list, even long after it
+  ended — `models/Trip.ts` has no status/archived concept, `GET /api/trips` returns everything
+  unconditionally, and `app/(tabs)/trips.tsx` rendered every trip in one list forever (only a
+  manual trash-icon delete removed one). The Trips tab now has a "Current & Upcoming" / "Past"
+  segmented control:
+  1. No new DB field — a trip's bucket is derived at render time from `end_date + 1 day < now`,
+     checked in the trip's own `timezone` (not device time). Applies retroactively to every
+     trip already in the DB, zero backfill/migration (see `lib/trip-types.ts`'s `isTripPast`).
+  2. Past trips render via a new, lightweight `components/trips/past-trip-card.tsx` (destination,
+     dates, city photo) that skips AI Schedule Proposals, free-time computation, and
+     nearby-friends lookups — none of that applies to a trip that's already happened. Manual
+     delete still works there; no other new actions for this pass.
+  3. Retention: past trips stay in the DB indefinitely, no auto-purge job — comfortably clears
+     the requested 6-month floor without adding a scheduled destructive operation against live
+     data with no backup strategy in place (a real incident already happened from a migration
+     gone wrong against this same database).
+  4. `GET /api/trips`, `useTrips`, and `useSyncedCollection` are unaffected — purely a
+     client-side view split over data already synced.
+
+### Fixed
+- **An auto-discovered trip's start/end dates were anchored to the destination-only window
+  (flight arrival abroad / departure abroad), not the traveler's own home-to-home journey —**
+  live-reported as a free morning slot (and an AI activity proposal) spanning right across an
+  actual outbound flight, on a trip that had just been auto-discovered from that same flight.
+  Two compounding causes, both fixed:
+  - `lib/calendar-signals.ts`'s `buildRoundTripSuggestion`/`buildStandaloneFlightSuggestion` set
+    `trip.startDate` to the outbound flight's *arrival* time; `app/(tabs)/trips.tsx`'s
+    `syncDeviceCalendarForTrip` uses that same value as the left edge of the device-calendar
+    import query, so the outbound flight itself (whose own start necessarily precedes its own
+    arrival) fell outside its own trip's sync window and was never imported as a busy event. A
+    trip's `startDate`/`endDate` are now the actual leave-home/return-home instants (refined
+    further by a real `Travel time to/from <airport>` ground-transit signal when one exists
+    near the flight, see `claimHomeDepartureTransit`/`claimHomeReturnTransit`) rather than the
+    narrower arrival-abroad/departure-abroad window. A lodging signal in between a round trip's
+    own flights now only contributes hotel metadata for the create-trip form, not the end date,
+    since the return flight's own arrival is already the more direct "back home" signal.
+  - `lib/free-time.ts`'s `getTripDaySchedule` had two further gaps in the flight-arrival-buffer
+    logic even once the flight was correctly imported: a genuine red-eye (departs the trip's
+    start day, lands after midnight) wasn't recognized, since the flight's own `startTime` —
+    what buckets an event into a day's `dayEvents` — falls on the *departure* day, not the
+    arrival day that actually needs its effective start bounded; and an arrival day with no
+    *other* real synced events fell straight through to `getHardcodedFreeSlots`, which has no
+    concept of the flight at all. Both fixed: the arrival-buffer check now searches the full
+    imported-events list by each flight's own arrival instant across both candidate days
+    (gated so an unrelated same-day domestic hop still has no effect), and an arrival-only day
+    now computes a real buffered slot instead of falling back to the generic hardcoded schedule.
+  - Verified via a fresh QA account in the local web build: created a trip, confirmed it showed
+    under Current & Upcoming, backdated it directly in Mongo, confirmed it moved to Past with
+    the correct card, deleted it from there. Also 227 tests (7 new, covering the red-eye,
+    empty-arrival-day, and ground-transit-refinement cases) + `tsc --noEmit` + lint all pass.
+
 ## [0.0.40] - 2026-09-06
 ### Added
 - **"Have a suggestion for Odys.ai?" form on Profile.** A new card between "About" and "Save
@@ -72,6 +125,29 @@ this is still pre-release/beta.
   (`hooks/useTripDiscovery.tsx`) shared between the Home and Trips tabs.
 
 ### Fixed
+- **An auto-discovered trip's start/end dates were anchored to the destination-only window
+  (flight arrival abroad / departure abroad), not the traveler's own home-to-home journey.**
+  Reported live: a trip auto-discovered from a same-day outbound flight showed a free morning
+  slot (and an AI activity proposal) spanning right across the actual flight time. Cause:
+  `lib/calendar-signals.ts`'s `buildRoundTripSuggestion`/`buildStandaloneFlightSuggestion` set
+  `trip.startDate` to the outbound flight's *arrival* time, and `app/(tabs)/trips.tsx`'s
+  `syncDeviceCalendarForTrip` uses that same value as the left edge of the device-calendar
+  import query — so the outbound flight itself (whose own start necessarily precedes its own
+  arrival) fell outside its own trip's sync window and was never imported as a busy event,
+  leaving the free-time algorithm with nothing to route around. Fixed at the source: a trip's
+  `startDate`/`endDate` are now the actual leave-home/return-home instants (the outbound
+  flight's departure, the return flight's arrival) rather than the narrower arrival-abroad/
+  departure-abroad window — a lodging signal in between a round trip's own flights now only
+  contributes hotel metadata for the create-trip form, not the end date, since the return
+  flight's own arrival is already the more direct "back home" signal. A follow-up to the same
+  live report: a genuine red-eye (departs the trip's start day, lands after midnight) could
+  still slip past `lib/free-time.ts`'s `getTripDaySchedule`, since the flight's own startTime
+  (what buckets an event into a day's `dayEvents`) falls on the departure day even though its
+  arrival — the instant that actually needs to bound the *next* day's effective start — lands
+  on the day after. The arrival-buffer check now searches the full imported-events list by
+  each flight's own arrival instant, on both the trip's start day and the day right after it,
+  gated so a same-day domestic hop that happens to land on that later day still has no effect
+  (only a flight that actually departed on the trip's own start day counts).
 - **Profile's "‹ Back to circle view" button sits too close to the status bar.** The
   "Dining Contexts" categorized-selection modal (`components/profile/categorized-selection-
   modal.tsx`) used a hardcoded `paddingTop: Platform.OS === 'ios' ? 40 : 24`, so on a device

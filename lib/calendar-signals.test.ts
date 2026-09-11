@@ -253,6 +253,10 @@ describe('inferTripFromSignals — docs/auto-trip-discovery-plan.md Part A cases
     const event = ce(startIso, endIso);
     return { event, signal: { kind: 'lodging', place, source: 'generic' } };
   }
+  function transit(direction: 'to' | 'from', startIso: string, endIso: string, place?: string): ClassifiedSignal {
+    const event = ce(startIso, endIso);
+    return { event, signal: { kind: 'ground-transit', direction, place, source: 'generic' } };
+  }
   function dining(startIso: string, endIso: string, location: string): ClassifiedSignal {
     return { event: ce(startIso, endIso, location), signal: { kind: 'dining', confidence: 'high', source: 'generic' } };
   }
@@ -265,15 +269,16 @@ describe('inferTripFromSignals — docs/auto-trip-discovery-plan.md Part A cases
     assert.equal(rest.length, 0);
     assert.equal(trip.destination, 'Rome, Italy');
     assert.deepEqual(trip.destinationCoords, { lat: 41.8003, lng: 12.2389 });
-    assert.equal(trip.startDate.toISOString(), outbound.event.endTime.toISOString());
-    assert.equal(trip.endDate.toISOString(), inbound.event.startTime.toISOString());
+    // Home-to-home, not just the destination-only window — see buildRoundTripSuggestion.
+    assert.equal(trip.startDate.toISOString(), outbound.event.startTime.toISOString());
+    assert.equal(trip.endDate.toISOString(), inbound.event.endTime.toISOString());
     assert.equal(trip.endDateIsDefault, false);
     assert.equal(trip.hotel, undefined);
     assert.equal(trip.anchorEventId, outbound.event.id);
     assert.deepEqual(trip.sourceEventIds, [outbound.event.id, inbound.event.id]);
   });
 
-  test('case 1b: outbound + return flight, WITH a lodging signal in between — lodging checkout wins over the return flight for the end date', () => {
+  test('case 1b: outbound + return flight, WITH a lodging signal in between — the lodging only contributes hotel metadata, the return flight\'s own arrival still wins for the end date', () => {
     const outbound = flight('JFK', 'FCO', '2030-03-10T08:00:00Z', '2030-03-10T22:00:00Z');
     const stay = lodging('Hotel Artemide', '2030-03-11T15:00:00Z', '2030-03-16T10:00:00Z');
     const inbound = flight('FCO', 'JFK', '2030-03-17T09:00:00Z', '2030-03-17T14:00:00Z');
@@ -282,9 +287,64 @@ describe('inferTripFromSignals — docs/auto-trip-discovery-plan.md Part A cases
     assert.equal(trips.length, 1);
     const [trip] = trips;
     assert.equal(trip.destination, 'Rome, Italy');
-    assert.equal(trip.endDate.toISOString(), stay.event.endTime.toISOString());
+    assert.equal(trip.startDate.toISOString(), outbound.event.startTime.toISOString());
+    assert.equal(trip.endDate.toISOString(), inbound.event.endTime.toISOString());
     assert.deepEqual(trip.hotel, { label: 'Hotel Artemide' });
     assert.deepEqual(trip.sourceEventIds, [outbound.event.id, inbound.event.id, stay.event.id]);
+  });
+
+  test('case 1c: a real "Travel time to/from airport" ground-transit signal next to each flight refines the leave-home/return-home instants further than the flights\' own boundaries', () => {
+    const toAirport = transit('to', '2030-03-10T06:30:00Z', '2030-03-10T07:45:00Z');
+    const outbound = flight('JFK', 'FCO', '2030-03-10T08:00:00Z', '2030-03-10T22:00:00Z');
+    const inbound = flight('FCO', 'JFK', '2030-03-17T09:00:00Z', '2030-03-17T14:00:00Z');
+    const fromAirport = transit('from', '2030-03-17T14:30:00Z', '2030-03-17T15:15:00Z');
+    const trips = inferTripFromSignals([toAirport, outbound, inbound, fromAirport]);
+
+    assert.equal(trips.length, 1);
+    const [trip] = trips;
+    // The transit's own startTime (left the house at 06:30) beats the flight's own departure
+    // (08:00) as the "left home" instant; symmetrically the transit's own endTime (walked in
+    // the door at 15:15) beats the flight's own landing (14:00) for "back home".
+    assert.equal(trip.startDate.toISOString(), toAirport.event.startTime.toISOString());
+    assert.equal(trip.endDate.toISOString(), fromAirport.event.endTime.toISOString());
+    assert.deepEqual(trip.sourceEventIds, [outbound.event.id, inbound.event.id, toAirport.event.id, fromAirport.event.id]);
+  });
+
+  test('case 1d: a ground-transit signal far outside the flight\'s window is not trusted', () => {
+    // A full day before the outbound flight — an unrelated errand near an airport, not this
+    // trip's own "leaving home" instant.
+    const toAirport = transit('to', '2030-03-09T06:30:00Z', '2030-03-09T07:45:00Z');
+    const outbound = flight('JFK', 'FCO', '2030-03-10T08:00:00Z', '2030-03-10T22:00:00Z');
+    const inbound = flight('FCO', 'JFK', '2030-03-17T09:00:00Z', '2030-03-17T14:00:00Z');
+    const trips = inferTripFromSignals([toAirport, outbound, inbound]);
+
+    assert.equal(trips.length, 1);
+    assert.equal(trips[0].startDate.toISOString(), outbound.event.startTime.toISOString());
+  });
+
+  test('case 1e: a wrong-direction ground-transit signal near the flight is not trusted', () => {
+    // A 'from'-direction signal sitting right before departure (e.g. "Travel time from home")
+    // isn't the "left home for the airport" signal claimHomeDepartureTransit looks for.
+    const wrongDirection = transit('from', '2030-03-10T06:30:00Z', '2030-03-10T07:45:00Z');
+    const outbound = flight('JFK', 'FCO', '2030-03-10T08:00:00Z', '2030-03-10T22:00:00Z');
+    const inbound = flight('FCO', 'JFK', '2030-03-17T09:00:00Z', '2030-03-17T14:00:00Z');
+    const trips = inferTripFromSignals([wrongDirection, outbound, inbound]);
+
+    assert.equal(trips.length, 1);
+    assert.equal(trips[0].startDate.toISOString(), outbound.event.startTime.toISOString());
+  });
+
+  test('case 1f: standalone flight (no return leg) still gets its startDate refined by a preceding ground-transit signal', () => {
+    const toAirport = transit('to', '2030-04-01T06:30:00Z', '2030-04-01T07:45:00Z');
+    const outbound = flight('JFK', 'FCO', '2030-04-01T08:00:00Z', '2030-04-01T20:00:00Z');
+    const trips = inferTripFromSignals([toAirport, outbound]);
+
+    assert.equal(trips.length, 1);
+    const [trip] = trips;
+    assert.equal(trip.startDate.toISOString(), toAirport.event.startTime.toISOString());
+    assert.deepEqual(trip.sourceEventIds, [outbound.event.id, toAirport.event.id]);
+    // Unaffected: the default-length guess is still measured from arrival at the destination.
+    assert.equal(trip.endDate.getTime() - outbound.event.endTime.getTime(), 3 * 24 * 60 * 60 * 1000);
   });
 
   test('case 2: outbound flight + lodging, no return flight — end date from lodging checkout', () => {
@@ -295,7 +355,7 @@ describe('inferTripFromSignals — docs/auto-trip-discovery-plan.md Part A cases
     assert.equal(trips.length, 1);
     const [trip] = trips;
     assert.equal(trip.destination, 'Rome, Italy');
-    assert.equal(trip.startDate.toISOString(), outbound.event.endTime.toISOString());
+    assert.equal(trip.startDate.toISOString(), outbound.event.startTime.toISOString());
     assert.equal(trip.endDate.toISOString(), stay.event.endTime.toISOString());
     assert.equal(trip.endDateIsDefault, false);
     assert.deepEqual(trip.hotel, { label: 'Hotel Artemide' });
@@ -309,8 +369,9 @@ describe('inferTripFromSignals — docs/auto-trip-discovery-plan.md Part A cases
     assert.equal(trips.length, 1);
     const [trip] = trips;
     assert.equal(trip.destination, 'Rome, Italy');
-    assert.equal(trip.startDate.toISOString(), outbound.event.endTime.toISOString());
-    assert.equal(trip.endDate.getTime() - trip.startDate.getTime(), 3 * 24 * 60 * 60 * 1000);
+    assert.equal(trip.startDate.toISOString(), outbound.event.startTime.toISOString());
+    // Guessed length is measured from arrival at the destination, not from home-leaving startDate.
+    assert.equal(trip.endDate.getTime() - outbound.event.endTime.getTime(), 3 * 24 * 60 * 60 * 1000);
     assert.equal(trip.endDateIsDefault, true);
     assert.equal(trip.hotel, undefined);
   });
@@ -351,9 +412,10 @@ describe('inferTripFromSignals — docs/auto-trip-discovery-plan.md Part A cases
     assert.deepEqual(inferTripFromSignals([outbound]), []);
   });
 
-  test('dining and ground-transit signals are ignored entirely', () => {
+  test('dining never shapes a trip, and a ground-transit signal with no flight nearby to attach to produces no trip on its own', () => {
     const meal = dining('2030-03-10T19:00:00Z', '2030-03-10T20:00:00Z', '34 Rue Laffitte, Paris');
-    assert.deepEqual(inferTripFromSignals([meal]), []);
+    const strayTransit = transit('to', '2030-05-01T06:30:00Z', '2030-05-01T07:45:00Z');
+    assert.deepEqual(inferTripFromSignals([meal, strayTransit]), []);
   });
 
   test('a lodging signal already claimed by one flight pairing is not reused for an unrelated standalone flight', () => {

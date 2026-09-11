@@ -4,7 +4,9 @@
 // components can import these types/helpers without creating a circular import back into
 // trips.tsx itself.
 
+import { DateTime } from 'luxon';
 import { API_URL } from './api-client';
+import { DEVICE_TIMEZONE } from './timezones';
 
 export interface EventParticipant {
   user_id: string;
@@ -67,6 +69,16 @@ export interface TripMock {
 // Sub-kilometer distances read as more useful in meters ("450m away" vs "0.5km away") — matches
 // how a "near your hotel" walkable distance is actually judged.
 export const formatDistanceLabel = (km: number) => (km < 1 ? `${Math.round(km * 1000)}m` : `${km.toFixed(1)}km`);
+
+// A trip is "past" starting the calendar day right after it ends (in its own destination
+// timezone, not the device's) — deliberately not stored anywhere (no status/archived field on
+// the Trip model): derived fresh every time from `endDate`, so it applies retroactively to
+// every trip already in the DB with zero backfill/migration, and never goes stale. See
+// app/(tabs)/trips.tsx's Current/Past segmented control, the only caller today.
+export function isTripPast(endDate: Date, timezone: string = DEVICE_TIMEZONE, referenceDate: Date = new Date()): boolean {
+  const cutoff = DateTime.fromJSDate(endDate).setZone(timezone).startOf('day').plus({ days: 1 });
+  return DateTime.fromJSDate(referenceDate).setZone(timezone) >= cutoff;
+}
 
 // Every card/detail-modal thumbnail points at this same server-side proxy (never at
 // googleapis.com directly) — see GET /api/places/:id/photo in server.ts for why: resolving a

@@ -253,6 +253,41 @@ describe('getTripDaySchedule — flight-signal day bounding', () => {
     assert.ok(morningSlot, 'the pre-flight morning gap should still start at the plain 08:00 default');
   });
 
+  test('a red-eye that departs on the trip\'s first day but lands after midnight still bounds the second day\'s effective start', () => {
+    // The flight's own startTime (23:30 on day 0) is what buckets it into day 0's dayEvents —
+    // but it LANDS on day 1 (08:30), which is the day that actually needs its effective start
+    // bounded past arrival + buffer. Distinguishes this from the "neither first nor last day"
+    // domestic-hop test above by requiring the departure to have been on the trip's own start
+    // day, not just any flight landing on day 1.
+    const importedEvents = [
+      { id: 'redeye', title: 'Flight: JFK (AA100) to CDG Confirmation XYZ123', startTime: new Date('2030-03-04T23:30:00+01:00'), endTime: new Date('2030-03-05T08:30:00+01:00'), location: 'JFK Airport' },
+      { id: 'meeting', title: 'Team sync', startTime: new Date('2030-03-05T12:00:00+01:00'), endTime: new Date('2030-03-05T13:00:00+01:00'), location: 'Office' },
+    ];
+    const days = getTripDaySchedule(TRIP_START, TRIP_END, 5, ZONE, importedEvents);
+    const arrivalDay = days[1];
+    assert.equal(DateTime.fromJSDate(arrivalDay.date).setZone(ZONE).toFormat('yyyy-MM-dd'), '2030-03-05');
+    // 08:30 arrival + 45min buffer = 09:15 — no slot should start any earlier, even though the
+    // flight event itself isn't part of this day's own dayEvents (its startTime is the day
+    // before), which is exactly the gap this test guards against regressing.
+    assert.equal(DateTime.fromJSDate(arrivalDay.freeSlots[0].startTime).setZone(ZONE).toFormat('HH:mm'), '09:15');
+  });
+
+  test('an arrival day with NOTHING else synced yet still gets a buffered real-calendar slot, not the generic hardcoded fallback', () => {
+    // Same red-eye as above, minus the "Team sync" meeting — dayEvents (start-time-bucketed)
+    // is completely empty for the arrival day, which used to fall straight through to
+    // getHardcodedFreeSlots (no concept of the flight at all, two disjoint Lunch/Evening
+    // slots). It should instead still take the real-calendar path via calculateFreeTimeSlots's
+    // own empty-events branch, bounded by the same arrival + buffer start.
+    const importedEvents = [
+      { id: 'redeye', title: 'Flight: JFK (AA100) to CDG Confirmation XYZ123', startTime: new Date('2030-03-04T23:30:00+01:00'), endTime: new Date('2030-03-05T08:30:00+01:00'), location: 'JFK Airport' },
+    ];
+    const days = getTripDaySchedule(TRIP_START, TRIP_END, 5, ZONE, importedEvents);
+    const arrivalDay = days[1];
+    assert.equal(DateTime.fromJSDate(arrivalDay.date).setZone(ZONE).toFormat('yyyy-MM-dd'), '2030-03-05');
+    assert.equal(arrivalDay.freeSlots.length, 1);
+    assert.equal(DateTime.fromJSDate(arrivalDay.freeSlots[0].startTime).setZone(ZONE).toFormat('HH:mm'), '09:15');
+  });
+
   test('a day with only a non-flight signal (ground-transit only, no flight) is unaffected', () => {
     const importedEvents = [
       { id: 'transit-to', title: 'Travel time to TLS airport', startTime: new Date('2030-03-04T09:40:00+01:00'), endTime: new Date('2030-03-04T10:40:00+01:00'), location: 'Toulouse - Blagnac Airport (TLS)' },

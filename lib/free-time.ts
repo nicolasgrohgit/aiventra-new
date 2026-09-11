@@ -435,25 +435,44 @@ export function getTripDaySchedule(
 
     const isTripStartDay = current.hasSame(tripStartDay, 'day');
     const isTripEndDay = current.hasSame(tripEndDay, 'day');
-    if (dayEvents.length > 0 && (isTripStartDay || isTripEndDay)) {
-      const isFlightSignal = (e: CalendarEvent) => classifyImportedEvent(e, timezone, mealPrefs)?.kind === 'flight';
-      const flightSignals = dayEvents.filter(isFlightSignal);
 
-      // Arrival day: bounding the day's own *start* (rather than just the flight's busy
-      // block) is what's needed here — calculateFreeTimeSlots seeds its very first gap check
-      // from dayStart, so this alone correctly suppresses any "free" gap before landing,
-      // including one computed against an earlier ground-transit event
-      // (`Travel time to <airport>`) rather than the flight itself. A later real event ending
-      // after this buffered estimate (e.g. `Travel time from <airport>`) still wins, since
-      // real synced data is more precise than this generic guess.
-      if (isTripStartDay && flightSignals.length > 0) {
-        // Non-null: DateTime.max/min types their return as possibly undefined only because TS
-        // can't see the flightSignals.length > 0 guard above through the spread — it's always
-        // defined here.
-        const latestArrival = DateTime.max(...flightSignals.map(e => DateTime.fromJSDate(e.endTime).setZone(timezone)))!
+    // Arrival day: bounding the day's own *start* (rather than just the flight's busy
+    // block) is what's needed here — calculateFreeTimeSlots seeds its very first gap check
+    // from dayStart, so this alone correctly suppresses any "free" gap before landing,
+    // including one computed against an earlier ground-transit event
+    // (`Travel time to <airport>`) rather than the flight itself. A later real event ending
+    // after this buffered estimate (e.g. `Travel time from <airport>`) still wins, since
+    // real synced data is more precise than this generic guess.
+    //
+    // Deliberately sourced from `importedEvents` (the full list), not `dayEvents` — an
+    // overnight/red-eye flight's own startTime (what buckets an event into `dayEvents` above)
+    // falls on the *departure* calendar day even when its arrival, the instant that actually
+    // matters here, lands after midnight. So this also checks the day right after
+    // tripStartDay, the only day such a flight could land on — gated by requiring the flight's
+    // own departure to have been on tripStartDay itself, so a same-day domestic hop that
+    // happens to both depart and land on that later day (see the "neither first nor last day"
+    // test) still correctly has no effect.
+    const isArrivalCandidateDay = isTripStartDay || current.hasSame(tripStartDay.plus({ days: 1 }), 'day');
+    let hasArrivalSignal = false;
+    if (isArrivalCandidateDay) {
+      const arrivingToday = importedEvents.filter(e => {
+        if (classifyImportedEvent(e, timezone, mealPrefs)?.kind !== 'flight') return false;
+        if (!DateTime.fromJSDate(e.endTime).setZone(timezone).hasSame(current, 'day')) return false;
+        return isTripStartDay || DateTime.fromJSDate(e.startTime).setZone(timezone).hasSame(tripStartDay, 'day');
+      });
+      if (arrivingToday.length > 0) {
+        hasArrivalSignal = true;
+        // Non-null: DateTime.max types its return as possibly undefined only because TS can't
+        // see the arrivingToday.length > 0 guard above through the spread — always defined here.
+        const latestArrival = DateTime.max(...arrivingToday.map(e => DateTime.fromJSDate(e.endTime).setZone(timezone)))!
           .plus({ minutes: FLIGHT_BUFFER_MINUTES });
         effectiveDayStartHour = Math.max(effectiveDayStartHour, latestArrival.hour + latestArrival.minute / 60);
       }
+    }
+
+    if (dayEvents.length > 0 && isTripEndDay) {
+      const isFlightSignal = (e: CalendarEvent) => classifyImportedEvent(e, timezone, mealPrefs)?.kind === 'flight';
+      const flightSignals = dayEvents.filter(isFlightSignal);
 
       // Departure day needs two changes together, unlike arrival day: (1) capping
       // effectiveDayEndHour, which only ever bounds the *trailing* gap after the day's last
@@ -465,7 +484,7 @@ export function getTripDaySchedule(
       // exists. When a real transit event's own start is earlier than this buffered estimate
       // (the common case, per the real sample data), it already wins on its own — this only
       // matters when the flight is the day's only relevant event.
-      if (isTripEndDay && flightSignals.length > 0) {
+      if (flightSignals.length > 0) {
         const earliestDeparture = DateTime.min(...flightSignals.map(e => DateTime.fromJSDate(e.startTime).setZone(timezone)))!;
         const bufferedDeparture = earliestDeparture.minus({ minutes: FLIGHT_BUFFER_MINUTES });
         effectiveDayEndHour = Math.min(effectiveDayEndHour, bufferedDeparture.hour + bufferedDeparture.minute / 60);
@@ -477,12 +496,40 @@ export function getTripDaySchedule(
       }
     }
 
-    const freeSlots = dayEvents.length > 0
-      ? calculateFreeTimeSlots(eventsForFreeTime, effectiveDayStartHour, effectiveDayEndHour, 60, timezone).map(slot => ({
-          ...slot,
-          label: labelFreeSlot(slot, timezone, mealPrefs)
-        }))
-      : getHardcodedFreeSlots(current.toJSDate(), timezone, mealPrefs);
+    let freeSlots: FreeTimeSlot[];
+    if (dayEvents.length > 0) {
+      freeSlots = calculateFreeTimeSlots(eventsForFreeTime, effectiveDayStartHour, effectiveDayEndHour, 60, timezone).map(slot => ({
+        ...slot,
+        label: labelFreeSlot(slot, timezone, mealPrefs)
+      }));
+    } else if (hasArrivalSignal) {
+      // A flight lands today but that's the *only* real signal this day has — dayEvents
+      // itself is empty (nothing else synced yet), which would otherwise fall through to
+      // getHardcodedFreeSlots below and lose all awareness of the flight. Mirrors
+      // calculateFreeTimeSlots's own events.length === 0 branch, but deliberately doesn't
+      // call it: that branch anchors to real wall-clock "now" rather than an explicit target
+      // day, which is only correct for a caller literally asking about today (see
+      // app/(tabs)/index.tsx's two calls) — `current` here can be any day of a future or past
+      // trip, so the anchor has to be `current` itself, trimmed to now only when it really is
+      // today.
+      const now = DateTime.now().setZone(timezone);
+      let start = atHour(current, effectiveDayStartHour);
+      const end = atHour(current, effectiveDayEndHour);
+      if (now.hasSame(current, 'day') && now > start) {
+        start = now < end ? now : end;
+      }
+      const gapMinutes = Math.floor(end.diff(start, 'minutes').minutes);
+      freeSlots = gapMinutes >= 60
+        ? [{
+            startTime: start.toJSDate(),
+            endTime: end.toJSDate(),
+            durationMinutes: gapMinutes,
+            label: labelFreeSlot({ startTime: start.toJSDate(), endTime: end.toJSDate(), durationMinutes: gapMinutes }, timezone, mealPrefs)
+          }]
+        : [];
+    } else {
+      freeSlots = getHardcodedFreeSlots(current.toJSDate(), timezone, mealPrefs);
+    }
 
     days.push({
       date: current.toJSDate(),

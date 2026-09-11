@@ -17,11 +17,12 @@ import { searchHotelLocation, HotelLocationResult } from '@/lib/hotel-geocoding'
 import { CircleShareSelector } from '@/components/ui/circle-share-selector';
 import { FOOD_GENRES_CATEGORIZED, ACTIVITY_GENRES_CATEGORIZED, EVENT_GENRES_CATEGORIZED } from '@/constants/preferences';
 import { buildMapsUrl, MapsDestination } from '@/lib/maps-link';
-import { TripEvent, InvitedTripEvent, TripBaseLocation, TripMock, formatDistanceLabel, placePhotoUri } from '@/lib/trip-types';
+import { TripEvent, InvitedTripEvent, TripBaseLocation, TripMock, formatDistanceLabel, placePhotoUri, isTripPast } from '@/lib/trip-types';
 import { PlaceCard } from '@/components/trips/place-card';
 import { RefineSearchCard } from '@/components/trips/refine-search-card';
 import { CalendarEventCard } from '@/components/trips/calendar-event-card';
 import { ContactPicker } from '@/components/trips/contact-picker';
+import { PastTripCard } from '@/components/trips/past-trip-card';
 import { darkActionSheetStyle } from '@/components/ui/dark-action-sheet-style';
 
 interface NearbyFriend {
@@ -85,6 +86,11 @@ export default function TripsScreen() {
 
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editTripId, setEditTripId] = useState<string | null>(null);
+
+  // Current & Upcoming / Past segmented control — a trip's bucket is derived (isTripPast),
+  // never stored, so it applies to every trip already in the DB with zero migration. See
+  // project_past_trips_retention in the assistant's memory for the approved design.
+  const [tripsView, setTripsView] = useState<'current' | 'past'>('current');
 
   const [newDestination, setNewDestination] = useState('');
   const [startDate, setStartDate] = useState(new Date());
@@ -1020,6 +1026,13 @@ export default function TripsScreen() {
     e.participants.find(p => p.user_id === myUserId)?.status === 'pending'
   ).length;
 
+  // Split once per render rather than filtering inline twice — currentTrips keeps today's
+  // existing array order, pastTrips is newest-ended-first (most relevant "past" trip first).
+  const currentTrips = trips.filter(t => !isTripPast(t.endDate, t.timezone));
+  const pastTrips = trips
+    .filter(t => isTripPast(t.endDate, t.timezone))
+    .sort((a, b) => b.endDate.getTime() - a.endDate.getTime());
+
   // Used by PlaceCard's "✓ Scheduled" badge — deliberately trip-wide (any day), not slot-scoped:
   // a place already added anywhere on the trip should read as scheduled wherever its card
   // reappears, so tapping "Add to Itinerary" doesn't look like a no-op.
@@ -1098,10 +1111,43 @@ export default function TripsScreen() {
           </TouchableOpacity>
         ) : null}
 
+        {trips.length > 0 && (
+          <View style={styles.viewToggleRow}>
+            <TouchableOpacity
+              style={[styles.viewToggleBtn, tripsView === 'current' && styles.viewToggleBtnActive]}
+              onPress={() => setTripsView('current')}
+            >
+              <Text style={[styles.viewToggleText, tripsView === 'current' && styles.viewToggleTextActive]}>Current & Upcoming</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.viewToggleBtn, tripsView === 'past' && styles.viewToggleBtnActive]}
+              onPress={() => setTripsView('past')}
+            >
+              <Text style={[styles.viewToggleText, tripsView === 'past' && styles.viewToggleTextActive]}>Past ({pastTrips.length})</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         {trips.length === 0 ? (
           <Text style={styles.emptyText}>{"You haven't added any trips yet."}</Text>
+        ) : tripsView === 'past' ? (
+          pastTrips.length === 0 ? (
+            <Text style={styles.emptyText}>No past trips yet.</Text>
+          ) : (
+            pastTrips.map(trip => (
+              <PastTripCard
+                key={trip.id}
+                trip={trip}
+                cityPhotoId={cityPhotoByTrip[trip.id]}
+                formatTripDate={formatTripDate}
+                onDelete={() => handleDeleteTrip(trip.id)}
+              />
+            ))
+          )
+        ) : currentTrips.length === 0 ? (
+          <Text style={styles.emptyText}>No current or upcoming trips — check the Past tab, or add a new one.</Text>
         ) : (
-          trips.map(trip => {
+          currentTrips.map(trip => {
             const totalTripDays = Math.round((trip.endDate.getTime() - trip.startDate.getTime()) / 86400000) + 1;
             const tripEvents = eventsByTrip[trip.id] || [];
             const daySchedules = getTripDaySchedule(trip.startDate, trip.endDate, 5, trip.timezone, toImportedCalendarEvents(tripEvents), mealPrefs);
@@ -1871,6 +1917,14 @@ const styles = StyleSheet.create({
 
   emptyText: { color: '#64748B', fontStyle: 'italic', textAlign: 'center', marginTop: 30 },
   separator: { height: 1, backgroundColor: '#1E293B', marginVertical: 24 },
+
+  // Current & Upcoming / Past segmented control — same shape as modeToggleRow/Btn below, blue
+  // accent (this tab's standard) instead of that one's green.
+  viewToggleRow: { flexDirection: 'row', gap: 10, marginBottom: 28 },
+  viewToggleBtn: { flex: 1, paddingVertical: 12, backgroundColor: '#1E293B', borderRadius: 12, alignItems: 'center', borderWidth: 1, borderColor: '#334155' },
+  viewToggleBtnActive: { backgroundColor: 'rgba(59, 130, 246, 0.15)', borderColor: '#3B82F6' },
+  viewToggleText: { color: '#94A3B8', fontWeight: '700', fontSize: 14 },
+  viewToggleTextActive: { color: '#3B82F6' },
 
   tripCard: { backgroundColor: '#0F172A', padding: 24, borderRadius: 28, marginBottom: 32, borderWidth: 1, borderColor: '#1E293B', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.3, shadowRadius: 20, elevation: 8, overflow: 'hidden' },
   tripHeroPhoto: { width: '100%', height: 140, marginTop: -24, marginHorizontal: -24, marginBottom: 16, backgroundColor: '#1E293B' },
