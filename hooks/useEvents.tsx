@@ -24,7 +24,7 @@ interface EventsContextType {
   // Opportunistic device-calendar sync — swallows errors to [] rather than throwing, same
   // reasoning as getFriendsNearby: a background nicety, not a blocking action, shouldn't
   // surface an alert if the device calendar or network hiccups.
-  importTripEvents: (tripId: string, events: { id: string; title: string; startTime: string; endTime: string; location?: string }[]) => Promise<any[]>;
+  importTripEvents: (tripId: string, events: { id: string; title: string; startTime: string; endTime: string; location?: string; allDay?: boolean }[]) => Promise<any[]>;
   updateEvent: (eventId: string, payload: any) => Promise<any>;
   respondToEvent: (eventId: string, status: 'accepted' | 'declined') => Promise<any>;
   deleteEvent: (eventId: string) => Promise<void>;
@@ -102,7 +102,7 @@ export const EventsProvider = ({ children }: { children: ReactNode }) => {
     return res.json();
   };
 
-  const importTripEvents = async (tripId: string, events: { id: string; title: string; startTime: string; endTime: string; location?: string }[]) => {
+  const importTripEvents = async (tripId: string, events: { id: string; title: string; startTime: string; endTime: string; location?: string; allDay?: boolean }[]) => {
     try {
       if (events.length === 0) return [];
       const res = await apiFetch(`${API_URL}/api/trips/${tripId}/events/import`, {

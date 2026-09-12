@@ -42,6 +42,14 @@ export interface IEvent extends Document {
   participants: IEventParticipant[];
   // Reserved for a future calendar-import sync pipeline (source: 'imported'); unused/unset today.
   google_event_id?: string;
+  // True for a device-calendar event flagged all-day (source: 'imported' only — a 'created'
+  // event has no such concept). A real Working Location marker (Google Calendar's "Home"/
+  // "Office" auto-status) never reaches here at all — lib/calendar.ts's
+  // isWorkingLocationEvent drops it before it's ever synced — so allDay: true here always
+  // means genuine day-level information (a public holiday, an out-of-office banner). See
+  // lib/free-time.ts's getTripDaySchedule: these are excluded from busy-time calculation
+  // (never treated as a literal 24h block) but still surfaced in the UI as that day's events.
+  allDay?: boolean;
 }
 
 const EventSchema = new Schema<IEvent>({
@@ -55,7 +63,8 @@ const EventSchema = new Schema<IEvent>({
   place_name: { type: String },
   location: { type: String },
   participants: [ParticipantSchema],
-  google_event_id: { type: String }
+  google_event_id: { type: String },
+  allDay: { type: Boolean }
 }, { timestamps: true });
 
 // Two access patterns: "events on this trip" (organizer's own trip view) and "events I'm

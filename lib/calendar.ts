@@ -20,6 +20,26 @@ import { classifyImportedEvent, inferTripFromSignals, ClassifiedSignal, Inferred
 export type { CalendarEvent, FreeTimeSlot, DaySchedule, SlotProposal, MealTimePreferences, InferredTrip };
 export { calculateFreeTimeSlots, getHardcodedFreeSlots, getTripDaySchedule, labelFreeSlot, expandSlotForProposals, generateMockEventsForToday };
 
+// Google Calendar's "Working Location" feature auto-creates an all-day event every workday
+// (title exactly "Home", "Office", or "Working elsewhere[: <custom place>]") to show where
+// you're working from — live-reported as silently zeroing out several consecutive days of a
+// trip's free-time proposals, because it synced through the three device-calendar readers
+// below like any other all-day event and got treated as a literal 24h busy block. Unlike a
+// real all-day event (a public holiday, an out-of-office banner — see getTripDaySchedule's
+// holidayEvents handling), a Working Location marker carries no information relevant to a
+// *future* trip: it reflects a habitual daily status the user may well not have thought to
+// change yet for days they'll actually be travelling, so it's dropped entirely — excluded
+// from busy-time calculation AND never surfaced in the UI — rather than shown as a banner
+// like a genuine all-day event. There's no dedicated event-type field for this coming out of
+// expo-calendar's cross-platform device-calendar bridge (unlike Google's own Calendar API,
+// which does expose eventType: 'workingLocation' — not what this app reads), so detection is
+// necessarily by title, matching Google's own fixed, documented set of values.
+function isWorkingLocationEvent(evt: { allDay?: boolean; title?: string }): boolean {
+  if (!evt.allDay || !evt.title) return false;
+  const title = evt.title.trim().toLowerCase();
+  return title === 'home' || title === 'office' || title.startsWith('working elsewhere');
+}
+
 /**
  * Request permission and fetch actual device events for today.
  */
@@ -43,13 +63,16 @@ export async function getDeviceEventsForToday(useSimulatedIfDenied = false): Pro
 
       const deviceEvents = await Calendar.getEventsAsync(calendarIds, startDate, endDate);
 
-      return deviceEvents.map(evt => ({
-        id: evt.id,
-        title: evt.title,
-        startTime: new Date(evt.startDate),
-        endTime: new Date(evt.endDate),
-        location: evt.location,
-      }));
+      return deviceEvents
+        .filter(evt => !isWorkingLocationEvent(evt))
+        .map(evt => ({
+          id: evt.id,
+          title: evt.title,
+          startTime: new Date(evt.startDate),
+          endTime: new Date(evt.endDate),
+          location: evt.location,
+          allDay: evt.allDay,
+        }));
     }
   } catch (error) {
     console.warn("Failed to fetch native calendar events: ", error);
@@ -78,13 +101,16 @@ export async function getDeviceEventsForDateRange(startDate: Date, endDate: Date
 
     const deviceEvents = await Calendar.getEventsAsync(calendarIds, startDate, endDate);
 
-    return deviceEvents.map(evt => ({
-      id: evt.id,
-      title: evt.title,
-      startTime: new Date(evt.startDate),
-      endTime: new Date(evt.endDate),
-      location: evt.location,
-    }));
+    return deviceEvents
+      .filter(evt => !isWorkingLocationEvent(evt))
+      .map(evt => ({
+        id: evt.id,
+        title: evt.title,
+        startTime: new Date(evt.startDate),
+        endTime: new Date(evt.endDate),
+        location: evt.location,
+        allDay: evt.allDay,
+      }));
   } catch (error) {
     console.warn("Failed to fetch native calendar events for range: ", error);
     return [];
@@ -127,6 +153,7 @@ export async function scanForUpcomingTripSignals(daysAhead: number): Promise<Inf
 
     const signals: ClassifiedSignal[] = [];
     for (const evt of deviceEvents) {
+      if (isWorkingLocationEvent(evt)) continue;
       try {
         const event: CalendarEvent = {
           id: evt.id,

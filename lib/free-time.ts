@@ -17,6 +17,14 @@ export interface CalendarEvent {
   startTime: Date;
   endTime: Date;
   location?: string;
+  // True for a device-calendar event flagged all-day (expo-calendar's Calendar.Event.allDay) —
+  // see lib/calendar.ts's isWorkingLocationEvent for why these are split into two buckets
+  // before ever reaching here (a Working Location marker is dropped entirely, never becomes a
+  // CalendarEvent at all) rather than filtered in this file. Anything that IS tagged allDay by
+  // the time it reaches getTripDaySchedule below (a public holiday, an out-of-office banner,
+  // etc.) is real information worth surfacing, just not a literal 24h busy block — see
+  // getTripDaySchedule's handling.
+  allDay?: boolean;
 }
 
 // Buffer applied on either side of a detected flight when it bounds a trip day's effective
@@ -65,13 +73,20 @@ function atHour(base: DateTime, hour: number): DateTime {
  * (use the trip's own timezone there; see getTripDaySchedule).
  */
 export function calculateFreeTimeSlots(
-  events: CalendarEvent[],
+  allEvents: CalendarEvent[],
   dayStartHour = 8,
   dayEndHour = 22,
   minGapMinutes = 60,
   timezone: string = DEVICE_TIMEZONE
 ): FreeTimeSlot[] {
   const now = DateTime.now().setZone(timezone);
+  // An all-day event (a public holiday, an out-of-office banner) is real information but
+  // never a literal round-the-clock busy block — a single one spanning midnight-to-midnight
+  // would otherwise zero out this entire function's output. Filtered here (not just by
+  // getTripDaySchedule's caller-side split) so every caller gets this for free, including
+  // app/(tabs)/index.tsx's direct today-only call. A real Google Calendar "Working Location"
+  // marker never reaches this function at all — see lib/calendar.ts's isWorkingLocationEvent.
+  const events = allEvents?.filter(e => !e.allDay);
 
   if (!events || events.length === 0) {
     let start = atHour(now, dayStartHour);
@@ -304,10 +319,17 @@ export function expandSlotForProposals(slot: FreeTimeSlot, timezone: string = DE
  * — see lib/place-matching.ts's getMealWindows. Each window's existing *width* is kept fixed
  * (90min lunch, 240min evening); the evening window is additionally capped at 23:30 so a very
  * late dinner preference can't push suggestions into the small hours.
+ *
+ * `treatAsFullyOpen` (default false): forces the same fully-open 08:00-22:00 "Full Day"
+ * treatment normally reserved for weekends. Used by getTripDaySchedule for a weekday whose
+ * only synced signal is an all-day holiday event (see isWorkingLocationEvent in
+ * lib/calendar.ts) — a real public holiday means the traveller isn't working that day either,
+ * so the default Mon-Fri 08:30-18:00 "presumably busy at work" assumption is actively wrong,
+ * not just unhelpfully conservative.
  */
-export function getHardcodedFreeSlots(date: Date, timezone: string = DEVICE_TIMEZONE, mealPrefs: MealTimePreferences = {}): FreeTimeSlot[] {
+export function getHardcodedFreeSlots(date: Date, timezone: string = DEVICE_TIMEZONE, mealPrefs: MealTimePreferences = {}, treatAsFullyOpen = false): FreeTimeSlot[] {
   const zonedDate = DateTime.fromJSDate(date).setZone(timezone);
-  const isWeekend = zonedDate.weekday === 6 || zonedDate.weekday === 7; // luxon: 6 = Sat, 7 = Sun
+  const isWeekend = treatAsFullyOpen || zonedDate.weekday === 6 || zonedDate.weekday === 7; // luxon: 6 = Sat, 7 = Sun
   const now = DateTime.now().setZone(timezone);
   const isToday = zonedDate.hasSame(now, 'day');
   // Deliberately not reusing getMealWindows' defaults here (11.5/18.5, tuned for
@@ -426,12 +448,21 @@ export function getTripDaySchedule(
     const dayEvents = importedEvents.filter(e =>
       DateTime.fromJSDate(e.startTime).setZone(timezone).hasSame(current, 'day')
     );
+    // Split out all-day events (a real Working Location marker never reaches this point at
+    // all — see isWorkingLocationEvent in lib/calendar.ts, which drops those before they're
+    // even synced — so anything allDay here is informational, e.g. a public holiday): they
+    // must never count as a literal 24h busy block feeding calculateFreeTimeSlots below, or a
+    // single all-day event would zero out an entire day's free time. `dayEvents` (including
+    // holidayEvents) is still what's returned as DaySchedule.importedEvents, so the UI can
+    // still show a holiday banner for the day.
+    const timedDayEvents = dayEvents.filter(e => !e.allDay);
+    const holidayEvents = dayEvents.filter(e => e.allDay);
 
     let effectiveDayStartHour = 8;
     let effectiveDayEndHour = dayEndHour;
-    // The events actually passed to calculateFreeTimeSlots — identical to dayEvents unless a
-    // departure-day flight needs its own busy block extended (see below).
-    let eventsForFreeTime = dayEvents;
+    // The events actually passed to calculateFreeTimeSlots — identical to timedDayEvents
+    // unless a departure-day flight needs its own busy block extended (see below).
+    let eventsForFreeTime = timedDayEvents;
 
     const isTripStartDay = current.hasSame(tripStartDay, 'day');
     const isTripEndDay = current.hasSame(tripEndDay, 'day');
@@ -470,9 +501,9 @@ export function getTripDaySchedule(
       }
     }
 
-    if (dayEvents.length > 0 && isTripEndDay) {
+    if (timedDayEvents.length > 0 && isTripEndDay) {
       const isFlightSignal = (e: CalendarEvent) => classifyImportedEvent(e, timezone, mealPrefs)?.kind === 'flight';
-      const flightSignals = dayEvents.filter(isFlightSignal);
+      const flightSignals = timedDayEvents.filter(isFlightSignal);
 
       // Departure day needs two changes together, unlike arrival day: (1) capping
       // effectiveDayEndHour, which only ever bounds the *trailing* gap after the day's last
@@ -488,7 +519,7 @@ export function getTripDaySchedule(
         const earliestDeparture = DateTime.min(...flightSignals.map(e => DateTime.fromJSDate(e.startTime).setZone(timezone)))!;
         const bufferedDeparture = earliestDeparture.minus({ minutes: FLIGHT_BUFFER_MINUTES });
         effectiveDayEndHour = Math.min(effectiveDayEndHour, bufferedDeparture.hour + bufferedDeparture.minute / 60);
-        eventsForFreeTime = dayEvents.map(e =>
+        eventsForFreeTime = timedDayEvents.map(e =>
           isFlightSignal(e)
             ? { ...e, startTime: DateTime.fromJSDate(e.startTime).setZone(timezone).minus({ minutes: FLIGHT_BUFFER_MINUTES }).toJSDate() }
             : e
@@ -497,7 +528,7 @@ export function getTripDaySchedule(
     }
 
     let freeSlots: FreeTimeSlot[];
-    if (dayEvents.length > 0) {
+    if (timedDayEvents.length > 0) {
       freeSlots = calculateFreeTimeSlots(eventsForFreeTime, effectiveDayStartHour, effectiveDayEndHour, 60, timezone).map(slot => ({
         ...slot,
         label: labelFreeSlot(slot, timezone, mealPrefs)
@@ -528,7 +559,11 @@ export function getTripDaySchedule(
           }]
         : [];
     } else {
-      freeSlots = getHardcodedFreeSlots(current.toJSDate(), timezone, mealPrefs);
+      // A day with a holiday-type all-day event and no other real timed events isn't just
+      // "nothing synced yet" — it's a day the traveller definitely isn't working, so treat it
+      // as fully open (see getHardcodedFreeSlots' treatAsFullyOpen) rather than assuming the
+      // default Mon-Fri 08:30-18:00 work pattern.
+      freeSlots = getHardcodedFreeSlots(current.toJSDate(), timezone, mealPrefs, holidayEvents.length > 0);
     }
 
     days.push({

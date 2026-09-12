@@ -31,6 +31,11 @@ export interface TripEvent {
   // same way a real Place's address does (see components/trips/calendar-event-card.tsx).
   location?: string;
   participants: EventParticipant[];
+  // 'imported' only — true for a device-calendar event flagged all-day (a public holiday, an
+  // out-of-office banner). See lib/calendar.ts's isWorkingLocationEvent for why a Working
+  // Location marker never reaches here at all, and lib/free-time.ts's getTripDaySchedule for
+  // how this is excluded from busy-time calculation but still shown as that day's event.
+  allDay?: boolean;
 }
 
 // The shape GET /api/events/invited actually returns: `created_by` comes back populated

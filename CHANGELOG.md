@@ -24,8 +24,46 @@ this is still pre-release/beta.
     cycle) and uses a cloud build whenever any remains (no local load, immune to this machine's
     RAM limits, artifact auto-downloaded into `public/odys-ai-<version>.apk`), falling back to
     the local script above only once that quota is exhausted for the cycle.
+- **A single synced all-day calendar event could silently zero out an entire trip day's AI
+  Schedule Proposals (and, as a direct consequence, its "Looking for something else?"
+  refine-search entry point too — that card only ever renders attached to a proposal).**
+  Live-reported and root-caused via the DB: a real trip had 3 consecutive weekdays with zero
+  proposals, each carrying either a Google Calendar "Working Location" status marker (title
+  exactly "Home") or a public holiday entry ("Armistice Day") — both all-day events spanning
+  midnight-to-midnight. None of `lib/calendar.ts`'s three device-calendar readers ever read
+  `evt.allDay`, so each got imported as a literal 24-hour busy block; `calculateFreeTimeSlots`
+  then (correctly, given that input) computed zero free time for the whole day. Two different
+  fixes for two different cases, per product decision:
+  - **Working Location markers are now dropped entirely** (`lib/calendar.ts`'s new
+    `isWorkingLocationEvent`, matched by title since expo-calendar's cross-platform bridge
+    exposes no dedicated event-type flag for this Google-specific feature) — excluded from
+    busy-time calculation AND never synced/displayed at all, since a daily status habit isn't
+    necessarily updated for days the user will actually be travelling.
+  - **Any other all-day event** (a public holiday, an out-of-office banner) **is now excluded
+    from busy-time calculation but still synced and shown** as a small banner on that day
+    (`app/(tabs)/trips.tsx`) — and if it's the day's *only* signal, the day is treated as fully
+    open (`getHardcodedFreeSlots`'s new `treatAsFullyOpen`) rather than the default Mon-Fri
+    "presumably at work" pattern, since a real holiday means the traveller isn't working either.
+  `CalendarEvent`/`TripEvent`/`IEvent` (Event model) all gain an `allDay?: boolean` field to
+  carry this through device read → sync → DB → API → UI; no backfill needed, existing Event
+  docs simply read as `allDay: undefined` (falsy, same as today's behavior). 5 new tests in
+  `lib/free-time.test.ts`.
 
 ### Roadmap noted
+- **"Have a suggestion?" modal (and most other full-screen modals) render too high, crowding
+  the status bar** — live-reported from a screenshot where the title sits right against the
+  clock/notch. `components/profile/suggestion-form-modal.tsx:105` uses a hardcoded
+  `paddingTop: Platform.OS === 'ios' ? 40 : 24`, a fixed guess that doesn't account for the
+  device's actual notch/status-bar/Dynamic Island height. This was already identified and
+  fixed once this same release cycle for `categorized-selection-modal.tsx` (see the 0.0.40
+  "Fix profile modal status-bar padding" work — replaced with `useSafeAreaInsets()` from
+  `react-native-safe-area-context`), but the fix was never propagated to its siblings. Same
+  hardcoded pattern still present in: `components/profile/version-history-modal.tsx:61`,
+  `components/profile/generic-selection-modal.tsx:46`, `app/(tabs)/trips.tsx:2027`,
+  `app/(tabs)/social.tsx:674` (all four modal containers), plus the non-modal scroll screens
+  `app/(tabs)/profile.tsx:389`, `app/(tabs)/index.tsx:344`, `app/(tabs)/trips.tsx:1902`,
+  `app/(tabs)/social.tsx:610`. Slated for next sprint: swap every one of these over to
+  `useSafeAreaInsets()` for a consistent, device-correct top inset instead of a per-file guess.
 - **Need a real email server on GCP for `support@odys.ai` and `admin@odys.ai`.** No email
   infrastructure exists anywhere in this codebase today (no nodemailer/SendGrid/SES dependency,
   no outbound-mail code path). This is two separate needs: receiving mail at those addresses

@@ -745,7 +745,7 @@ app.post('/api/trips/:tripId/events/import', authenticate, async (req: AuthedReq
 
     const imported = [];
     for (const evt of events) {
-      const { id, title, startTime, endTime, location } = evt || {};
+      const { id, title, startTime, endTime, location, allDay } = evt || {};
       if (!id || !title || !startTime || !endTime) continue; // skip malformed entries rather than failing the whole batch
 
       const doc = await Event.findOneAndUpdate(
@@ -759,7 +759,8 @@ app.post('/api/trips/:tripId/events/import', authenticate, async (req: AuthedReq
             start_time: new Date(startTime),
             end_time: new Date(endTime),
             location: encryptField(location, dataKey),
-            google_event_id: id
+            google_event_id: id,
+            allDay: !!allDay
           }
         },
         { upsert: true, new: true, runValidators: true }

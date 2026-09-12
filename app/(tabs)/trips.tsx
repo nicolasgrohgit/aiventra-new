@@ -58,7 +58,7 @@ const formatTripDate = (d: Date, tz: string) => d.toLocaleDateString('en-CA', { 
 const toImportedCalendarEvents = (events: TripEvent[]) =>
   events
     .filter(e => e.source === 'imported')
-    .map(e => ({ id: e._id, title: e.title, startTime: new Date(e.start_time), endTime: new Date(e.end_time), location: e.location }));
+    .map(e => ({ id: e._id, title: e.title, startTime: new Date(e.start_time), endTime: new Date(e.end_time), location: e.location, allDay: e.allDay }));
 
 // A local's own city needs no "what should I do here" AI proposals — they live there, they
 // know it. Same loose city-matching as cityNeedle/buildCityDurationQuery in
@@ -309,7 +309,8 @@ export default function TripsScreen() {
       title: e.title,
       startTime: e.startTime.toISOString(),
       endTime: e.endTime.toISOString(),
-      location: e.location
+      location: e.location,
+      allDay: e.allDay
     })));
     refreshTripEvents(trip.id);
   };
@@ -1336,6 +1337,13 @@ export default function TripsScreen() {
                           const rawKey = (p: typeof dayProposals[number]) => `${p.startTime.toISOString()}-${p.type}`;
                           const visibleProposals = dayProposals.filter(p => !dismissedSlotKeys.includes(rawKey(p)));
                           const dayDismissedKeys = dayProposals.map(rawKey).filter(k => dismissedSlotKeys.includes(k));
+                          // Public holidays, out-of-office banners, etc. synced from the device
+                          // calendar (see lib/free-time.ts's getTripDaySchedule) — shown so the
+                          // day's context is visible, even though they no longer suppress free-
+                          // time detection the way they used to. A real Working Location marker
+                          // ("Home"/"Office") never reaches here at all (lib/calendar.ts's
+                          // isWorkingLocationEvent drops it before it's ever synced).
+                          const dayHolidayEvents = day.importedEvents.filter(e => e.allDay);
                           return (
                           <View key={day.date.toISOString()} style={styles.dayBlock}>
                             <View style={styles.dayHeaderRow}>
@@ -1344,6 +1352,11 @@ export default function TripsScreen() {
                                 <Text style={styles.dayTypeBadgeText}>{day.isWeekend ? '🎉 Weekend' : '💼 Weekday'}</Text>
                               </View>
                             </View>
+                            {dayHolidayEvents.map(holiday => (
+                              <View key={holiday.id} style={styles.holidayBanner}>
+                                <Text style={styles.holidayBannerText}>🎉 {holiday.title}</Text>
+                              </View>
+                            ))}
                             {visibleProposals.map(proposal => {
                               const slotKey = `${trip.id}-${proposal.startTime.toISOString()}-${proposal.type}`;
                               const slotRecs = slotRecommendations[slotKey];
@@ -1987,6 +2000,8 @@ const styles = StyleSheet.create({
   dayTypeBadgeWeekend: { backgroundColor: 'rgba(245, 158, 11, 0.15)', borderWidth: 1, borderColor: 'rgba(245, 158, 11, 0.3)' },
   dayTypeBadgeWeekday: { backgroundColor: 'rgba(59, 130, 246, 0.1)', borderWidth: 1, borderColor: 'rgba(59, 130, 246, 0.2)' },
   dayTypeBadgeText: { fontSize: 11, fontWeight: '800', color: '#E2E8F0' },
+  holidayBanner: { backgroundColor: 'rgba(245, 158, 11, 0.12)', borderWidth: 1, borderColor: 'rgba(245, 158, 11, 0.3)', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, marginBottom: 12 },
+  holidayBannerText: { color: '#FBBF24', fontSize: 13, fontWeight: '700' },
   slotSection: { marginBottom: 16 },
   slotHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 10 },
   slotIcon: { fontSize: 13 },

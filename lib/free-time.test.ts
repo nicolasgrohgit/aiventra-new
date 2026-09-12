@@ -57,6 +57,19 @@ describe('calculateFreeTimeSlots', () => {
     assert.ok(slots.every(s => s.durationMinutes > 0));
   });
 
+  test('an all-day event does not block the whole day (live bug: a single Working Location/holiday marker zeroed out every free slot)', () => {
+    const events = [
+      { id: 'a', title: 'Armistice Day', startTime: new Date('2030-03-04T00:00:00+01:00'), endTime: new Date('2030-03-05T00:00:00+01:00'), allDay: true },
+      { id: 'b', title: 'Standup', startTime: new Date('2030-03-04T09:00:00+01:00'), endTime: new Date('2030-03-04T09:30:00+01:00') },
+    ];
+    const slots = calculateFreeTimeSlots(events, 8, 22, 60, ZONE);
+    // Only the real timed event should carve up the day — the all-day event must be ignored
+    // entirely, not treated as a 24h busy block that swallows every gap.
+    assert.equal(slots.length, 2);
+    assert.equal(slots[0].durationMinutes, 60); // 08:00-09:00
+    assert.equal(slots[1].durationMinutes, 750); // 09:30-22:00
+  });
+
   test('respects the destination timezone, not the local one', () => {
     // 08:00 Paris time is 02:00 New York time on the same calendar day (winter offset) —
     // computing this in the wrong zone would shift which day boundary applies.
@@ -118,6 +131,15 @@ describe('getHardcodedFreeSlots', () => {
   test('no mealPrefs: identical to today\'s defaults', () => {
     assert.deepEqual(getHardcodedFreeSlots(FUTURE_MONDAY, ZONE, {}), getHardcodedFreeSlots(FUTURE_MONDAY, ZONE));
   });
+
+  test('treatAsFullyOpen forces the weekend-style full-day slot on a weekday', () => {
+    // A public holiday on a weekday means the traveller isn't working — same "Full Day"
+    // treatment as a real weekend, not the default Mon-Fri lunch/evening-only pattern.
+    const slots = getHardcodedFreeSlots(FUTURE_MONDAY, ZONE, {}, true);
+    assert.equal(slots.length, 1);
+    assert.equal(slots[0].label, 'Full Day');
+    assert.equal(slots[0].durationMinutes, 14 * 60);
+  });
 });
 
 describe('getTripDaySchedule', () => {
@@ -173,6 +195,40 @@ describe('getTripDaySchedule', () => {
   test('a hardcoded-fallback day (no imported events) still exposes an empty importedEvents array', () => {
     const days = getTripDaySchedule(FUTURE_MONDAY, FUTURE_MONDAY, 5, ZONE, []);
     assert.deepEqual(days[0].importedEvents, []);
+  });
+
+  // Live-reported bug: a synced all-day event (Google Calendar's "Working Location" status —
+  // filtered out entirely before it ever reaches here, see lib/calendar.ts's
+  // isWorkingLocationEvent — or a genuine public holiday, which does reach here) was treated
+  // as a literal 24h busy block, silently zeroing out every AI Schedule Proposal for that day.
+  describe('all-day events (public holidays, out-of-office banners)', () => {
+    test('a weekday with only an all-day event is treated as fully open, not the default work pattern', () => {
+      const importedEvents = [
+        { id: 'a', title: 'Armistice Day', startTime: new Date('2030-03-04T00:00:00+01:00'), endTime: new Date('2030-03-05T00:00:00+01:00'), allDay: true },
+      ];
+      const days = getTripDaySchedule(FUTURE_MONDAY, FUTURE_MONDAY, 5, ZONE, importedEvents);
+      assert.equal(days[0].freeSlots.length, 1);
+      assert.equal(days[0].freeSlots[0].label, 'Full Day');
+      assert.equal(days[0].freeSlots[0].durationMinutes, 14 * 60);
+    });
+
+    test('an all-day event alongside real timed events does not block the gaps around them', () => {
+      const importedEvents = [
+        { id: 'a', title: 'Armistice Day', startTime: new Date('2030-03-04T00:00:00+01:00'), endTime: new Date('2030-03-05T00:00:00+01:00'), allDay: true },
+        { id: 'b', title: 'Standup', startTime: new Date('2030-03-04T09:00:00+01:00'), endTime: new Date('2030-03-04T09:30:00+01:00') },
+      ];
+      const days = getTripDaySchedule(FUTURE_MONDAY, FUTURE_MONDAY, 5, ZONE, importedEvents);
+      assert.ok(days[0].freeSlots.some(s => s.startTime.getTime() === new Date('2030-03-04T09:30:00+01:00').getTime()),
+        'the gap right after the real meeting should still be free, not swallowed by the all-day marker');
+    });
+
+    test('the all-day event still appears in DaySchedule.importedEvents for display', () => {
+      const importedEvents = [
+        { id: 'a', title: 'Armistice Day', startTime: new Date('2030-03-04T00:00:00+01:00'), endTime: new Date('2030-03-05T00:00:00+01:00'), allDay: true },
+      ];
+      const days = getTripDaySchedule(FUTURE_MONDAY, FUTURE_MONDAY, 5, ZONE, importedEvents);
+      assert.deepEqual(days[0].importedEvents, importedEvents);
+    });
   });
 });
 
