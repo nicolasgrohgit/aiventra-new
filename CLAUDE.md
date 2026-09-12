@@ -21,6 +21,18 @@ npm run web                # expo start --web
 npm run server             # runs the Express/Mongoose API (server.ts) via tsx, on $PORT (default 3000)
 bash scripts/expose-server.sh  # exposes the local :3000 backend via localtunnel, for testing on a physical device
 
+npm run build-apk           # builds the Android preview APK (scripts/build-apk.sh): checks the
+                             # EAS account's remaining free-tier cloud build quota (`eas
+                             # account:usage`, resets monthly) and prefers a cloud build (no
+                             # local machine load) whenever quota remains, downloading the
+                             # artifact into public/odys-ai-<version>.apk; falls back to a local
+                             # build only once that cloud quota is exhausted for the cycle
+npm run build-apk-local     # forces a local build (eas build --local) instead, gated by a
+                             # free-memory preflight check (scripts/build-local-apk.sh) — a past
+                             # local build was OOM-killed mid-compile on this 16GB dev machine;
+                             # refuses to start below 8GB available (EAS_BUILD_MIN_AVAILABLE_MB
+                             # to override) and lists top memory users instead
+
 npm run lint                # expo lint (flat ESLint config extending eslint-config-expo)
 npm test                    # runs the test suite (Node's built-in test runner via `tsx --test`)
 ```

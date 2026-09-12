@@ -5,6 +5,26 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 this is still pre-release/beta.
 
 ## [Unreleased]
+### Fixed
+- **Local APK builds could die silently to OOM with no clear error, and always ran locally even
+  when free EAS cloud build quota was sitting unused.** The 0.0.41 local build never produced
+  an APK: its Gradle/Kotlin build daemon was killed by the kernel OOM-killer ~80 minutes in,
+  mid-compile (confirmed via `journalctl -k` on that boot — a Chrome tab was also OOM-killed 30
+  minutes earlier in the same session), on a dev machine with only 16GB RAM. This project had
+  originally built exclusively on EAS's free cloud tier (`docs/beta-deploy.md`) and only moved
+  to local builds after that monthly quota ran out — but nothing since then re-checked whether
+  quota had reset. Added two scripts:
+  - `scripts/build-local-apk.sh` (`npm run build-apk-local`) — a preflight-checked wrapper
+    around `eas build --local`: checks `free -m`'s "available" column against a threshold (8GB
+    default, `EAS_BUILD_MIN_AVAILABLE_MB` to override) and refuses to start the build —
+    printing the top memory-consuming processes instead — when memory is too tight, rather than
+    letting it run for an hour before failing.
+  - `scripts/build-apk.sh` (`npm run build-apk`, the normal entry point) — checks the account's
+    remaining free-tier cloud quota via `eas account:usage --json` (resets each monthly billing
+    cycle) and uses a cloud build whenever any remains (no local load, immune to this machine's
+    RAM limits, artifact auto-downloaded into `public/odys-ai-<version>.apk`), falling back to
+    the local script above only once that quota is exhausted for the cycle.
+
 ### Roadmap noted
 - **Need a real email server on GCP for `support@odys.ai` and `admin@odys.ai`.** No email
   infrastructure exists anywhere in this codebase today (no nodemailer/SendGrid/SES dependency,

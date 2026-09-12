@@ -46,3 +46,6 @@ app-example
 # local EAS build artifacts
 *.apk
 public/*.apk
+
+# personal Claude Code skills (not shared)
+.claude/skills/

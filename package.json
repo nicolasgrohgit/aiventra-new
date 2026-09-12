@@ -15,7 +15,9 @@
     "link-contact": "tsx scripts/link-contact.ts",
     "seed-demo-accounts": "tsx scripts/seed-demo-accounts.ts",
     "demo-linker": "tsx scripts/demo-account-linker.ts",
-    "mongo": "bash scripts/local-mongo.sh"
+    "mongo": "bash scripts/local-mongo.sh",
+    "build-apk": "bash scripts/build-apk.sh",
+    "build-apk-local": "bash scripts/build-local-apk.sh"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",

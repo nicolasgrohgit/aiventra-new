@@ -8,7 +8,7 @@
         "simulator": false
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://document-media-rebecca-nav.trycloudflare.com"
+        "EXPO_PUBLIC_API_URL": "https://refugees-brick-prefer-although.trycloudflare.com"
       }
     },
     "production": {}
