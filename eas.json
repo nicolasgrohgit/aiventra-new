@@ -8,7 +8,7 @@
         "simulator": false
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://refugees-brick-prefer-although.trycloudflare.com"
+        "EXPO_PUBLIC_API_URL": "https://odysai-server-891816307412.us-central1.run.app"
       }
     },
     "production": {}
