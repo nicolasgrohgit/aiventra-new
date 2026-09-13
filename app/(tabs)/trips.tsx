@@ -10,8 +10,9 @@ import { useTripDiscovery } from '@/hooks/useTripDiscovery';
 import { PlaceRecommendation, displayCategory } from '@/lib/recommendations';
 import { NativeDatePicker } from '@/components/ui/NativeDatePicker';
 import { getTripDaySchedule, getDeviceEventsForDateRange, expandSlotForProposals, SlotProposal } from '@/lib/calendar';
+import { combineDateAndTimeInZone } from '@/lib/free-time';
 import { classifyImportedEvent, filterDiningConflicts } from '@/lib/calendar-signals';
-import { guessTimezoneForCity } from '@/lib/timezones';
+import { guessTimezoneForCity, DEVICE_TIMEZONE } from '@/lib/timezones';
 import { searchCities, CityResult } from '@/lib/geocoding';
 import { searchHotelLocation, HotelLocationResult } from '@/lib/hotel-geocoding';
 import { CircleShareSelector } from '@/components/ui/circle-share-selector';
@@ -779,8 +780,11 @@ export default function TripsScreen() {
 
   const handleAddToItinerary = async () => {
     if (!selectedPlace) return;
-    const finalStart = new Date(scheduleDate);
-    finalStart.setHours(scheduleTime.getHours(), scheduleTime.getMinutes(), 0, 0);
+    // The picked date/time represents a wall-clock instant in the trip's destination
+    // timezone, not the device's own — see combineDateAndTimeInZone. Falls back to the
+    // device's zone only if the trip genuinely can't be found in scope.
+    const tripForSchedule = trips.find(t => t.id === selectedPlace.tripId);
+    const finalStart = combineDateAndTimeInZone(scheduleDate, scheduleTime, tripForSchedule?.timezone ?? DEVICE_TIMEZONE);
     const finalEnd = new Date(finalStart.getTime() + selectedPlace.place.estimatedDuration * 60000);
 
     try {
@@ -851,8 +855,9 @@ export default function TripsScreen() {
   // already-scheduled card and tweaking the time/invitee can't create a duplicate booking.
   const handleUpdateScheduledEvent = async () => {
     if (!selectedPlace?.existingEvent) return;
-    const finalStart = new Date(scheduleDate);
-    finalStart.setHours(scheduleTime.getHours(), scheduleTime.getMinutes(), 0, 0);
+    // See handleAddToItinerary above for why this isn't a plain setHours combine.
+    const tripForSchedule = trips.find(t => t.id === selectedPlace.tripId);
+    const finalStart = combineDateAndTimeInZone(scheduleDate, scheduleTime, tripForSchedule?.timezone ?? DEVICE_TIMEZONE);
     const finalEnd = new Date(finalStart.getTime() + selectedPlace.place.estimatedDuration * 60000);
 
     try {
@@ -937,8 +942,8 @@ export default function TripsScreen() {
   const handleRefineSearch = async () => {
     if (!refineSearchContext) return;
     const trip = trips.find(t => t.id === refineSearchContext.tripId);
-    const finalStart = new Date(refineSearchContext.date);
-    finalStart.setHours(refineTime.getHours(), refineTime.getMinutes(), 0, 0);
+    // See handleAddToItinerary above for why this isn't a plain setHours combine.
+    const finalStart = combineDateAndTimeInZone(refineSearchContext.date, refineTime, trip?.timezone ?? DEVICE_TIMEZONE);
 
     setRefineStep('loading');
     try {
@@ -967,8 +972,8 @@ export default function TripsScreen() {
     const trip = trips.find(t => t.id === proposeTripId);
     if (!trip) return;
 
-    const finalStart = new Date(proposeDate);
-    finalStart.setHours(proposeTime.getHours(), proposeTime.getMinutes(), 0, 0);
+    // See handleAddToItinerary above for why this isn't a plain setHours combine.
+    const finalStart = combineDateAndTimeInZone(proposeDate, proposeTime, trip.timezone);
     const finalEnd = new Date(finalStart.getTime() + proposeDuration * 60000);
 
     setProposeStep('loading');

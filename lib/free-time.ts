@@ -67,6 +67,28 @@ function atHour(base: DateTime, hour: number): DateTime {
 }
 
 /**
+ * Combines a day-only Date (e.g. from a native date picker) and a time-only Date (from a
+ * native time picker) into the correct absolute instant for that `hour:minute` wall-clock time
+ * in `timezone` — NOT `day.setHours(time.getHours(), ...)`, which always operates in the JS
+ * runtime's own LOCAL DEVICE timezone, regardless of which zone the picked values are meant to
+ * represent. A user planning a trip to Paris from a New York device who picks "8pm" in the
+ * time picker means 8pm Paris time; naively combining via setHours silently books the event at
+ * 8pm New York (= 2am Paris) instead — a 6+ hour, often wrong-day, mistake. See
+ * app/(tabs)/trips.tsx's handleAddToItinerary/handleUpdateScheduledEvent/handleRefineSearch/
+ * handleProposeSubmit, the four call sites this replaces.
+ *
+ * `time.getHours()`/`time.getMinutes()` reading the picker's own device-local wall-clock digits
+ * is intentional and correct here — the goal is "the digits the user saw on the picker," just
+ * re-anchored to `timezone` instead of re-interpreted in the device's own zone.
+ */
+export function combineDateAndTimeInZone(day: Date, time: Date, timezone: string = DEVICE_TIMEZONE): Date {
+  const zonedDay = DateTime.fromJSDate(day).setZone(timezone);
+  return zonedDay
+    .set({ hour: time.getHours(), minute: time.getMinutes(), second: 0, millisecond: 0 })
+    .toJSDate();
+}
+
+/**
  * Core Algorithm: Parses a day's worth of events and finds free time gaps that are larger than minGapMinutes.
  * `timezone` is the IANA zone the day boundaries (dayStartHour/dayEndHour) are measured in — defaults to the
  * device's own zone, which is correct for "today, where I am" but wrong for a future trip in another city

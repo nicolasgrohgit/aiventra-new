@@ -4,7 +4,7 @@
 // would fail to resolve the import.
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { isTripPast } from './trip-types';
+import { isTripPast, isTripActive } from './trip-types';
 
 const ZONE = 'Europe/Paris';
 
@@ -40,5 +40,52 @@ describe('isTripPast', () => {
     const endDate = new Date('2030-03-17T12:00:00-10:00'); // Honolulu midday, still the 17th there
     const referenceDate = new Date('2030-03-17T23:30:00-10:00'); // still the 17th in Honolulu
     assert.equal(isTripPast(endDate, 'Pacific/Honolulu', referenceDate), false);
+  });
+});
+
+describe('isTripActive', () => {
+  test('true on the trip\'s own first day', () => {
+    const startDate = new Date('2030-03-10T00:00:00+01:00');
+    const endDate = new Date('2030-03-17T00:00:00+01:00');
+    const referenceDate = new Date('2030-03-10T08:00:00+01:00');
+    assert.equal(isTripActive(startDate, endDate, ZONE, referenceDate), true);
+  });
+
+  test('true on the trip\'s own last day, right up until midnight', () => {
+    const startDate = new Date('2030-03-10T00:00:00+01:00');
+    const endDate = new Date('2030-03-17T14:00:00+01:00');
+    const referenceDate = new Date('2030-03-17T23:59:59+01:00');
+    assert.equal(isTripActive(startDate, endDate, ZONE, referenceDate), true);
+  });
+
+  test('false the calendar day before the trip starts', () => {
+    const startDate = new Date('2030-03-10T00:00:00+01:00');
+    const endDate = new Date('2030-03-17T00:00:00+01:00');
+    const referenceDate = new Date('2030-03-09T23:00:00+01:00');
+    assert.equal(isTripActive(startDate, endDate, ZONE, referenceDate), false);
+  });
+
+  test('false the calendar day after the trip ends', () => {
+    const startDate = new Date('2030-03-10T00:00:00+01:00');
+    const endDate = new Date('2030-03-17T14:00:00+01:00');
+    const referenceDate = new Date('2030-03-18T00:00:01+01:00');
+    assert.equal(isTripActive(startDate, endDate, ZONE, referenceDate), false);
+  });
+
+  test('checked in the trip\'s own destination timezone, not UTC or the device\'s', () => {
+    // 2030-03-09T23:30 Honolulu is already 2030-03-10T09:30 UTC — a naive UTC/device-local
+    // comparison could wrongly call the trip active a day early; in Honolulu's own zone it's
+    // still the day before the trip starts.
+    const startDate = new Date('2030-03-10T00:00:00-10:00'); // Honolulu midnight, trip's first day
+    const endDate = new Date('2030-03-17T00:00:00-10:00');
+    const referenceDate = new Date('2030-03-09T23:30:00-10:00'); // still the 9th in Honolulu
+    assert.equal(isTripActive(startDate, endDate, 'Pacific/Honolulu', referenceDate), false);
+  });
+
+  test('a single-day trip is active on that one day', () => {
+    const startDate = new Date('2030-03-10T00:00:00+01:00');
+    const endDate = new Date('2030-03-10T00:00:00+01:00');
+    const referenceDate = new Date('2030-03-10T18:00:00+01:00');
+    assert.equal(isTripActive(startDate, endDate, ZONE, referenceDate), true);
   });
 });

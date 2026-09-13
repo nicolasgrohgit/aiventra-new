@@ -71,6 +71,32 @@ this is still pre-release/beta.
   carry this through device read → sync → DB → API → UI; no backfill needed, existing Event
   docs simply read as `allDay: undefined` (falsy, same as today's behavior). 5 new tests in
   `lib/free-time.test.ts`.
+- **Manually scheduling a place/event in `app/(tabs)/trips.tsx` silently booked it in the
+  device's own timezone instead of the trip's destination timezone.** All four manual
+  scheduling flows — `handleAddToItinerary`, `handleUpdateScheduledEvent`, `handleRefineSearch`,
+  and `handleProposeSubmit` — combined a day-only Date and a time-only Date (both from native
+  pickers) via `date.setHours(picker.getHours(), picker.getMinutes())`, which always operates in
+  the JS runtime's LOCAL DEVICE timezone regardless of which zone the picked time was meant to
+  represent. Planning a Paris trip from a New York device and picking "8pm" (meaning 8pm Paris
+  time) silently booked the event at 8pm New York = 2am Paris instead — a 6+ hour, often
+  wrong-day, mistake. Fixed once via a new shared `combineDateAndTimeInZone` helper
+  (`lib/free-time.ts`, luxon-based, alongside the existing `atHour`) and applied at all four call
+  sites, each passing its own `trip.timezone` (falling back to the device's own zone via
+  `lib/timezones.ts`'s `DEVICE_TIMEZONE` only if the trip genuinely can't be resolved in that
+  scope). Same root cause, lower impact: `app/(tabs)/index.tsx`'s `activeTrip` lookups (used for
+  Home-tab city context and to attach a manually-suggested slot to the right trip) compared raw
+  device-local `Date`s (`t.startDate <= today && t.endDate >= today`) instead of the
+  timezone-aware comparison `lib/trip-types.ts`'s `isTripPast` already uses elsewhere — near a
+  trip's start/end boundary with a device/destination timezone mismatch, a trip could be treated
+  as active/inactive a day early or late. Fixed via a new sibling `isTripActive` helper in the
+  same file. (`app/(tabs)/trips.tsx` itself already used `isTripPast` correctly for its Current/
+  Past split and had no naive `activeTrip` comparison of its own to fix.) New tests in
+  `lib/free-time.test.ts` and `lib/trip-types.test.ts`.
+  `lib/place-matching.ts`'s `resolveAnchorForDate` was audited as a possible instance of the same
+  bug (it resolves a trip's geo anchor by comparing calendar days via UTC, not the trip's
+  destination-timezone day) but left unchanged: a correct fix needs the trip's `timezone` threaded
+  through from its two `server.ts` call sites, which is out of this fix's file scope — noted here
+  for a follow-up rather than forced through.
 
 ### Roadmap noted
 - **"Have a suggestion?" modal (and most other full-screen modals) render too high, crowding
@@ -91,29 +117,8 @@ this is still pre-release/beta.
   confirmed bugs plus 3 lower-confidence notes.** Grouped below into three verticals by file
   ownership — none of the three touches a file another one does, so they're safe to hand to
   three separate agents/sessions in parallel with zero merge risk. Slated for next sprint.
-  - **Vertical A — Trip scheduling timezone correctness** (`app/(tabs)/trips.tsx`,
-    `app/(tabs)/index.tsx`, `lib/timezones.ts`/`lib/free-time.ts` for a new shared helper,
-    `lib/place-matching.ts` to verify only).
-    - *Confirmed:* every manual scheduling flow — `handleAddToItinerary` (:783-784),
-      `handleUpdateScheduledEvent` (:855-856), `handleRefineSearch` (:940-941), and
-      `handleProposeSubmit` (:970-972), all in `app/(tabs)/trips.tsx` — builds the final event
-      instant via `date.setHours(picker.getHours(), picker.getMinutes())`, which always operates
-      in the **device's** local timezone, not the trip's destination timezone
-      (`Trip.timezone`). Planning a Paris trip from a New York device and manually picking
-      "8pm" (meaning 8pm Paris time) silently books 8pm New York = 2am Paris instead — a
-      6+ hour, wrong-day event. Same broken pattern duplicated across all four call sites
-      instead of one timezone-aware helper (e.g. a luxon `DateTime.fromJSDate(day)
-      .setZone(trip.timezone).set({hour, minute})`) — fix once, apply to all four.
-    - *Confirmed, same root cause, lower impact:* `app/(tabs)/index.tsx`'s and
-      `app/(tabs)/trips.tsx`'s `activeTrip` lookups use naive `t.startDate <= today &&
-      t.endDate >= today` on raw device-local `Date`s, instead of the timezone-aware comparison
-      `lib/trip-types.ts`'s `isTripPast` already uses elsewhere in this same codebase. Near a
-      trip's start/end boundary with a device/destination timezone mismatch, a trip can be
-      treated as active/inactive a day early or late.
-    - *Unverified, needs confirmation before fixing:* `lib/place-matching.ts:197-206`
-      (`resolveAnchorForDate`) compares calendar days via `date.toISOString().slice(0,10)` (UTC
-      day), not the trip's destination-timezone day — for a trip far from UTC (e.g. Auckland,
-      UTC+13), a near-midnight event could resolve to the wrong day's `baseLocations` anchor.
+  (Vertical A — trip scheduling timezone correctness — has since shipped; see the "Fixed" entry
+  above.)
   - **Vertical B — Offline sync & retry reliability** (`hooks/useSyncedCollection.ts`,
     `lib/mutation-queue.ts`, `hooks/useTripDiscovery.tsx`).
     - *Confirmed:* `hooks/useSyncedCollection.ts`'s delete (:129-139) and update (:157-174)
