@@ -1,0 +1,15 @@
+node_modules
+.git
+.expo
+android
+ios
+public/*.apk
+scratch
+# Security review ahead of the GCP migration: without this, `COPY . .` in the Dockerfile would
+# bake the real local .env (Mongo password, JWT_SECRET, ADMIN_TOKEN, ENCRYPTION_MASTER_KEY,
+# GOOGLE_PLACES_API_KEY) permanently into the image's filesystem layers — readable by anyone
+# with pull access to the Artifact Registry repo, independent of Secret Manager doing the
+# right thing for the running container. Runtime config comes from Secret Manager via
+# `gcloud run deploy --set-secrets`, never from a file in the image.
+.env
+.env*

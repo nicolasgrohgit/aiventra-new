@@ -6,6 +6,34 @@ this is still pre-release/beta.
 
 ## [Unreleased]
 ### Fixed
+- **Pre-GCP-migration security pass found 4 gaps that only matter once the backend stops being
+  reachable solely through an obscure, rotating tunnel subdomain and becomes a stable, public
+  URL.** All fixed and verified live against the restarted local server before the migration
+  itself (see `docs/gcp-migration-runbook.md`'s "Security prerequisites" section):
+  - Authored `Dockerfile`/`.dockerignore` at the repo root (didn't exist yet) with `.env`/`.env*`
+    excluded — without this, `COPY . .` would have baked the real local secrets (Mongo password,
+    `JWT_SECRET`, `ADMIN_TOKEN`, `ENCRYPTION_MASTER_KEY`, `GOOGLE_PLACES_API_KEY`) permanently
+    into the container image's layers. Also runs as the non-root `node` user.
+  - `server.ts` now calls `app.set('trust proxy', 1)`. Without it, `express-rate-limit` (which
+    keys on `req.ip`) would see Cloud Run's front-end proxy as every request's source instead of
+    the real client, silently defeating the rate limiting the code already relies on now that
+    the app is public — likely already broken behind the current cloudflared tunnel too, same
+    single-proxy-hop situation.
+  - `requireAdminToken`'s `provided !== ADMIN_TOKEN` (a timing side-channel) is now
+    `crypto.timingSafeEqual`-based (`timingSafeStringEqual`), and all 4 `/admin/api/places`
+    routes now go through `strictLimiter` — previously unthrottled beyond the generic global
+    limiter, low-risk behind an unguessable tunnel URL, not once it's stable and public.
+  - `pino`'s `redact: ['req.headers.authorization']` now masks the `Authorization` header in
+    request logs — previously logged in full (verified directly in `server.log`), harmless-ish
+    in a local file only the developer can read, a much bigger exposure once Cloud Run ships
+    these logs into Google Cloud Logging.
+  - Verified: `npx tsc --noEmit` clean, `npm run lint` clean, `npm test` 245/245 passing, plus a
+    live smoke test (wrong/correct/missing admin token → 401/200/401, `Authorization` shows as
+    `[Redacted]` in `server.log`).
+  - Still open, flagged for a conscious decision during the migration itself rather than silent
+    acceptance: Atlas Network Access needs `0.0.0.0/0` (no Cloud Run static egress IP — use a
+    strong, unique, generated DB password) and the Cloud Run service's default service account
+    should be checked/scoped before relying on it as-is.
 - **Circles/Contacts: a real synced contact whose MongoDB `_id` happened to start with the
   letter `c` could never have its delete/edit reach the server, and unlink-then-re-friend could
   leave one side of a friendship with a duplicate `Contact` document ("Vertical C" from the

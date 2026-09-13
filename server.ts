@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -36,7 +37,15 @@ if (process.env.SENTRY_DSN) {
   Sentry.init({ dsn: process.env.SENTRY_DSN, tracesSampleRate: 0.1 });
 }
 
-const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
+// Authorization is a live bearer token — never let it reach a log sink verbatim. Security
+// review ahead of the GCP migration found this logged in full in server.log's request lines
+// (pino-http's default req serializer includes every header); harmless-ish while that file
+// only exists on this laptop, but Cloud Run ships request logs straight into Google Cloud
+// Logging, readable by anyone with a Logging/Viewer role on the project — a much bigger
+// exposure for a real user's session token. redact must live on the pino instance itself
+// (pino-http forwards to whichever logger it's given, but redaction happens in pino's own
+// serialization pipeline, not as a pino-http-level option).
+const logger = pino({ level: process.env.LOG_LEVEL || 'info', redact: ['req.headers.authorization'] });
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
@@ -45,6 +54,14 @@ if (!JWT_SECRET) {
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+// Both the current cloudflared tunnel and the planned Cloud Run deployment put exactly one
+// reverse proxy hop in front of this app — without this, Express's req.ip (what
+// express-rate-limit keys on below) resolves to that proxy's own address, not the real
+// client's, so every requester gets bucketed under the same key. `1` trusts only the
+// first hop's X-Forwarded-For entry (the proxy's own, not further attacker-supplied hops
+// prepended before it) — the correct setting for exactly one trusted proxy in the chain.
+app.set('trust proxy', 1);
 
 // Cheap insurance across the whole app — generous enough to never bother a real client,
 // there specifically to blunt scripted abuse now that the app is reachable over the public
@@ -114,13 +131,29 @@ function authenticate(req: AuthedRequest, res: express.Response, next: express.N
 
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
 
+// Plain !== leaks how many leading bytes matched via response-time differences (a textbook
+// timing side-channel) — low-stakes while this only sits behind an unguessable tunnel
+// subdomain, worth closing before it sits at a stable, public Cloud Run URL instead.
+// timingSafeEqual throws on a byteLength mismatch rather than returning false, so length is
+// checked first; that early return does leak the correct token's length, but a length alone
+// (unlike a byte-by-byte match signal) isn't something an attacker can incrementally exploit
+// to recover the token's content.
+function timingSafeStringEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  return bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
+}
+
 // Shared-secret gate for the /admin/api/places routes (see the express.static comment above).
 // Deliberately not JWT/`authenticate` — this is a single ops tool for curating vetted places,
 // not a per-user resource, so a single shared token compared header-to-env-var is the right
 // weight of protection, not a second full auth system. `admin.html`'s own JS prompts for this
 // token and echoes it back on every admin API call (see public/admin.html) — this is what
 // actually stops that page from being useful to anyone who doesn't have the token, since the
-// page itself can't be gated at the express.static level without restructuring.
+// page itself can't be gated at the express.static level without restructuring. Every route
+// using this also goes through strictLimiter (see its call sites below) — this shared-secret
+// check has no per-user account to lock out, so throttling attempts is the only brute-force
+// defense available.
 function requireAdminToken(req: express.Request, res: express.Response, next: express.NextFunction) {
   if (!ADMIN_TOKEN) {
     // Fails closed, not open: an unset ADMIN_TOKEN disables the admin API entirely rather
@@ -128,7 +161,7 @@ function requireAdminToken(req: express.Request, res: express.Response, next: ex
     return res.status(503).json({ error: 'Admin API is disabled: ADMIN_TOKEN is not configured on the server.' });
   }
   const provided = req.headers['x-admin-token'];
-  if (provided !== ADMIN_TOKEN) {
+  if (typeof provided !== 'string' || !timingSafeStringEqual(provided, ADMIN_TOKEN)) {
     return res.status(401).json({ error: 'Invalid or missing admin token' });
   }
   next();
@@ -1513,7 +1546,7 @@ app.put('/api/friend-requests/:id/respond', authenticate, async (req: AuthedRequ
 // source: 'curated' server-side, regardless of what a client sends, so this is the one and
 // only path that can create permanent, vetted entries — everything else in the app only
 // ever produces source: 'generated' filler (see lib/places-population.ts).
-app.get('/admin/api/places', requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
+app.get('/admin/api/places', strictLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
   try {
     const filter: any = {};
     if (typeof req.query.city === 'string' && req.query.city.trim()) {
@@ -1527,7 +1560,7 @@ app.get('/admin/api/places', requireAdminToken, async (req: AuthedRequest, res: 
   }
 });
 
-app.post('/admin/api/places', requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
+app.post('/admin/api/places', strictLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
   try {
     const { name, city, category, genre, rating, description, estimatedDuration, distanceKm } = req.body;
     if (!name || !city || !category || !genre) {
@@ -1552,7 +1585,7 @@ app.post('/admin/api/places', requireAdminToken, async (req: AuthedRequest, res:
   }
 });
 
-app.put('/admin/api/places/:id', requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
+app.put('/admin/api/places/:id', strictLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
   try {
     const { name, city, category, genre, rating, description, estimatedDuration, distanceKm } = req.body;
     const updateData: any = { source: 'curated' };
@@ -1584,7 +1617,7 @@ app.put('/admin/api/places/:id', requireAdminToken, async (req: AuthedRequest, r
   }
 });
 
-app.delete('/admin/api/places/:id', requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
+app.delete('/admin/api/places/:id', strictLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
   try {
     const place = await Place.findByIdAndDelete(req.params.id);
     if (!place) {
