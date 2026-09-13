@@ -71,6 +71,34 @@ this is still pre-release/beta.
   carry this through device read → sync → DB → API → UI; no backfill needed, existing Event
   docs simply read as `allDay: undefined` (falsy, same as today's behavior). 5 new tests in
   `lib/free-time.test.ts`.
+- **Vertical B of the full-codebase audit (offline sync & retry reliability) — a non-2xx HTTP
+  response was never detected as a failure in three places**, all stemming from the same root
+  cause: `lib/api-client.ts`'s `apiFetch` resolves normally (doesn't throw) on a 4xx/5xx
+  response, so every caller must explicitly check `res.ok` — three call sites didn't.
+  - `hooks/useSyncedCollection.ts`'s delete and update loops (shared by `useTrips.tsx`/
+    `useContacts.tsx`) never checked `res.ok` after a DELETE/PUT. A 401 (expired 30-day JWT) or
+    404 on either call was silently treated as neither success nor failure — nothing queued for
+    retry, and the very next unconditional refetch pulled the "deleted"/un-edited item back from
+    the server, silently reverting the user's own action with no error shown. Both loops now go
+    through one shared `performSyncedMutation` helper that checks `res.ok` and routes a non-ok
+    response through `queueMutation` exactly like a thrown network error already was — the two
+    failure shapes are now handled identically end to end.
+  - `lib/mutation-queue.ts`'s own top comment already documented "an identical PUT, or a DELETE
+    on an already-deleted resource, is a no-op," but the server actually returns 404 (not 200)
+    for that case, and `flushMutationQueue` only cleared an entry on `res.ok` — so a mutation
+    whose target was legitimately already gone by replay time retried forever with no way to
+    resolve itself. `flushMutationQueue` now clears the entry on a 404 too (the no-op case the
+    top comment describes), while any other non-ok status (401, 500, ...) still stays queued as
+    a real failure. New tests in `lib/mutation-queue.test.ts` cover a 404 clearing on both a
+    queued DELETE and a queued PUT, a non-404 non-ok response still retrying, and one queued
+    mutation's 404 not affecting a sibling mutation's own outcome in the same flush.
+  - `hooks/useTripDiscovery.tsx`'s `notifyAppAccess` updated its local "last synced" timestamp
+    mirror unconditionally; a failed server update could still suppress a legitimate rescan for
+    up to 7 days. Now only updates the local mirror when `res.ok`.
+  - Verified via `npx tsc --noEmit`, `npm run lint`, and the full `npm test` suite (all clean/
+    passing) plus manual code review of the two hook files — no live device/simulator available
+    in this environment to exercise the app UI end to end, so the hook-level changes are not
+    live-verified, only type-checked, linted, and reviewed.
 
 ### Roadmap noted
 - **"Have a suggestion?" modal (and most other full-screen modals) render too high, crowding
@@ -91,6 +119,8 @@ this is still pre-release/beta.
   confirmed bugs plus 3 lower-confidence notes.** Grouped below into three verticals by file
   ownership — none of the three touches a file another one does, so they're safe to hand to
   three separate agents/sessions in parallel with zero merge risk. Slated for next sprint.
+  **Vertical B (offline sync & retry reliability) has since shipped — see the "Fixed" entry
+  above — leaving the two verticals below.**
   - **Vertical A — Trip scheduling timezone correctness** (`app/(tabs)/trips.tsx`,
     `app/(tabs)/index.tsx`, `lib/timezones.ts`/`lib/free-time.ts` for a new shared helper,
     `lib/place-matching.ts` to verify only).
@@ -114,26 +144,6 @@ this is still pre-release/beta.
       (`resolveAnchorForDate`) compares calendar days via `date.toISOString().slice(0,10)` (UTC
       day), not the trip's destination-timezone day — for a trip far from UTC (e.g. Auckland,
       UTC+13), a near-midnight event could resolve to the wrong day's `baseLocations` anchor.
-  - **Vertical B — Offline sync & retry reliability** (`hooks/useSyncedCollection.ts`,
-    `lib/mutation-queue.ts`, `hooks/useTripDiscovery.tsx`).
-    - *Confirmed:* `hooks/useSyncedCollection.ts`'s delete (:129-139) and update (:157-174)
-      loops never check `res.ok` — `apiFetch` resolves normally (doesn't throw) on a non-2xx
-      response, so a 401 (expired 30-day JWT) or 404 on a DELETE/PUT is silently treated as
-      neither a success nor a failure: nothing is queued for retry, AND the very next
-      unconditional refetch (:180-189) pulls the "deleted"/un-edited item back from the server,
-      silently undoing the user's action with no error shown. Contrast with
-      `hooks/useTrips.tsx:106`'s `toggleDismissedSlot`, which correctly checks `if (!res.ok)
-      return;` — this is an inconsistency, not a deliberate design choice.
-    - *Confirmed:* `lib/mutation-queue.ts`'s own top comment claims "an identical PUT, or a
-      DELETE on an already-deleted resource, is a no-op," but the server returns 404 (not 200)
-      for that case, and `flushMutationQueue` (:63-89) only clears an entry on `res.ok` — so a
-      mutation whose target is legitimately gone by replay time (deleted from another device,
-      or its own create never landed) retries forever on every future flush with no way to
-      clear itself.
-    - *Confirmed, same bug pattern, low stakes:* `hooks/useTripDiscovery.tsx:126-133`
-      (`notifyAppAccess`) doesn't check `res.ok` before updating its local "just synced"
-      timestamp mirror — a failed server update can still suppress a legitimate rescan for up
-      to 7 days.
   - **Vertical C — Circles/Contacts correctness** (`hooks/useContacts.tsx`, `server.ts`).
     - *Confirmed:* `hooks/useContacts.tsx:77,80`'s `canSyncForDelete`/`canSyncForUpdate` guard
       against syncing the seeded mock contacts (ids `c1`..`c4`) via a bare
