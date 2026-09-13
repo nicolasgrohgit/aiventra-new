@@ -87,6 +87,67 @@ this is still pre-release/beta.
   `app/(tabs)/profile.tsx:389`, `app/(tabs)/index.tsx:344`, `app/(tabs)/trips.tsx:1902`,
   `app/(tabs)/social.tsx:610`. Slated for next sprint: swap every one of these over to
   `useSafeAreaInsets()` for a consistent, device-correct top inset instead of a per-file guess.
+- **Full-codebase audit (general-purpose agent, branch `sprint4-calendar-allday-events`) found 5
+  confirmed bugs plus 3 lower-confidence notes.** Grouped below into three verticals by file
+  ownership — none of the three touches a file another one does, so they're safe to hand to
+  three separate agents/sessions in parallel with zero merge risk. Slated for next sprint.
+  - **Vertical A — Trip scheduling timezone correctness** (`app/(tabs)/trips.tsx`,
+    `app/(tabs)/index.tsx`, `lib/timezones.ts`/`lib/free-time.ts` for a new shared helper,
+    `lib/place-matching.ts` to verify only).
+    - *Confirmed:* every manual scheduling flow — `handleAddToItinerary` (:783-784),
+      `handleUpdateScheduledEvent` (:855-856), `handleRefineSearch` (:940-941), and
+      `handleProposeSubmit` (:970-972), all in `app/(tabs)/trips.tsx` — builds the final event
+      instant via `date.setHours(picker.getHours(), picker.getMinutes())`, which always operates
+      in the **device's** local timezone, not the trip's destination timezone
+      (`Trip.timezone`). Planning a Paris trip from a New York device and manually picking
+      "8pm" (meaning 8pm Paris time) silently books 8pm New York = 2am Paris instead — a
+      6+ hour, wrong-day event. Same broken pattern duplicated across all four call sites
+      instead of one timezone-aware helper (e.g. a luxon `DateTime.fromJSDate(day)
+      .setZone(trip.timezone).set({hour, minute})`) — fix once, apply to all four.
+    - *Confirmed, same root cause, lower impact:* `app/(tabs)/index.tsx`'s and
+      `app/(tabs)/trips.tsx`'s `activeTrip` lookups use naive `t.startDate <= today &&
+      t.endDate >= today` on raw device-local `Date`s, instead of the timezone-aware comparison
+      `lib/trip-types.ts`'s `isTripPast` already uses elsewhere in this same codebase. Near a
+      trip's start/end boundary with a device/destination timezone mismatch, a trip can be
+      treated as active/inactive a day early or late.
+    - *Unverified, needs confirmation before fixing:* `lib/place-matching.ts:197-206`
+      (`resolveAnchorForDate`) compares calendar days via `date.toISOString().slice(0,10)` (UTC
+      day), not the trip's destination-timezone day — for a trip far from UTC (e.g. Auckland,
+      UTC+13), a near-midnight event could resolve to the wrong day's `baseLocations` anchor.
+  - **Vertical B — Offline sync & retry reliability** (`hooks/useSyncedCollection.ts`,
+    `lib/mutation-queue.ts`, `hooks/useTripDiscovery.tsx`).
+    - *Confirmed:* `hooks/useSyncedCollection.ts`'s delete (:129-139) and update (:157-174)
+      loops never check `res.ok` — `apiFetch` resolves normally (doesn't throw) on a non-2xx
+      response, so a 401 (expired 30-day JWT) or 404 on a DELETE/PUT is silently treated as
+      neither a success nor a failure: nothing is queued for retry, AND the very next
+      unconditional refetch (:180-189) pulls the "deleted"/un-edited item back from the server,
+      silently undoing the user's action with no error shown. Contrast with
+      `hooks/useTrips.tsx:106`'s `toggleDismissedSlot`, which correctly checks `if (!res.ok)
+      return;` — this is an inconsistency, not a deliberate design choice.
+    - *Confirmed:* `lib/mutation-queue.ts`'s own top comment claims "an identical PUT, or a
+      DELETE on an already-deleted resource, is a no-op," but the server returns 404 (not 200)
+      for that case, and `flushMutationQueue` (:63-89) only clears an entry on `res.ok` — so a
+      mutation whose target is legitimately gone by replay time (deleted from another device,
+      or its own create never landed) retries forever on every future flush with no way to
+      clear itself.
+    - *Confirmed, same bug pattern, low stakes:* `hooks/useTripDiscovery.tsx:126-133`
+      (`notifyAppAccess`) doesn't check `res.ok` before updating its local "just synced"
+      timestamp mirror — a failed server update can still suppress a legitimate rescan for up
+      to 7 days.
+  - **Vertical C — Circles/Contacts correctness** (`hooks/useContacts.tsx`, `server.ts`).
+    - *Confirmed:* `hooks/useContacts.tsx:77,80`'s `canSyncForDelete`/`canSyncForUpdate` guard
+      against syncing the seeded mock contacts (ids `c1`..`c4`) via a bare
+      `!id.startsWith('c')` check — but a real MongoDB `_id` is 24 hex chars, and hex includes
+      `c`, so roughly **1 in 16 real contacts** has an `_id` starting with `c` and silently
+      never syncs a delete/edit to the server again (reappears after reinstall/relogin). Fix
+      should key off the actual mock-id values, not a bare prefix.
+    - *Confirmed:* `server.ts`'s `POST /api/friend-requests` (:1345-1411) only checks for an
+      existing **pending** request in either direction, never whether the two users are already
+      linked via `Contact`; the accept handler (:1460-1488) then unconditionally
+      `Contact.create`s for both sides. Unlink-then-re-friend (Alice removes her own `Contact`
+      for Bob, then sends him a new request, which is allowed since no pending request exists;
+      Bob accepts) creates a second, duplicate `Contact` on Bob's side, since his original was
+      never touched.
 - **Need a real email server on GCP for `support@odys.ai` and `admin@odys.ai`.** No email
   infrastructure exists anywhere in this codebase today (no nodemailer/SendGrid/SES dependency,
   no outbound-mail code path). This is two separate needs: receiving mail at those addresses
