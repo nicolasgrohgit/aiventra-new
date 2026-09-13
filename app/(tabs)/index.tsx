@@ -9,6 +9,7 @@ import { calculateFreeTimeSlots, generateMockEventsForToday, getDeviceEventsForT
 import * as Location from 'expo-location';
 import * as Calendar from 'expo-calendar';
 import { fetchWeather, WeatherData } from '@/lib/weather';
+import { isTripActive } from '@/lib/trip-types';
 
 const formatSuggestionDate = (d: Date) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
@@ -111,8 +112,10 @@ export default function HomeScreen() {
 
     // City fallback if location not yet resolved
     if (!locationCity) {
-      const today = new Date();
-      const activeTrip = trips.find((t: any) => t.startDate <= today && t.endDate >= today);
+      // Timezone-aware: a naive device-local Date comparison here could mark a trip
+      // active/inactive a day early or late near its start/end boundary whenever the device
+      // and destination timezones disagree (see lib/trip-types.ts's isTripActive).
+      const activeTrip = trips.find((t: any) => isTripActive(t.startDate, t.endDate, t.timezone));
       setContextCity(activeTrip ? activeTrip.destination : (user?.homebase || 'New York, USA'));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -151,8 +154,7 @@ export default function HomeScreen() {
     // screen's handleSelectPlace). Excludes a trip that hasn't synced its real Mongo _id yet
     // (still mock_-prefixed — see lib's entity-id convention): the create-event API call would
     // 404/CastError against an id that doesn't exist server-side.
-    const today = new Date();
-    const activeTrip = trips.find((t: any) => t.startDate <= today && t.endDate >= today && !t.id.startsWith('mock_'));
+    const activeTrip = trips.find((t: any) => isTripActive(t.startDate, t.endDate, t.timezone) && !t.id.startsWith('mock_'));
     router.push({
       pathname: '/recommendation' as any,
       params: {

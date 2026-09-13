@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { DateTime } from 'luxon';
-import { calculateFreeTimeSlots, getHardcodedFreeSlots, getTripDaySchedule, labelFreeSlot, expandSlotForProposals } from './free-time';
+import { calculateFreeTimeSlots, getHardcodedFreeSlots, getTripDaySchedule, labelFreeSlot, expandSlotForProposals, combineDateAndTimeInZone } from './free-time';
 
 const ZONE = 'Europe/Paris';
 
@@ -81,6 +81,49 @@ describe('calculateFreeTimeSlots', () => {
     // Different zones anchor the 8am/10pm day-boundary at different absolute instants, so the
     // resulting slot boundaries must differ even though the input events are identical.
     assert.notEqual(parisSlots[0]?.startTime.getTime(), nyOffsetSlots[0]?.startTime.getTime());
+  });
+});
+
+describe('combineDateAndTimeInZone', () => {
+  test('anchors the picked hour:minute to the destination timezone, not the device/UTC one', () => {
+    // A device-local "8pm" picked for a Paris trip must land at 20:00 Paris time, not 20:00 UTC
+    // (which would be 21:00/22:00 Paris depending on DST) — this is the exact live bug: a New
+    // York device picking "8pm" for a Paris trip must not silently book 8pm New York instead.
+    const day = new Date('2030-03-04T00:00:00Z'); // arbitrary day-only Date, any zone
+    const time = new Date(2000, 0, 1, 20, 0, 0, 0); // "8:00 PM" as read via local getHours()/getMinutes()
+    const combined = combineDateAndTimeInZone(day, time, 'Europe/Paris');
+    assert.equal(DateTime.fromJSDate(combined).setZone('Europe/Paris').toFormat('yyyy-MM-dd HH:mm'), '2030-03-04 20:00');
+  });
+
+  test('reads the picker\'s own local wall-clock digits, re-anchored (not reinterpreted) in the target zone', () => {
+    // time's own getHours()/getMinutes() are evaluated in the *test runner's* local zone (same
+    // as a real device), then re-anchored onto `day`'s calendar date in `timezone` — so the
+    // resulting wall-clock digits in `timezone` must equal the digits the picker displayed,
+    // regardless of what either the runner's or the target's UTC offset happens to be.
+    const time = new Date(2000, 0, 1, 20, 15, 0, 0); // 8:15 PM in the local (test-runner) zone
+    const day = new Date('2030-03-04T00:00:00Z');
+    const combined = combineDateAndTimeInZone(day, time, 'Pacific/Auckland');
+    const zoned = DateTime.fromJSDate(combined).setZone('Pacific/Auckland');
+    assert.equal(zoned.hour, time.getHours());
+    assert.equal(zoned.minute, time.getMinutes());
+    assert.equal(zoned.toFormat('yyyy-MM-dd'), '2030-03-04');
+  });
+
+  test('uses the destination timezone\'s own calendar day, which can differ from the day Date\'s UTC day', () => {
+    // `day` here is late in the day UTC-wise but still the same calendar date in Tokyo — the
+    // combined instant must fall on that Tokyo date, not shift to the next day.
+    const day = new Date('2030-03-04T23:00:00Z'); // still 2030-03-05 08:00 in Tokyo (UTC+9)
+    const time = new Date(2000, 0, 1, 9, 0, 0, 0);
+    const combined = combineDateAndTimeInZone(day, time, 'Asia/Tokyo');
+    assert.equal(DateTime.fromJSDate(combined).setZone('Asia/Tokyo').toFormat('yyyy-MM-dd HH:mm'), '2030-03-05 09:00');
+  });
+
+  test('defaults to the device timezone when none is given', () => {
+    const day = new Date('2030-03-04T00:00:00Z');
+    const time = new Date(2000, 0, 1, 14, 30, 0, 0);
+    const combined = combineDateAndTimeInZone(day, time);
+    assert.equal(combined.getHours(), 14);
+    assert.equal(combined.getMinutes(), 30);
   });
 });
 

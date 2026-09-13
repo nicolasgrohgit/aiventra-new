@@ -85,6 +85,19 @@ export function isTripPast(endDate: Date, timezone: string = DEVICE_TIMEZONE, re
   return DateTime.fromJSDate(referenceDate).setZone(timezone) >= cutoff;
 }
 
+// Sibling of isTripPast: is `referenceDate` within [startDate, endDate] inclusive, measured as
+// calendar days in the trip's own destination timezone rather than the device's. Naively
+// comparing raw device-local Date objects (`t.startDate <= today && t.endDate >= today`) can
+// mark a trip active/inactive a day early or late whenever the device and destination
+// timezones disagree near the trip's start/end boundary — see app/(tabs)/index.tsx and
+// app/(tabs)/trips.tsx's activeTrip lookups, the callers this was extracted for.
+export function isTripActive(startDate: Date, endDate: Date, timezone: string = DEVICE_TIMEZONE, referenceDate: Date = new Date()): boolean {
+  const zonedRef = DateTime.fromJSDate(referenceDate).setZone(timezone).startOf('day');
+  const zonedStart = DateTime.fromJSDate(startDate).setZone(timezone).startOf('day');
+  const zonedEnd = DateTime.fromJSDate(endDate).setZone(timezone).startOf('day');
+  return zonedRef >= zonedStart && zonedRef <= zonedEnd;
+}
+
 // Every card/detail-modal thumbnail points at this same server-side proxy (never at
 // googleapis.com directly) — see GET /api/places/:id/photo in server.ts for why: resolving a
 // Google photoRef into real image bytes needs GOOGLE_PLACES_API_KEY, which must never leave
