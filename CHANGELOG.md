@@ -6,6 +6,18 @@ this is still pre-release/beta.
 
 ## [Unreleased]
 ### Fixed
+- **The Cloud Run deployment couldn't connect to MongoDB Atlas at all — every request failed
+  with "Could not connect to any servers in your MongoDB Atlas cluster," a message that points
+  at an IP-whitelist problem but wasn't one.** `Dockerfile`'s base image, `node:20-slim`, strips
+  out the `ca-certificates` package that TLS connections need to verify a peer's certificate
+  chain — Atlas requires TLS, so every connection attempt got partway through a handshake
+  (confirmed via the driver's own topology dump: every shard showed
+  `"error": {"beforeHandshake": false}`, i.e. the TCP connection succeeded but something failed
+  during/after it) and then failed, with the driver's generic error message pointing at the
+  wrong cause. Fixed by installing `ca-certificates` in the image. Verified live: full
+  login → create trip → create event → fetch-back round trip against the deployed Cloud Run
+  service, including confirming the event's `title`/`location` are genuinely ciphertext at rest
+  in Atlas (`v1:...` format) and correctly decrypt back through the API.
 - **Pre-GCP-migration security pass found 4 gaps that only matter once the backend stops being
   reachable solely through an obscure, rotating tunnel subdomain and becomes a stable, public
   URL.** All fixed and verified live against the restarted local server before the migration
@@ -178,6 +190,19 @@ this is still pre-release/beta.
   for a follow-up rather than forced through.
 
 ### Roadmap noted
+- **On Cloud Run, every cold start has a ~30-40 second window where the server accepts real
+  requests before its MongoDB connection is ready, failing them with "Internal server error."**
+  Confirmed live during the GCP migration's Phase 6 verification: `server.ts` calls
+  `connectToDatabase().then(...).catch(...)` (fire-and-forget, never awaited) before
+  `app.listen()` — Express starts serving immediately, but Mongoose's `bufferCommands: false`
+  means any query issued before the connection actually completes throws instead of queuing.
+  Locally this never surfaced (127.0.0.1 connects near-instantly); against Atlas over the
+  internet, a fresh connection genuinely takes 30+ seconds, and Cloud Run's scale-to-zero model
+  means this cold-start window recurs for real users, not just at deploy time. Fix direction:
+  either await the DB connection before calling `app.listen()`, or add a readiness
+  gate/middleware that returns a clear 503 (with a retry hint) until connected, instead of the
+  current opaque 500. (`--min-instances=1` on Cloud Run would also sidestep it by keeping an
+  instance always warm, at the cost of giving up scale-to-zero.)
 - **"Have a suggestion?" modal (and most other full-screen modals) render too high, crowding
   the status bar** — live-reported from a screenshot where the title sits right against the
   clock/notch. `components/profile/suggestion-form-modal.tsx:105` uses a hardcoded

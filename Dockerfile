@@ -1,4 +1,11 @@
 FROM node:20-slim
+# node:20-slim strips out ca-certificates, which every outbound TLS connection needs to
+# verify the peer's certificate chain — without it, a TLS handshake fails partway through
+# (connects fine at the TCP level, dies during the handshake) rather than refusing to connect
+# at all, which is exactly what broke the MongoDB Atlas connection (Atlas requires TLS) when
+# first deployed here: the driver's error just said "could not connect to any servers," not
+# anything pointing at a missing CA bundle.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
