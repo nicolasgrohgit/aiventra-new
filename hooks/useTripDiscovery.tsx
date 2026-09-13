@@ -125,8 +125,12 @@ export const TripDiscoveryProvider = ({ children }: { children: ReactNode }) => 
 
   const notifyAppAccess = useCallback(async () => {
     try {
-      await apiFetch(`${API_URL}/api/users/me/app-access`, { method: 'POST' });
-      lastAppAccessRef.current = Date.now();
+      const res = await apiFetch(`${API_URL}/api/users/me/app-access`, { method: 'POST' });
+      // apiFetch doesn't throw on a non-2xx response — only mirror the timestamp locally once
+      // the server actually recorded it. Otherwise a failed request (401, 500, dropped mid-
+      // flight) would still suppress the next legitimate rescan for up to 7 days, since the
+      // local mirror is what the foreground-rescan gate above actually reads.
+      if (res.ok) lastAppAccessRef.current = Date.now();
     } catch (err) {
       console.warn('Failed to record app access:', err);
     }

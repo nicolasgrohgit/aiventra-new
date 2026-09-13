@@ -121,6 +121,33 @@ export function useSyncedCollection<TItem extends EntityId>(config: SyncedCollec
 
     const oldItems = items;
 
+    // Runs one PUT/DELETE against the API and queues it for retry (lib/mutation-queue.ts) on
+    // EITHER a thrown error (dropped connection) OR a non-ok response (401 expired JWT, 404,
+    // 500, ...) — apiFetch never throws on a non-2xx response, so without this a failure like
+    // an expired token would silently fall through as neither a success nor a queued retry,
+    // and the unconditional refetch below would then pull the server's still-unchanged state
+    // back, undoing the user's delete/edit with no error shown. Routing both failure shapes
+    // through the exact same queueMutation call keeps them equivalent from here on — including
+    // flushMutationQueue's own handling of a 404 as an already-satisfied no-op rather than an
+    // endless retry.
+    const performSyncedMutation = async (method: 'PUT' | 'DELETE', id: string, body?: any) => {
+      const url = `${apiUrl}/${id}`;
+      try {
+        const res = await apiFetch(url, {
+          method,
+          headers: body ? { 'Content-Type': 'application/json' } : undefined,
+          body: body ? JSON.stringify(body) : undefined
+        });
+        if (!res.ok) {
+          console.warn(`Failed to ${method} ${entityLabel} ${id} (status ${res.status}), queuing for retry`);
+          await queueMutation(`${entityLabel}:${id}`, { method, url, body });
+        }
+      } catch (err) {
+        console.warn(`Failed to ${method} ${entityLabel} ${id}, queuing for retry:`, err);
+        await queueMutation(`${entityLabel}:${id}`, { method, url, body });
+      }
+    };
+
     // 1. Delete items that are no longer present. Each call is isolated (its own try/catch)
     // so one failure doesn't abort the rest of the batch — previously the whole sync was one
     // try/catch, so a single dropped connection meant every subsequent mutation in this call
@@ -129,12 +156,7 @@ export function useSyncedCollection<TItem extends EntityId>(config: SyncedCollec
     for (const item of deleted) {
       const id = syncId(item);
       if (id && canSyncForDelete(id)) {
-        try {
-          await apiFetch(`${apiUrl}/${id}`, { method: 'DELETE' });
-        } catch (err) {
-          console.warn(`Failed to delete ${entityLabel} ${id}, queuing for retry:`, err);
-          await queueMutation(`${entityLabel}:${id}`, { method: 'DELETE', url: `${apiUrl}/${id}` });
-        }
+        await performSyncedMutation('DELETE', id);
       }
     }
 
@@ -159,17 +181,7 @@ export function useSyncedCollection<TItem extends EntityId>(config: SyncedCollec
         if (oldItem && hasChanged(oldItem, newItem)) {
           const id = syncId(newItem);
           if (id && canSyncForUpdate(id)) {
-            const body = buildUpdateBody(newItem);
-            try {
-              await apiFetch(`${apiUrl}/${id}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body)
-              });
-            } catch (err) {
-              console.warn(`Failed to update ${entityLabel} ${id}, queuing for retry:`, err);
-              await queueMutation(`${entityLabel}:${id}`, { method: 'PUT', url: `${apiUrl}/${id}`, body });
-            }
+            await performSyncedMutation('PUT', id, buildUpdateBody(newItem));
           }
         }
       }

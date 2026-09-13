@@ -107,21 +107,65 @@ describe('flushMutationQueue', () => {
     assert.equal(postRecoveryCalls.length, 0, 'should be gone from the queue once a replay actually succeeds');
   });
 
-  test('a non-ok response (e.g. 404) leaves the mutation queued rather than dropping it', async () => {
-    stubFetch({ ok: false, status: 404 });
+  test('a non-ok, non-404 response (e.g. 401 expired auth) leaves the mutation queued rather than dropping it', async () => {
+    stubFetch({ ok: false, status: 401 });
     await queueMutation('trip:non-ok-response', { method: 'DELETE', url: 'https://api.test/trips/non-ok-response' });
     await flushMutationQueue();
 
-    const secondAttemptCalls = stubFetch({ ok: false, status: 404 });
+    const secondAttemptCalls = stubFetch({ ok: false, status: 401 });
     await flushMutationQueue();
-    assert.equal(secondAttemptCalls.length, 1, 'a 404 is not treated as "already deleted, safe to drop" — stays queued');
+    assert.equal(secondAttemptCalls.length, 1, 'a 401 is a real failure, not a no-op — stays queued');
 
-    // Eventually succeeds (e.g. the entity re-synced through some other path) and clears.
+    // Eventually succeeds (e.g. the token refreshes) and clears.
     stubFetch({ ok: true });
     await flushMutationQueue();
     const afterSuccessCalls = stubFetch({ ok: true });
     await flushMutationQueue();
     assert.equal(afterSuccessCalls.length, 0);
+  });
+
+  test('a 404 on a queued DELETE is treated as an already-satisfied no-op and clears the entry', async () => {
+    stubFetch({ ok: false, status: 404 });
+    await queueMutation('trip:delete-404-noop', { method: 'DELETE', url: 'https://api.test/trips/delete-404-noop' });
+
+    await flushMutationQueue();
+
+    // Should already be gone — a second flush attempt makes no further request for this key.
+    const secondAttemptCalls = stubFetch({ ok: false, status: 404 });
+    await flushMutationQueue();
+    assert.equal(secondAttemptCalls.length, 0, 'a 404 DELETE satisfies the mutation\'s intent (target already gone) and should clear, not retry forever');
+  });
+
+  test('a 404 on a queued PUT is also treated as an already-satisfied no-op and clears the entry', async () => {
+    stubFetch({ ok: false, status: 404 });
+    await queueMutation('trip:put-404-noop', { method: 'PUT', url: 'https://api.test/trips/put-404-noop', body: { destination: 'Lisbon' } });
+
+    await flushMutationQueue();
+
+    const secondAttemptCalls = stubFetch({ ok: false, status: 404 });
+    await flushMutationQueue();
+    assert.equal(secondAttemptCalls.length, 0, 'a 404 PUT (target already gone, e.g. its create never landed) should clear, not retry forever');
+  });
+
+  test('a 404 for one queued mutation does not affect another queued mutation clearing only on its own success', async () => {
+    (globalThis as any).fetch = async (url: string) => {
+      if (url.includes('gone')) return { ok: false, status: 404 };
+      return { ok: false, status: 500 };
+    };
+    await queueMutation('trip:multi-gone', { method: 'DELETE', url: 'https://api.test/trips/gone' });
+    await queueMutation('trip:multi-real-failure', { method: 'DELETE', url: 'https://api.test/trips/still-failing' });
+
+    await flushMutationQueue();
+
+    // Only the 404'd one should have cleared; the 500 stays queued.
+    const secondAttemptCalls = stubFetch({ ok: false, status: 500 });
+    await flushMutationQueue();
+    assert.equal(secondAttemptCalls.length, 1);
+    assert.ok(secondAttemptCalls[0].url.includes('still-failing'));
+
+    // Clean up: resolve the still-queued entry so it doesn't leak into a later test's flush.
+    stubFetch({ ok: true });
+    await flushMutationQueue();
   });
 
   test('queuing a newer mutation for the same key replaces the queued one instead of stacking', async () => {

@@ -77,10 +77,18 @@ export async function flushMutationQueue(): Promise<void> {
       if (res.ok) {
         delete q[key];
         changed = true;
+      } else if (res.status === 404) {
+        // A 404 means this mutation's target is already gone server-side — deleted from
+        // another device, or (for a PUT) a create that never landed in the first place.
+        // Per this file's own top comment, "a DELETE on an already-deleted resource is a
+        // no-op": the mutation's intent (this entity should be gone / reflect this update)
+        // is already satisfied, so this clears exactly like a genuine success instead of
+        // retrying forever with no way to ever resolve itself.
+        delete q[key];
+        changed = true;
       }
-      // A non-ok response (e.g. 404 if the entity was removed through some other path, or
-      // 401) is left queued rather than silently dropped — this queue optimizes specifically
-      // for "recover from a dropped connection", not for classifying every failure reason.
+      // Any OTHER non-ok response (401 expired auth, 500, etc.) is a real failure, not a
+      // no-op — left queued rather than silently dropped, for the next flush attempt.
     } catch (err) {
       console.warn(`Mutation queue: retry failed for "${key}", will retry again later:`, err);
     }
