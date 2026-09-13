@@ -59,6 +59,13 @@ const parseServerContacts = (contactsData: any[]): ClientContact[] =>
 
 const parseCachedContact = (c: any): ClientContact => c;
 
+// The exact set of seeded demo-contact ids (lib/contacts.ts's MOCK_CONTACTS) — used below to
+// tell a mock contact apart from a real MongoDB _id. A bare `id.startsWith('c')` prefix check
+// was used here previously, but a real 24-hex-char Mongo _id can itself start with the
+// character 'c' (hex includes a-f), which made that check silently swallow deletes/updates
+// for ~1/16 of real synced contacts forever. Comparing against this fixed set instead.
+const MOCK_CONTACT_IDS = new Set(MOCK_CONTACTS.map(c => c.id));
+
 const contactHasChanged = (oc: ClientContact, nc: ClientContact) =>
   oc.name !== nc.name ||
   JSON.stringify(oc.circleTags) !== JSON.stringify(nc.circleTags) ||
@@ -72,12 +79,14 @@ export const ContactsProvider = ({ children }: { children: ReactNode }) => {
     emptyState: MOCK_CONTACTS,
     parseCached: parseCachedContact,
     parseServer: parseServerContacts,
-    // Only update on server if it's a real MongoDB id — 'c'-prefixed ids are the seeded
-    // MOCK_CONTACTS demo set (lib/contacts.ts), never real documents.
-    canSyncForDelete: (id) => !id.startsWith('mock_') && !id.startsWith('c'),
+    // Only update on server if it's a real MongoDB id — ids in MOCK_CONTACT_IDS are the seeded
+    // MOCK_CONTACTS demo set (lib/contacts.ts), never real documents. Deliberately an exact-set
+    // membership check rather than a `startsWith('c')` prefix check: a real Mongo _id is 24 hex
+    // chars and hex includes 'c', so a prefix check would falsely match real contacts too.
+    canSyncForDelete: (id) => !id.startsWith('mock_') && !MOCK_CONTACT_IDS.has(id),
     // Same as delete, plus 'pending_' — an invite-flow-created placeholder (social.tsx's
     // handleSendInvite) that hasn't round-tripped through a create yet.
-    canSyncForUpdate: (id) => !id.startsWith('mock_') && !id.startsWith('c') && !id.startsWith('pending_'),
+    canSyncForUpdate: (id) => !id.startsWith('mock_') && !MOCK_CONTACT_IDS.has(id) && !id.startsWith('pending_'),
     hasChanged: contactHasChanged,
     buildCreateBody: (c, userId) => ({
       userId,

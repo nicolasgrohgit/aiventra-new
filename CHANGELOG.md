@@ -6,6 +6,29 @@ this is still pre-release/beta.
 
 ## [Unreleased]
 ### Fixed
+- **Circles/Contacts: a real synced contact whose MongoDB `_id` happened to start with the
+  letter `c` could never have its delete/edit reach the server, and unlink-then-re-friend could
+  leave one side of a friendship with a duplicate `Contact` document ("Vertical C" from the
+  Roadmap noted section).**
+  - `hooks/useContacts.tsx`'s `canSyncForDelete`/`canSyncForUpdate` guarded against syncing the
+    seeded `MOCK_CONTACTS` demo set (`lib/contacts.ts`, ids `c1`..`c4`) via a bare
+    `!id.startsWith('c')` check — but a real 24-hex-char Mongo `_id` can itself start with `c`
+    (hex includes `a`-`f`), so roughly 1 in 16 real contacts silently stopped syncing
+    deletes/edits to the server forever (the "deleted" contact would reappear after
+    reinstall/relogin). Now checks exact membership in the fixed `MOCK_CONTACT_IDS` set instead
+    of a prefix. `lib/entity-id.ts`'s `sameEntity` was checked too — it already compares `id`/
+    `_id` by exact equality, not prefix, so it wasn't affected.
+  - `server.ts`'s `PUT /api/friend-requests/:id/respond` accept path unconditionally
+    `Contact.create`d a fresh `Contact` for both sides. If one side had previously deleted only
+    their own `Contact` for the other (`DELETE /api/contacts/:id` only ever removes the caller's
+    side) and then a new friend request was sent and accepted — allowed, since
+    `POST /api/friend-requests` only guards against a duplicate *pending* request, not an
+    existing `Contact` — the other side's original, untouched `Contact` was left in place
+    alongside the newly created one, showing that person twice (potentially under different
+    circle tags) in the Circles list. The accept handler now upserts (`findOneAndUpdate` with
+    `upsert: true`, matching on `owner_user_id` + `contact_user_id`) and merges the new circle
+    tag in via `$addToSet` instead of unconditionally creating, so re-friending after a
+    one-sided unlink updates the surviving `Contact` rather than duplicating it.
 - **The Home tab's "what can I do in my free time" suggestion flow (`app/recommendation.tsx`)
   never actually scheduled anything in the app — it showed a success message that was
   sometimes an outright lie.** Live-reported as "told me success, but doesn't appear
@@ -134,20 +157,6 @@ this is still pre-release/beta.
       (`notifyAppAccess`) doesn't check `res.ok` before updating its local "just synced"
       timestamp mirror — a failed server update can still suppress a legitimate rescan for up
       to 7 days.
-  - **Vertical C — Circles/Contacts correctness** (`hooks/useContacts.tsx`, `server.ts`).
-    - *Confirmed:* `hooks/useContacts.tsx:77,80`'s `canSyncForDelete`/`canSyncForUpdate` guard
-      against syncing the seeded mock contacts (ids `c1`..`c4`) via a bare
-      `!id.startsWith('c')` check — but a real MongoDB `_id` is 24 hex chars, and hex includes
-      `c`, so roughly **1 in 16 real contacts** has an `_id` starting with `c` and silently
-      never syncs a delete/edit to the server again (reappears after reinstall/relogin). Fix
-      should key off the actual mock-id values, not a bare prefix.
-    - *Confirmed:* `server.ts`'s `POST /api/friend-requests` (:1345-1411) only checks for an
-      existing **pending** request in either direction, never whether the two users are already
-      linked via `Contact`; the accept handler (:1460-1488) then unconditionally
-      `Contact.create`s for both sides. Unlink-then-re-friend (Alice removes her own `Contact`
-      for Bob, then sends him a new request, which is allowed since no pending request exists;
-      Bob accepts) creates a second, duplicate `Contact` on Bob's side, since his original was
-      never touched.
 - **Need a real email server on GCP for `support@odys.ai` and `admin@odys.ai`.** No email
   infrastructure exists anywhere in this codebase today (no nodemailer/SendGrid/SES dependency,
   no outbound-mail code path). This is two separate needs: receiving mail at those addresses
