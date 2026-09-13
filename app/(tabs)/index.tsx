@@ -146,6 +146,13 @@ export default function HomeScreen() {
   };
 
   const handleSuggest = (slot: FreeTimeSlot) => {
+    // The trip actually covering today, if any — passed through so recommendation.tsx can
+    // create a real trip Event instead of only writing to the device calendar (see that
+    // screen's handleSelectPlace). Excludes a trip that hasn't synced its real Mongo _id yet
+    // (still mock_-prefixed — see lib's entity-id convention): the create-event API call would
+    // 404/CastError against an id that doesn't exist server-side.
+    const today = new Date();
+    const activeTrip = trips.find((t: any) => t.startDate <= today && t.endDate >= today && !t.id.startsWith('mock_'));
     router.push({
       pathname: '/recommendation' as any,
       params: {
@@ -154,6 +161,7 @@ export default function HomeScreen() {
         end:      slot.endTime.toISOString(),
         cityContext: contextCity,
         ...(contextCoords ? { lat: String(contextCoords.lat), lng: String(contextCoords.lng) } : {}),
+        ...(activeTrip ? { tripId: activeTrip.id } : {}),
       },
     });
   };

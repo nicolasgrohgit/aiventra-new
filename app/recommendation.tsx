@@ -20,9 +20,13 @@ const formatDistanceLabel = (km: number) => (km < 1 ? `${Math.round(km * 1000)}m
 const placePhotoUri = (placeId: string) => `${API_URL}/api/places/${placeId}/photo`;
 
 export default function SuggestionsScreen() {
-  const { duration, start, end, cityContext, lat, lng } = useLocalSearchParams();
+  // tripId (optional): the active trip covering today, set by index.tsx's handleSuggest when
+  // one exists. Absent while at home with no ongoing trip — every Event requires a trip_id
+  // (models/Event.ts), so there's nothing to attach a real trip event to in that case; see
+  // handleSelectPlace's device-calendar fallback below for that scenario.
+  const { duration, start, end, cityContext, lat, lng, tripId } = useLocalSearchParams();
   const { user } = useAuth();
-  const { getRecommendations } = useEvents();
+  const { getRecommendations, createEvent } = useEvents();
   const router = useRouter();
   const [recommendations, setRecommendations] = useState<PlaceRecommendation[]>([]);
   const [isComputing, setIsComputing] = useState(true);
@@ -87,25 +91,52 @@ export default function SuggestionsScreen() {
   };
 
   const handleSelectPlace = async (place: PlaceRecommendation) => {
+    // Live-reported bug: picking a place here showed a success alert but never appeared
+    // anywhere in the app afterwards. Root cause was two-fold — this screen never called the
+    // app's own event API at all (it only ever wrote to the device's native calendar, which
+    // the Trips tab's Current Schedule/AI Schedule Proposals have no way to read back), and
+    // when there was no writable device calendar it claimed "Scheduled!" while doing nothing.
+    //
+    // Fixed by actually creating a real trip Event when a trip is active today (tripId set by
+    // index.tsx's handleSuggest — see the comment on that param above), the same way
+    // trips.tsx's own "Add to Itinerary" flow does. Every Event requires a trip_id
+    // (models/Event.ts), so with no active trip there's nothing to attach one to — that case
+    // keeps the device-calendar fallback, just without the false-success message.
     try {
+      if (tripId) {
+        const startTime = new Date(start as string);
+        const endTime = new Date(startTime.getTime() + place.estimatedDuration * 60000);
+        await createEvent(tripId as string, {
+          title: place.name,
+          startTime: startTime.toISOString(),
+          endTime: endTime.toISOString(),
+          placeId: place.id,
+          placeName: place.name
+        });
+        Alert.alert('Added to your itinerary', `${place.name} is on the schedule.`);
+        router.back();
+        return;
+      }
+
       const { status } = await Calendar.requestCalendarPermissionsAsync();
       const calendars = status === 'granted'
         ? await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT)
         : [];
       const writableCalendars = calendars.filter(c => c.allowsModifications);
 
-      if (writableCalendars.length > 0) {
-        await Calendar.createEventAsync(writableCalendars[0].id, {
-          title: place.name,
-          location: `${place.name}, ${place.city}`,
-          startDate: new Date(start as string),
-          endDate: new Date(end as string),
-          notes: place.description
-        });
-        Alert.alert('Success!', 'Added this suggestion to your device calendar as a new event.');
-      } else {
-        Alert.alert('Scheduled!', `Added "${place.name}" to your schedule!`);
+      if (writableCalendars.length === 0) {
+        Alert.alert('Could not schedule this', 'No writable calendar was found on your device.');
+        return;
       }
+
+      await Calendar.createEventAsync(writableCalendars[0].id, {
+        title: place.name,
+        location: `${place.name}, ${place.city}`,
+        startDate: new Date(start as string),
+        endDate: new Date(end as string),
+        notes: place.description
+      });
+      Alert.alert('Success!', 'Added this suggestion to your device calendar as a new event.');
       router.back();
     } catch (e: any) {
       Alert.alert('Error', 'Could not add to calendar: ' + e.message);

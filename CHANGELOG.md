@@ -6,6 +6,29 @@ this is still pre-release/beta.
 
 ## [Unreleased]
 ### Fixed
+- **The Home tab's "what can I do in my free time" suggestion flow (`app/recommendation.tsx`)
+  never actually scheduled anything in the app — it showed a success message that was
+  sometimes an outright lie.** Live-reported as "told me success, but doesn't appear
+  afterwards" after picking a place for a free-time slot. Root-caused via the DB and server
+  logs: zero API requests reached the backend for the whole interaction. `handleSelectPlace`
+  only ever wrote to the device's native calendar (`Calendar.createEventAsync`) — invisible to
+  the Trips tab's Current Schedule/AI Schedule Proposals, which only read from the app's own
+  Event API — and the route never even received a `tripId` to attach a real event to. Worse,
+  when no writable device calendar existed, it hit an `else` branch that alerted **"Scheduled!"
+  while doing nothing at all.**
+  - `app/(tabs)/index.tsx`'s `handleSuggest` now passes the trip actually covering today (if
+    any) as a `tripId` param.
+  - `app/recommendation.tsx`'s `handleSelectPlace`, when given a `tripId`, now creates a real
+    trip Event via the same API `app/(tabs)/trips.tsx`'s own "Add to Itinerary" flow uses — so
+    it shows up in that trip's schedule like any other scheduled place.
+  - With no active trip today (nothing to attach an Event to — every Event requires a
+    `trip_id`), it still falls back to the device calendar, but the false "Scheduled!" message
+    is gone: a genuine failure now says so.
+  - Note: this only fixes it going forward for a slot suggested during an actual trip. At the
+    moment this was reported there was no trip covering "today" (the gap between two trips'
+    date ranges) — that specific pick could only ever have landed in the device calendar (or
+    hit the "no writable calendar" case), never in the app's own schedule, regardless of this
+    fix.
 - **Local APK builds could die silently to OOM with no clear error, and always ran locally even
   when free EAS cloud build quota was sitting unused.** The 0.0.41 local build never produced
   an APK: its Gradle/Kotlin build daemon was killed by the kernel OOM-killer ~80 minutes in,
