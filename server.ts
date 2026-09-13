@@ -1470,21 +1470,31 @@ app.put('/api/friend-requests/:id/respond', authenticate, async (req: AuthedRequ
       return res.status(404).json({ error: 'One of the users in this request no longer exists' });
     }
 
+    // Upsert rather than unconditional create: an unlink-then-re-friend (one side deletes
+    // their own Contact document via DELETE /api/contacts/:id, then a fresh FriendRequest is
+    // sent and accepted — allowed since the /api/friend-requests POST above only guards
+    // against a duplicate PENDING request, not an existing Contact) must not leave the OTHER
+    // side, whose original Contact was never touched, with two Contact docs for the same
+    // person. Matching on owner_user_id + contact_user_id and using $addToSet for circle_tags
+    // means: no existing Contact -> create it (the normal case); existing Contact -> just make
+    // sure it carries the newly-chosen circle tag, without duplicating the document or the tag.
     await Promise.all([
-      Contact.create({
-        owner_user_id: request.from_user_id,
-        contact_user_id: request.to_user_id,
-        name: toUser.full_name || toUser.email,
-        email: toUser.email,
-        circle_tags: [request.circle_tag]
-      }),
-      Contact.create({
-        owner_user_id: request.to_user_id,
-        contact_user_id: request.from_user_id,
-        name: fromUser.full_name || fromUser.email,
-        email: fromUser.email,
-        circle_tags: [circleTag]
-      })
+      Contact.findOneAndUpdate(
+        { owner_user_id: request.from_user_id, contact_user_id: request.to_user_id },
+        {
+          $set: { name: toUser.full_name || toUser.email, email: toUser.email },
+          $addToSet: { circle_tags: request.circle_tag }
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      ),
+      Contact.findOneAndUpdate(
+        { owner_user_id: request.to_user_id, contact_user_id: request.from_user_id },
+        {
+          $set: { name: fromUser.full_name || fromUser.email, email: fromUser.email },
+          $addToSet: { circle_tags: circleTag }
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      )
     ]);
 
     request.status = 'accepted';
