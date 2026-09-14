@@ -13,6 +13,7 @@ interface AuthContextType {
   user: any | null;
   hasCompletedOnboarding: boolean;
   login: (userData: any) => void;
+  loginWithGoogle: (idToken: string) => Promise<void>;
   logout: () => void;
   completeOnboarding: (preferences: any) => void;
   updatePreferences: (newPreferences: any) => void;
@@ -24,6 +25,7 @@ const AuthContext = createContext<AuthContextType>({
   user: null,
   hasCompletedOnboarding: false,
   login: () => {},
+  loginWithGoogle: async () => {},
   logout: () => {},
   completeOnboarding: () => {},
   updatePreferences: () => {},
@@ -86,6 +88,33 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     loadStorage();
   }, []);
 
+  // Shared by both login paths (email-only below, and loginWithGoogle) once the server has
+  // actually returned a real {user, token} pair — persists the session and best-effort
+  // registers for push notifications, identically either way.
+  const completeLogin = async (backendUser: any, token: string) => {
+    setAuthToken(token);
+    setUser(backendUser);
+    await saveState('@user', backendUser);
+    await saveState('@authToken', token);
+
+    // Best-effort push-token registration (see lib/push-token.ts and the new
+    // POST /api/users/me/push-token). Deliberately fire-and-forget, NOT awaited: this
+    // triggers a native permission prompt, which must never block/delay the login flow
+    // itself — a user who dismisses or never sees that prompt should still be logged in
+    // exactly as before this existed. Any failure (denied permission, no push capability,
+    // network error posting the token) is caught and logged, never surfaced to the UI.
+    registerForPushNotificationsAsync()
+      .then((pushToken) => {
+        if (!pushToken) return;
+        return apiFetch(`${API_URL}/api/users/me/push-token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: pushToken })
+        });
+      })
+      .catch((err) => console.warn('Failed to register push token:', err));
+  };
+
   const login = async (userData: any) => {
     try {
       const res = await apiFetch(`${API_URL}/api/auth/login`, {
@@ -96,27 +125,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
       if (res.ok) {
         const { user: backendUser, token } = await res.json();
-        setAuthToken(token);
-        setUser(backendUser);
-        await saveState('@user', backendUser);
-        await saveState('@authToken', token);
-
-        // Best-effort push-token registration (see lib/push-token.ts and the new
-        // POST /api/users/me/push-token). Deliberately fire-and-forget, NOT awaited: this
-        // triggers a native permission prompt, which must never block/delay the login flow
-        // itself — a user who dismisses or never sees that prompt should still be logged in
-        // exactly as before this existed. Any failure (denied permission, no push capability,
-        // network error posting the token) is caught and logged, never surfaced to the UI.
-        registerForPushNotificationsAsync()
-          .then((pushToken) => {
-            if (!pushToken) return;
-            return apiFetch(`${API_URL}/api/users/me/push-token`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ token: pushToken })
-            });
-          })
-          .catch((err) => console.warn('Failed to register push token:', err));
+        await completeLogin(backendUser, token);
       } else {
         throw new Error('Failed to login via server');
       }
@@ -146,6 +155,27 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       setUser(newUser);
       saveState('@user', newUser);
     }
+  };
+
+  // Added alongside `login` above, not replacing it — see server.ts's POST /api/auth/google
+  // comment. Deliberately no offline-mock fallback the way `login` has: an ID token is either
+  // genuinely verifiable against Google's own keys or it isn't, unlike the email-only flow's
+  // {name, email} which can never really "fail" server-side validation — silently fabricating
+  // a local account on a Google auth failure would hide a real problem (bad/expired token, no
+  // network, Google Sign-In not configured server-side) instead of surfacing it. Callers
+  // (app/login.tsx) are expected to catch and show this.
+  const loginWithGoogle = async (idToken: string) => {
+    const res = await apiFetch(`${API_URL}/api/auth/google`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idToken })
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || 'Google sign-in failed');
+    }
+    const { user: backendUser, token } = await res.json();
+    await completeLogin(backendUser, token);
   };
 
   const logout = () => {
@@ -242,6 +272,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       user,
       hasCompletedOnboarding,
       login,
+      loginWithGoogle,
       logout,
       completeOnboarding,
       updatePreferences,

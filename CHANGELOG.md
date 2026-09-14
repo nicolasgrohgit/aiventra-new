@@ -5,6 +5,34 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 this is still pre-release/beta.
 
 ## [Unreleased]
+### Added
+- **Google Sign-In, added alongside the existing email-only login (not replacing it) — no
+  migration needed for already-registered accounts, and lets testing with quick throwaway
+  Google accounts happen without touching the existing flow.**
+  - `POST /api/auth/google` (`server.ts`) verifies the client-sent ID token against Google's own
+    public keys via `google-auth-library` — the one place this is ever trusted, unlike the
+    email-only `POST /api/auth/login`, which structurally can't verify anything (no
+    password/token to check). Matches an existing account by `google_id` first, then by
+    `email` (linking a returning email-only user's account to their Google identity on first
+    Google sign-in, rather than creating a confusing second account for the same person), and
+    only creates a new user if neither matches — mirroring `/api/auth/login`'s own
+    create-if-not-exists behavior via a newly-shared `defaultPreferences()` helper.
+  - Mobile: `@react-native-google-signin/google-signin` (Expo's own recommended library for
+    this over the generic `expo-auth-session`) wired into `app/login.tsx` as a "Continue with
+    Google" button, only rendered when `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` is actually
+    configured. `hooks/useAuth.tsx` gains `loginWithGoogle`, sharing the same post-login
+    session/push-token-registration logic as the existing `login` via a new `completeLogin`
+    helper — deliberately with **no offline-mock fallback** the way `login` has: an ID token
+    either verifies or it doesn't, so a Google-auth failure surfaces as a real error instead of
+    silently fabricating a local account.
+  - No Firebase involved — this uses plain OAuth 2.0 Client IDs from Google Cloud Console
+    (a "Web application" type, whose ID is safe to be non-secret/public and is the only one the
+    code needs; an "Android" type client just needs to exist with the right package name +
+    SHA-1 for Google's Credential Manager to allow the native flow at all, but nothing in the
+    app ever reads it directly). No config plugin needed either: the library's Expo plugin only
+    exists for an iOS URL scheme (not applicable, Android-only for now) or Firebase's
+    `google-services.json` (not applicable, no Firebase) — omitting it entirely from
+    `app.json` is correct here, not an oversight.
 ### Changed
 - **Moved off MongoDB Atlas onto a self-hosted MongoDB VM inside the same VPC as Cloud Run,
   reached via Direct VPC egress instead of a public-internet connection string.** Atlas M0

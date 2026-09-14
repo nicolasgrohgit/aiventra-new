@@ -8,7 +8,8 @@
         "simulator": false
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://odysai-server-891816307412.us-central1.run.app"
+        "EXPO_PUBLIC_API_URL": "https://odysai-server-891816307412.us-central1.run.app",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "891816307412-1aor2at50vpaj9e4ibp0qehdqupq677c.apps.googleusercontent.com"
       }
     },
     "production": {}

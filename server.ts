@@ -3,6 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
+import { OAuth2Client } from 'google-auth-library';
 import rateLimit from 'express-rate-limit';
 import pino from 'pino';
 import pinoHttp from 'pino-http';
@@ -51,6 +52,19 @@ const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
   throw new Error('JWT_SECRET environment variable is required to start the server.');
 }
+
+// Google Sign-In, added alongside the existing email-only login (POST /api/auth/login) rather
+// than replacing it — no migration needed for already-registered accounts, and lets testing
+// with quick throwaway Google accounts happen without touching the existing flow at all. Not a
+// required env var (unlike JWT_SECRET): the /api/auth/google route below fails closed with a
+// clear 503 if it's unset, rather than the server refusing to start, so an environment that
+// hasn't configured Google Sign-In yet is otherwise unaffected. This is the "Web application"
+// type OAuth Client ID from Google Cloud Console (see docs/self-hosted-mongo-ops.md's sibling
+// migration docs for the project) — safe to be non-secret/public, unlike a client *secret*,
+// which this flow never needs since it only ever verifies an ID token, not the auth-code
+// exchange a client secret would gate.
+const GOOGLE_WEB_CLIENT_ID = process.env.GOOGLE_WEB_CLIENT_ID;
+const googleOAuthClient = new OAuth2Client(GOOGLE_WEB_CLIENT_ID);
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -195,6 +209,21 @@ app.get('/health', (_req: express.Request, res: express.Response) => {
 
 // REST API Endpoints
 
+// Shared between POST /api/auth/login and POST /api/auth/google — both create a brand-new
+// User with the same starting preferences when no account exists yet for that identity.
+function defaultPreferences() {
+  return {
+    budget: '30-50',
+    currency: 'USD',
+    dateFormat: 'MM/DD/YYYY',
+    activityLevel: 'Medium',
+    dietary: [],
+    foodGenres: ['Italian', 'French'],
+    activityGenres: ['Walking Tours', 'Museums'],
+    eventGenres: ['Concerts', 'Comedy Shows']
+  };
+}
+
 // 1. Auth & Profiles
 app.post('/api/auth/login', strictLimiter, async (req: AuthedRequest, res: express.Response) => {
   try {
@@ -212,16 +241,7 @@ app.post('/api/auth/login', strictLimiter, async (req: AuthedRequest, res: expre
         full_name: name || `${firstName || ''} ${lastName || ''}`.trim(),
         avatar_url: avatarUrl || `https://i.pravatar.cc/150?u=${email}`,
         homebase: homebase || 'New York, USA',
-        preferences: preferences || {
-          budget: '30-50',
-          currency: 'USD',
-          dateFormat: 'MM/DD/YYYY',
-          activityLevel: 'Medium',
-          dietary: [],
-          foodGenres: ['Italian', 'French'],
-          activityGenres: ['Walking Tours', 'Museums'],
-          eventGenres: ['Concerts', 'Comedy Shows']
-        },
+        preferences: preferences || defaultPreferences(),
         // Save other custom fields since strict: false is active
         firstName: firstName || name?.split(' ')[0] || '',
         lastName: lastName || name?.split(' ')[1] || '',
@@ -233,6 +253,70 @@ app.post('/api/auth/login', strictLimiter, async (req: AuthedRequest, res: expre
     res.json({ user, token });
   } catch (error: any) {
     reportError(error, req, 'login failed');
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Google Sign-In — added alongside POST /api/auth/login above, not replacing it (see
+// GOOGLE_WEB_CLIENT_ID's own comment). The client sends only the Google-issued ID token; this
+// route is the one place that ever verifies it (against Google's own public keys, via
+// google-auth-library — never trusting a client-asserted email the way that's structurally
+// impossible to avoid with the email-only login above, since there's no password/token to
+// verify there at all). Matching-by-google_id-then-by-email (rather than google_id alone) is
+// what links a Google sign-in to an already-registered email-only account instead of creating
+// a confusing second, duplicate account for the same person.
+app.post('/api/auth/google', strictLimiter, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    if (!GOOGLE_WEB_CLIENT_ID) {
+      return res.status(503).json({ error: 'Google Sign-In is not configured on the server.' });
+    }
+    const { idToken } = req.body;
+    if (!idToken) {
+      return res.status(400).json({ error: 'idToken is required' });
+    }
+
+    let payload;
+    try {
+      const ticket = await googleOAuthClient.verifyIdToken({ idToken, audience: GOOGLE_WEB_CLIENT_ID });
+      payload = ticket.getPayload();
+    } catch {
+      return res.status(401).json({ error: 'Invalid Google token' });
+    }
+    if (!payload?.email || !payload.sub) {
+      return res.status(401).json({ error: 'Invalid Google token' });
+    }
+    const { sub: googleId, email } = payload;
+
+    let user = await User.findOne({ google_id: googleId });
+    const isNewUser = !user;
+    if (!user) {
+      user = await User.findOne({ email });
+      if (user && !user.google_id) {
+        // A returning email-only user signing in with Google for the first time — link
+        // rather than create a second account for the same person.
+        user.google_id = googleId;
+        await user.save();
+      }
+    }
+    if (!user) {
+      user = await User.create({
+        email,
+        google_id: googleId,
+        full_name: payload.name || email,
+        avatar_url: payload.picture || `https://i.pravatar.cc/150?u=${email}`,
+        homebase: 'New York, USA',
+        preferences: defaultPreferences(),
+        firstName: payload.given_name || payload.name?.split(' ')[0] || '',
+        lastName: payload.family_name || payload.name?.split(' ')[1] || '',
+        dob: '1990-01-01'
+      });
+    }
+
+    const token = jwt.sign({ userId: user._id.toString() }, JWT_SECRET as string, { expiresIn: '30d' });
+    req.log.info({ event: 'user_login', userId: user._id.toString(), isNewUser, provider: 'google' }, 'user login');
+    res.json({ user, token });
+  } catch (error: any) {
+    reportError(error, req, 'google login failed');
     res.status(500).json({ error: 'Internal server error' });
   }
 });

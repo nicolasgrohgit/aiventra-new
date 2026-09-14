@@ -1,15 +1,52 @@
-import React, { useState } from 'react';
-import { Text, StyleSheet, TouchableOpacity, TextInput, KeyboardAvoidingView, Platform } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { Text, StyleSheet, TouchableOpacity, TextInput, KeyboardAvoidingView, Platform, Alert, ActivityIndicator } from 'react-native';
+import { GoogleSignin, isSuccessResponse, isErrorWithCode, statusCodes } from '@react-native-google-signin/google-signin';
 import { useAuth } from '@/hooks/useAuth';
 
+// Only truthy in a build that actually has this configured (see .env.example's
+// EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID) — lets the button disappear cleanly in any environment
+// that hasn't set it up, rather than being present but broken.
+const GOOGLE_WEB_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
+
 export default function LoginScreen() {
-  const { login } = useAuth();
+  const { login, loginWithGoogle } = useAuth();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  const [isGoogleSigningIn, setIsGoogleSigningIn] = useState(false);
 
-  // No real OAuth yet (deliberately deferred for the trusted-beta phase) — but each tester
-  // needs their own distinct account, not the one hardcoded mock user every install used
-  // to share, so this collects just enough to tell people apart via the existing
+  useEffect(() => {
+    if (GOOGLE_WEB_CLIENT_ID) {
+      GoogleSignin.configure({ webClientId: GOOGLE_WEB_CLIENT_ID });
+    }
+  }, []);
+
+  // Added alongside the email-only flow below, not replacing it (see server.ts's
+  // POST /api/auth/google comment) — each tester still needs their own distinct account
+  // either way, this is just a second way to get one.
+  const handleGoogleSignIn = async () => {
+    setIsGoogleSigningIn(true);
+    try {
+      await GoogleSignin.hasPlayServices();
+      const response = await GoogleSignin.signIn();
+      if (!isSuccessResponse(response)) return; // user cancelled — not an error, nothing to show
+      const idToken = response.data.idToken;
+      if (!idToken) throw new Error('Google did not return an ID token');
+      await loginWithGoogle(idToken);
+    } catch (err: any) {
+      // A cancel/dismiss (user closing the account picker) isn't a real error — the same
+      // "just let them try again" treatment as the isSuccessResponse check above.
+      if (isErrorWithCode(err) && (err.code === statusCodes.SIGN_IN_CANCELLED || err.code === statusCodes.IN_PROGRESS)) {
+        return;
+      }
+      Alert.alert('Google sign-in failed', err.message || 'Please try again.');
+    } finally {
+      setIsGoogleSigningIn(false);
+    }
+  };
+
+  // No real OAuth yet for this path (deliberately deferred for the trusted-beta phase) — but
+  // each tester needs their own distinct account, not the one hardcoded mock user every
+  // install used to share, so this collects just enough to tell people apart via the existing
   // POST /api/auth/login flow.
   const handleLogin = () => {
     if (!name.trim() || !email.trim()) return;
@@ -23,6 +60,23 @@ export default function LoginScreen() {
     >
       <Text style={styles.title}>Odys.ai</Text>
       <Text style={styles.subtitle}>Your Context-Aware Travel Companion</Text>
+
+      {GOOGLE_WEB_CLIENT_ID && (
+        <>
+          <TouchableOpacity
+            style={[styles.googleButton, isGoogleSigningIn && styles.buttonDisabled]}
+            onPress={handleGoogleSignIn}
+            disabled={isGoogleSigningIn}
+          >
+            {isGoogleSigningIn ? (
+              <ActivityIndicator color="#0f172a" />
+            ) : (
+              <Text style={styles.googleButtonText}>Continue with Google</Text>
+            )}
+          </TouchableOpacity>
+          <Text style={styles.dividerText}>or</Text>
+        </>
+      )}
 
       <TextInput
         style={styles.input}
@@ -100,6 +154,26 @@ const styles = StyleSheet.create({
   },
   buttonDisabled: {
     opacity: 0.5,
+  },
+  googleButton: {
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    paddingVertical: 16,
+    paddingHorizontal: 32,
+    borderRadius: 12,
+    width: '100%',
+    alignItems: 'center',
+  },
+  googleButtonText: {
+    color: '#0f172a',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  dividerText: {
+    color: '#94a3b8',
+    fontSize: 14,
+    marginVertical: 16,
   },
   buttonText: {
     color: '#fff',
