@@ -5,6 +5,38 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 this is still pre-release/beta.
 
 ## [Unreleased]
+### Changed
+- **Moved off MongoDB Atlas onto a self-hosted MongoDB VM inside the same VPC as Cloud Run,
+  reached via Direct VPC egress instead of a public-internet connection string.** Atlas M0
+  needed `0.0.0.0/0` in Network Access (Cloud Run has no static egress IP by default) — a real,
+  if mitigated, network exposure, and Atlas bills separately from GCP entirely, so fixing that
+  networking properly (a paid Atlas tier for Private Service Connect, or a VPC connector +
+  Cloud NAT + static IP just to narrow the whitelist) either cost real money or didn't touch
+  GCP credits at all. Evaluated and ruled out Firestore's MongoDB compatibility layer as an
+  alternative first: `$geoNear`, the aggregation stage `lib/place-matching.ts` depends on for
+  all place-matching, isn't supported there, only the more limited (and still preview-only)
+  `$near` find-query.
+  - New `e2-micro` GCE VM (`odysai-mongo`, GCP Always Free tier), **no external IP at all** —
+    zero inbound exposure from the public internet, reachable only from within the VPC.
+  - Cloud Run now uses Direct VPC egress (`--vpc-egress=private-ranges-only`) to reach it over
+    the private network — no VPC Connector, no standing connector cost.
+  - Cloud NAT added (`odysai-router`/`odysai-nat`) so the VM has outbound-only internet access
+    for package installs/updates, without adding any inbound exposure — a small real ongoing
+    cost, accepted so the VM stays patchable rather than needing a repeated temporary-external-IP
+    dance for every future update.
+  - Data migrated from Atlas to the new VM (808 documents), verified via count-check + the same
+    decrypt-smoke-test discipline used for every migration this project has done so far.
+  - Daily automated backups: `gs://odysai-mongo-backups` (30-day retention) +
+    `mongo-backup.timer` at 07:00 **Europe/Paris** (VM timezone set explicitly so this survives
+    CET/CEST DST changes without manual offset math) — verified end-to-end, not just "should
+    work": ran it manually, then downloaded and restored the actual resulting backup object
+    into a throwaway database to confirm all 808 documents came back correctly.
+  - Full operational reference (architecture, restore procedure, a real gotcha found along the
+    way with this VM's specific `mongorestore` version needing explicit `--db`/`--dir` flags,
+    and the rollback path) written up in `docs/self-hosted-mongo-ops.md`.
+  - The Atlas cluster itself was **not deleted** — kept as a same-day rollback path (its own
+    data untouched, `MONGODB_URI`'s previous value still in Secret Manager as version 1).
+    Whether to actually delete it later is an open decision, not made here.
 ### Fixed
 - **The Cloud Run deployment couldn't connect to MongoDB Atlas at all — every request failed
   with "Could not connect to any servers in your MongoDB Atlas cluster," a message that points
