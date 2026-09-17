@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { StyleSheet, View, Text, Platform, ScrollView, RefreshControl, TouchableOpacity, Modal, TextInput, ActivityIndicator, Alert, Image, Linking } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ThemedText } from '@/components/themed-text';
 import { useAuth } from '@/hooks/useAuth';
 import { useTrips } from '@/hooks/useTrips';
@@ -75,6 +76,7 @@ const isHomeTurf = (homebase: string | undefined, destination: string) =>
   !!homebase && homebase.split(',')[0].trim().toLowerCase() === destination.split(',')[0].trim().toLowerCase();
 
 export default function TripsScreen() {
+  const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { trips, setTrips, toggleDismissedSlot } = useTrips();
   const { pendingProposal, consumePendingProposal, runDiscoveryScan } = useTripDiscovery();
@@ -1078,7 +1080,7 @@ export default function TripsScreen() {
   return (
     <View style={styles.container}>
       <ScrollView
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { paddingTop: insets.top + 16 }]}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl refreshing={isPullRefreshing} onRefresh={handlePullRefresh} tintColor="#3B82F6" />
@@ -1446,7 +1448,7 @@ export default function TripsScreen() {
 
       {/* Pending invites */}
       <Modal visible={showInvitedModal} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowInvitedModal(false)}>
-        <View style={styles.modalContainer}>
+        <View style={[styles.modalContainer, { paddingTop: insets.top + 16 }]}>
           <ScrollView showsVerticalScrollIndicator={false}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Your Invites</Text>
@@ -1501,7 +1503,7 @@ export default function TripsScreen() {
 
       {/* Propose an event (blind joint-matching flow) */}
       <Modal visible={!!proposeTripId} animationType="slide" presentationStyle="pageSheet" onRequestClose={closeProposeModal}>
-        <View style={styles.modalContainer}>
+        <View style={[styles.modalContainer, { paddingTop: insets.top + 16 }]}>
           <ScrollView showsVerticalScrollIndicator={false}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Propose an Event</Text>
@@ -1687,7 +1689,7 @@ export default function TripsScreen() {
 
       {/* Refined search — override the time window and/or narrow to specific tags for one search */}
       <Modal visible={!!refineSearchContext} animationType="slide" presentationStyle="pageSheet" onRequestClose={closeRefineSearch}>
-        <View style={styles.modalContainer}>
+        <View style={[styles.modalContainer, { paddingTop: insets.top + 16 }]}>
           <ScrollView showsVerticalScrollIndicator={false}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Refine Your Search</Text>
@@ -1803,7 +1805,7 @@ export default function TripsScreen() {
 
       {/* Trip creator */}
       <Modal visible={showCreateModal} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowCreateModal(false)}>
-        <View style={styles.modalContainer}>
+        <View style={[styles.modalContainer, { paddingTop: insets.top + 16 }]}>
           {/* keyboardShouldPersistTaps="handled": without it, ScrollView's default ('never')
               swallows the FIRST tap on a suggestion row (destination city or hotel below) to
               dismiss the keyboard instead of firing the row's onPress — the tap looks like it
@@ -1917,7 +1919,9 @@ export default function TripsScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0A0A0A' },
-  scrollContent: { padding: 24, paddingTop: Platform.OS === 'ios' ? 60 : 60, paddingBottom: 100 },
+  // paddingTop is overridden inline with useSafeAreaInsets().top (see render) so the header
+  // clears the device's actual status bar/notch instead of a hardcoded guess.
+  scrollContent: { padding: 24, paddingBottom: 100 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 32, marginTop: 10 },
   headerTextContainer: { flex: 1 },
   title: { color: '#FFFFFF', fontSize: 32, fontWeight: '800', marginBottom: 8 },
@@ -2044,7 +2048,9 @@ const styles = StyleSheet.create({
   addressIcon: { fontSize: 16, marginRight: 8 },
   navigateChevron: { color: '#3B82F6', fontSize: 13, fontWeight: '800', marginLeft: 10 },
 
-  modalContainer: { flex: 1, backgroundColor: '#0F172A', padding: 24, paddingTop: Platform.OS === 'ios' ? 40 : 24 },
+  // paddingTop is overridden inline with useSafeAreaInsets().top (see render) so the modal
+  // header clears the device's actual status bar/notch instead of a hardcoded guess.
+  modalContainer: { flex: 1, backgroundColor: '#0F172A', padding: 24 },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   modalTitle: { color: '#FFF', fontSize: 24, fontWeight: 'bold', flex: 1, paddingRight: 20 },
   closeButton: { padding: 8 },

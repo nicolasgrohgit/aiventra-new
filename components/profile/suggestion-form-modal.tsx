@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, Modal, StyleSheet, Platform, TextInput, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, TouchableOpacity, Modal, StyleSheet, TextInput, Alert, ActivityIndicator } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '@/hooks/useAuth';
 import { apiFetch, API_URL } from '@/lib/api-client';
 
@@ -23,6 +24,7 @@ interface SuggestionFormModalProps {
 }
 
 export function SuggestionFormModal({ visible, close }: SuggestionFormModalProps) {
+  const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const [text, setText] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -56,7 +58,7 @@ export function SuggestionFormModal({ visible, close }: SuggestionFormModalProps
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={close}>
-      <View style={styles.modalContainer}>
+      <View style={[styles.modalContainer, { paddingTop: insets.top + 16 }]}>
         <View style={styles.modalHeader}>
           <Text style={styles.modalTitle}>Have a suggestion?</Text>
           <TouchableOpacity onPress={close} style={styles.closeButton} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
@@ -102,7 +104,9 @@ export function SuggestionFormModal({ visible, close }: SuggestionFormModalProps
 }
 
 const styles = StyleSheet.create({
-  modalContainer: { flex: 1, backgroundColor: '#0F172A', padding: 24, paddingTop: Platform.OS === 'ios' ? 40 : 24 },
+  // paddingTop is overridden inline with useSafeAreaInsets().top (see render) so the header
+  // clears the device's actual status bar/notch instead of a hardcoded guess.
+  modalContainer: { flex: 1, backgroundColor: '#0F172A', padding: 24 },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   modalTitle: { color: '#FFF', fontSize: 24, fontWeight: 'bold', flex: 1, paddingRight: 20 },
   closeButton: { padding: 8 },

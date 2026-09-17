@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Platform, StyleSheet, View, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { StyleSheet, View, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { ThemedText } from '@/components/themed-text';
 import { useAuth } from '@/hooks/useAuth';
@@ -23,6 +24,7 @@ function getGreeting(): { text: string; emoji: string } {
 }
 
 export default function HomeScreen() {
+  const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { trips } = useTrips();
   const { suggestion, dismissSuggestion, acceptSuggestion, handleFirstCalendarGrant } = useTripDiscovery();
@@ -183,7 +185,7 @@ export default function HomeScreen() {
 
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView contentContainerStyle={[styles.scrollContent, { paddingTop: insets.top + 16 }]} showsVerticalScrollIndicator={false}>
 
         {/* ── Header ── */}
         <View style={styles.header}>
@@ -349,9 +351,10 @@ export default function HomeScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0A0A0A' },
+  // paddingTop is overridden inline with useSafeAreaInsets().top (see render) so the header
+  // clears the device's actual status bar/notch instead of a hardcoded guess.
   scrollContent: {
     padding: 24,
-    paddingTop: Platform.OS === 'ios' ? 60 : 60,
     paddingBottom: 100,
   },
 

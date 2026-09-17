@@ -298,6 +298,29 @@ this is still pre-release/beta.
   destination-timezone day) but left unchanged: a correct fix needs the trip's `timezone` threaded
   through from its two `server.ts` call sites, which is out of this fix's file scope — noted here
   for a follow-up rather than forced through.
+- **"Have a suggestion?" modal (and most other full-screen modals/scroll screens) rendered too
+  high, crowding the status bar/notch/Dynamic Island** — closes out the padding sweep this
+  same release cycle's roadmap notes had slated for "next sprint." Every remaining hardcoded
+  `paddingTop: Platform.OS === 'ios' ? <n> : <n>` guess found in `app/` and `components/` was
+  swapped for `useSafeAreaInsets()` from `react-native-safe-area-context`, matching the pattern
+  already applied to `components/profile/categorized-selection-modal.tsx` earlier this cycle:
+  each screen/modal now computes `insets` once and overrides `paddingTop` inline
+  (`{ paddingTop: insets.top + 16 }`) on the outer container rather than baking a guessed
+  constant into its `StyleSheet`. Fixed in `components/profile/version-history-modal.tsx`,
+  `components/profile/generic-selection-modal.tsx`,
+  `components/profile/suggestion-form-modal.tsx` (the originally-reported bug),
+  `app/(tabs)/trips.tsx` (the main
+  scroll screen plus all four `pageSheet` modal containers, which all share one `modalContainer`
+  style), `app/(tabs)/social.tsx` (its scroll screen plus its one modal container),
+  `app/(tabs)/profile.tsx`, and `app/(tabs)/index.tsx`. A repo-wide grep for the same
+  `Platform.OS === 'ios' ? ... : ...` top-padding pattern turned up no other instances beyond
+  these — `components/ui/dark-action-sheet-style.ts`'s platform-conditional padding is its
+  bottom-sheet `paddingBottom` (home-indicator clearance on a sheet already docked to the
+  bottom via `justifyContent: 'flex-end'`, capped well under full screen height), not a
+  top/status-bar concern, so it was left alone. `npx tsc --noEmit`, `npm run lint`, and
+  `npm test` (248/248) all clean; no device/simulator available in this environment, so this
+  was verified by code-reading + type-check + lint + the existing test suite, not an on-screen
+  visual check.
 
 ### Roadmap noted
 - **CRITICAL — Google Sign-In fails on Android with "A non-recoverable sign in failure occurred"
@@ -356,20 +379,6 @@ this is still pre-release/beta.
   gate/middleware that returns a clear 503 (with a retry hint) until connected, instead of the
   current opaque 500. (`--min-instances=1` on Cloud Run would also sidestep it by keeping an
   instance always warm, at the cost of giving up scale-to-zero.)
-- **"Have a suggestion?" modal (and most other full-screen modals) render too high, crowding
-  the status bar** — live-reported from a screenshot where the title sits right against the
-  clock/notch. `components/profile/suggestion-form-modal.tsx:105` uses a hardcoded
-  `paddingTop: Platform.OS === 'ios' ? 40 : 24`, a fixed guess that doesn't account for the
-  device's actual notch/status-bar/Dynamic Island height. This was already identified and
-  fixed once this same release cycle for `categorized-selection-modal.tsx` (see the 0.0.40
-  "Fix profile modal status-bar padding" work — replaced with `useSafeAreaInsets()` from
-  `react-native-safe-area-context`), but the fix was never propagated to its siblings. Same
-  hardcoded pattern still present in: `components/profile/version-history-modal.tsx:61`,
-  `components/profile/generic-selection-modal.tsx:46`, `app/(tabs)/trips.tsx:2027`,
-  `app/(tabs)/social.tsx:674` (all four modal containers), plus the non-modal scroll screens
-  `app/(tabs)/profile.tsx:389`, `app/(tabs)/index.tsx:344`, `app/(tabs)/trips.tsx:1902`,
-  `app/(tabs)/social.tsx:610`. Slated for next sprint: swap every one of these over to
-  `useSafeAreaInsets()` for a consistent, device-correct top inset instead of a per-file guess.
 - **Full-codebase audit (general-purpose agent, branch `sprint4-calendar-allday-events`) found 5
   confirmed bugs plus 3 lower-confidence notes, split into three verticals by file ownership so
   they could be handed to three separate agents in parallel with zero merge risk — all three

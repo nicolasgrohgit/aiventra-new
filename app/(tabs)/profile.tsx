@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, ScrollView, TouchableOpacity, Text, Platform, TextInput, Alert, ActivityIndicator } from 'react-native';
+import { StyleSheet, View, ScrollView, TouchableOpacity, Text, TextInput, Alert, ActivityIndicator } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import Constants from 'expo-constants';
 import * as ImagePicker from 'expo-image-picker';
@@ -47,6 +48,7 @@ export const CHANGELOG_HISTORY = [
 ];
 
 export default function ProfileScreen() {
+  const insets = useSafeAreaInsets();
   const { user, updatePreferences, updateUser, logout } = useAuth();
   // Derived from app.json rather than a second hardcoded copy, so the two can't drift apart.
   const appVersion = Constants.expoConfig?.version || CHANGELOG_HISTORY[0]?.version || '1.0.0';
@@ -234,7 +236,7 @@ export default function ProfileScreen() {
 
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView contentContainerStyle={[styles.scrollContent, { paddingTop: insets.top + 16 }]} showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
           <TouchableOpacity
             style={styles.avatarWrapper}
@@ -386,7 +388,9 @@ export default function ProfileScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0A0A0A' },
-  scrollContent: { padding: 24, paddingTop: Platform.OS === 'ios' ? 60 : 60, paddingBottom: 100 },
+  // paddingTop is overridden inline with useSafeAreaInsets().top (see render) so the header
+  // clears the device's actual status bar/notch instead of a hardcoded guess.
+  scrollContent: { padding: 24, paddingBottom: 100 },
   header: { flexDirection: 'row', alignItems: 'center', marginBottom: 32 },
   avatarWrapper: { width: 70, height: 70, marginRight: 16 },
   avatarHolder: { width: 70, height: 70, borderRadius: 35, backgroundColor: '#3B82F6', justifyContent: 'center', alignItems: 'center' },

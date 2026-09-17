@@ -1,6 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { StyleSheet, View, ScrollView, TouchableOpacity, Text, Platform, Modal, TextInput, Alert, Linking } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { ThemedText } from '@/components/themed-text';
 import { DEFAULT_CIRCLES, getContactsByCircle, Contact } from '@/lib/contacts';
@@ -43,6 +44,7 @@ const formatShortDate = (iso?: string) => {
 };
 
 export default function SocialScreen() {
+  const insets = useSafeAreaInsets();
   const CIRCLE_FILTERS = ['All', ...DEFAULT_CIRCLES];
   const [activeCircle, setActiveCircle] = useState('All');
 
@@ -261,7 +263,7 @@ export default function SocialScreen() {
 
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView contentContainerStyle={[styles.scrollContent, { paddingTop: insets.top + 16 }]} showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
           <View style={styles.headerTextContainer}>
             <ThemedText style={styles.title}>Your Circles</ThemedText>
@@ -528,7 +530,7 @@ export default function SocialScreen() {
         presentationStyle="pageSheet"
         onRequestClose={() => setShowInviteModal(false)}
       >
-        <View style={styles.modalContainer}>
+        <View style={[styles.modalContainer, { paddingTop: insets.top + 16 }]}>
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>{addMode === 'invite' ? 'Invite a Contact' : 'Add a Friend'}</Text>
             <TouchableOpacity onPress={() => setShowInviteModal(false)} style={styles.closeButton}>
@@ -607,7 +609,9 @@ export default function SocialScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0A0A0A' },
-  scrollContent: { padding: 24, paddingTop: Platform.OS === 'ios' ? 60 : 60, paddingBottom: 100 },
+  // paddingTop is overridden inline with useSafeAreaInsets().top (see render) so the header
+  // clears the device's actual status bar/notch instead of a hardcoded guess.
+  scrollContent: { padding: 24, paddingBottom: 100 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 32, marginTop: 10 },
   headerTextContainer: { flex: 1, paddingRight: 16 },
   title: { color: '#FFFFFF', fontSize: 32, fontWeight: '800', marginBottom: 8 },
@@ -671,7 +675,9 @@ const styles = StyleSheet.create({
   cancelButton: { marginTop: 16, paddingVertical: 18, borderRadius: 16, backgroundColor: '#1E293B', alignItems: 'center' },
   cancelText: { color: '#EF4444', fontSize: 18, fontWeight: '800' },
 
-  modalContainer: { flex: 1, backgroundColor: '#0F172A', padding: 24, paddingTop: Platform.OS === 'ios' ? 40 : 24 },
+  // paddingTop is overridden inline with useSafeAreaInsets().top (see render) so the modal
+  // header clears the device's actual status bar/notch instead of a hardcoded guess.
+  modalContainer: { flex: 1, backgroundColor: '#0F172A', padding: 24 },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   modalTitle: { color: '#FFF', fontSize: 24, fontWeight: 'bold' },
   closeButton: { padding: 8 },
