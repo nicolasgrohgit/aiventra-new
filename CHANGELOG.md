@@ -66,6 +66,20 @@ this is still pre-release/beta.
     data untouched, `MONGODB_URI`'s previous value still in Secret Manager as version 1).
     Whether to actually delete it later is an open decision, not made here.
 ### Fixed
+- **Incoming friend-request cards on the Circles tab (`app/(tabs)/social.tsx`) showed only the
+  requester's name, with no way to tell two different "Alex"es apart or confirm you're accepting
+  the right person before shipping this to real users.** Client-only fix: `GET
+  /api/friend-requests/incoming` (`server.ts`) already `.populate('from_user_id', 'full_name
+  email avatar_url')`, so the requester's email was already reaching the client unused — the
+  card now shows it as a muted secondary line under the name (skipped when there's no
+  `full_name` at all, since the name line already falls back to showing the email as the primary
+  line in that case, to avoid showing it twice).
+  - Verified: `npx tsc --noEmit` clean, `npm run lint` clean, `npm test` 248/248 passing. Also
+    ran the server locally against real local Mongo, created two throwaway test accounts, sent a
+    real friend request between them via `POST /api/friend-requests`, and confirmed
+    `GET /api/friend-requests/incoming` genuinely returns `from_user_id.email` in the live
+    response (not just readable from the `.populate()` call) before concluding no server change
+    was needed; test accounts/request cleaned up afterward.
 - **Cloud Run cold starts had a ~30-40 second window where the server accepted real requests
   before its MongoDB connection was ready, failing them with an opaque "Internal server error"
   500 instead of anything actionable (see the prior "Roadmap noted" entry below, which this
