@@ -97,6 +97,23 @@ this is still pre-release/beta.
     data untouched, `MONGODB_URI`'s previous value still in Secret Manager as version 1).
     Whether to actually delete it later is an open decision, not made here.
 ### Fixed
+- **The 0.0.42 EAS Android build failed outright** (`EAS_BUILD_UNKNOWN_GRADLE_ERROR`, actual
+  cause found in the Gradle log: `error: An organization ID or slug is required (provide with
+  --org)` from a new `:app:createBundleReleaseJsAndAssets_SentryUpload...` Gradle task).
+  Root cause: this same release's `@sentry/react-native` dependency bump (see the expo-doctor
+  entry below) caused `npx expo install` to auto-register the package's Expo config plugin in
+  `app.json`, which wires up the Sentry Android Gradle plugin — that plugin unconditionally
+  tries to upload source maps to Sentry on every release build, requiring a configured
+  org/project, neither of which exist (`SENTRY_DSN` is deliberately unset — Sentry is meant to
+  be a complete no-op until it is, per `.env.example`'s own comment — but the Gradle-level
+  auto-upload step doesn't respect that). Fixed by setting `SENTRY_DISABLE_AUTO_UPLOAD=true` in
+  `eas.json`'s `build.preview.env`/`build.production.env` — Sentry's own documented escape
+  hatch for exactly this case (confirmed directly in
+  `node_modules/@sentry/react-native/sentry.gradle`'s upload-task guard), rather than removing
+  the plugin or fabricating fake org/project values. Caught by actually running a real EAS
+  cloud build against this release rather than assuming a clean `tsc`/lint/test pass meant the
+  build itself would succeed — the two are independent, and only one of them exercises the
+  native Gradle toolchain.
 - **Past trips (the "Past" tab added in 0.0.41) still triggered AI Schedule Proposals,
   free-time computation, and nearby-friends lookups in the background even though none of
   that ever renders for a past trip — `PastTripCard` itself was already correctly lightweight
