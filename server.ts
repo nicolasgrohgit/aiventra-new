@@ -24,7 +24,9 @@ import Event, { PopulatedEventCreator } from './models/Event';
 import FriendRequest from './models/FriendRequest';
 import Place from './models/Place';
 import Suggestion from './models/Suggestion';
+import TripCreationEvent from './models/TripCreationEvent';
 import { ensurePlacesForCity, refreshNearbyPlacesLive } from './lib/places-population';
+import { getTripQuotaForUser, isPremiumEntitled } from './lib/trip-quota';
 import { searchCities } from './lib/geocoding';
 import { sendPushNotification } from './lib/push-notifications';
 import { sendMail } from './lib/mailer';
@@ -358,7 +360,11 @@ app.get('/api/users/:id', authenticate, async (req: AuthedRequest, res: express.
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
-    res.json(user);
+    // Computed via the same shared function POST /api/trips gates against (lib/trip-quota.ts)
+    // so the two can never report different numbers. See hooks/useAuth.tsx's
+    // syncProfileFromServer (the client-side consumer) and app/(tabs)/trips.tsx (the display).
+    const tripQuota = await getTripQuotaForUser(user);
+    res.json({ ...user.toObject(), tripQuota });
   } catch (error: any) {
     reportError(error, req, 'get user failed');
     res.status(500).json({ error: 'Internal server error' });
@@ -484,6 +490,27 @@ app.post('/api/trips', authenticate, async (req: AuthedRequest, res: express.Res
     if (!destination || !startDate || !endDate) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
+
+    // Free-tier monthly trip cap (docs/monetization-strategy.md's "Finalized decisions"
+    // section). Premium users (including a billing-retry grace period) skip this entirely —
+    // isPremiumEntitled/getTripQuotaForUser (lib/trip-quota.ts) are the single shared source
+    // of truth this and GET /api/users/:id both call, so they can never disagree. Checked
+    // against a fresh User doc (not req.userId alone) since subscription state lives there.
+    const requester = await User.findById(req.userId);
+    if (!requester) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    if (!isPremiumEntitled(requester)) {
+      const quota = await getTripQuotaForUser(requester);
+      if (quota.remaining !== null && quota.remaining <= 0) {
+        return res.status(403).json({
+          error: 'TRIP_LIMIT_REACHED',
+          limit: quota.limit,
+          periodEnd: quota.resetsAt
+        });
+      }
+    }
+
     const trip = await Trip.create({
       user_id: req.userId,
       destination,
@@ -493,6 +520,11 @@ app.post('/api/trips', authenticate, async (req: AuthedRequest, res: express.Res
       sharedWithCircles: sharedWithCircles || [],
       baseLocations: parseBaseLocations(baseLocations)
     });
+    // Logged for every trip creation regardless of tier — a uniform history costs nothing and
+    // is what the cap above counts against (see models/TripCreationEvent.ts: append-only,
+    // deliberately never touched by DELETE /api/trips/:id, so deleting a trip does NOT free up
+    // that month's quota slot).
+    await TripCreationEvent.create({ user_id: req.userId });
     // Best-effort: a thin/uncovered destination shouldn't block trip creation, just miss
     // out on having candidate places ready until the next trip to that city tries again.
     await ensurePlacesForCity(destination).catch((err) => req.log.warn({ err }, 'places population failed'));
@@ -1738,6 +1770,64 @@ app.delete('/admin/api/places/:id', strictLimiter, requireAdminToken, async (req
     res.json({ success: true, message: 'Place deleted successfully' });
   } catch (error: any) {
     reportError(error, req, 'delete admin place failed');
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Manual subscription override — the actual entitlement-testing lever this feature exists
+// for (docs/monetization-strategy.md: "manual/admin way to mark a test account as 'paid' so
+// multiple test users can validate the whole flow end-to-end", explicitly WITHOUT a real
+// RevenueCat/Play Billing/Stripe integration, which is separate future work). Same
+// requireAdminToken shared-secret gate as /admin/api/places above — a single ops tool, not a
+// per-user resource. Writes directly via User.findByIdAndUpdate, bypassing
+// USER_UPDATABLE_FIELDS entirely (same reasoning as expoPushToken/lastAppAccess's own
+// dedicated routes: `subscription` must never be reachable through the client-facing
+// PUT /api/users/:id).
+const VALID_SUBSCRIPTION_TIERS = ['free', 'premium'] as const;
+const VALID_SUBSCRIPTION_STATUSES = ['active', 'grace_period', 'canceled', 'expired'] as const;
+const VALID_SUBSCRIPTION_PLATFORMS = ['ios', 'android', 'web'] as const;
+
+app.get('/admin/api/users/:id/subscription', strictLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    const user = await User.findById(req.params.id).select('email subscription');
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    res.json({ userId: user._id, email: user.email, subscription: user.subscription || null });
+  } catch (error: any) {
+    reportError(error, req, 'get admin user subscription failed');
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.put('/admin/api/users/:id/subscription', strictLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    const { tier, status, platform, currentPeriodEnd } = req.body;
+    if (!VALID_SUBSCRIPTION_TIERS.includes(tier)) {
+      return res.status(400).json({ error: `tier must be one of: ${VALID_SUBSCRIPTION_TIERS.join(', ')}` });
+    }
+    if (!VALID_SUBSCRIPTION_STATUSES.includes(status)) {
+      return res.status(400).json({ error: `status must be one of: ${VALID_SUBSCRIPTION_STATUSES.join(', ')}` });
+    }
+    if (platform !== undefined && !VALID_SUBSCRIPTION_PLATFORMS.includes(platform)) {
+      return res.status(400).json({ error: `platform must be one of: ${VALID_SUBSCRIPTION_PLATFORMS.join(', ')}` });
+    }
+    const subscription: Record<string, any> = { tier, status };
+    if (platform !== undefined) subscription.platform = platform;
+    if (currentPeriodEnd !== undefined) subscription.currentPeriodEnd = new Date(currentPeriodEnd);
+
+    const user = await User.findByIdAndUpdate(
+      req.params.id,
+      { $set: { subscription } },
+      { new: true, runValidators: true }
+    ).select('email subscription');
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    req.log.info({ event: 'admin_subscription_override', userId: user._id.toString(), subscription: user.subscription }, 'admin set user subscription');
+    res.json({ userId: user._id, email: user.email, subscription: user.subscription || null });
+  } catch (error: any) {
+    reportError(error, req, 'set admin user subscription failed');
     res.status(500).json({ error: 'Internal server error' });
   }
 });

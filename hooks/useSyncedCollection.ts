@@ -40,13 +40,20 @@ export interface SyncedCollectionConfig<TItem extends EntityId> {
   // Login-time sync only (not the post-mutation refetch): when the server has nothing yet,
   // keep whatever's already in state (contacts' demo/mock set) instead of clearing to [].
   keepStateWhenServerEmptyOnLogin?: boolean;
+  // Fired when a create's POST comes back non-2xx (e.g. a 403) — checked via `res.ok`, not a
+  // thrown error, since a rejected create is a normal HTTP response, not a network failure.
+  // Generic/reusable (not trip-specific): a caller that cares about a particular rejection
+  // shape (see useTrips.tsx's TRIP_LIMIT_REACHED handling) inspects `body` itself. Previously
+  // a non-ok create response was silently swallowed by the same catch block that handles a
+  // dropped connection — this is what lets a caller actually surface it instead.
+  onCreateRejected?: (item: TItem, status: number, body: any) => void;
 }
 
 export function useSyncedCollection<TItem extends EntityId>(config: SyncedCollectionConfig<TItem>) {
   const {
     storageKey, apiPath, entityLabel, emptyState,
     parseCached, parseServer, canSyncForDelete, hasChanged,
-    buildCreateBody, buildUpdateBody, keepStateWhenServerEmptyOnLogin
+    buildCreateBody, buildUpdateBody, keepStateWhenServerEmptyOnLogin, onCreateRejected
   } = config;
   const canSyncForUpdate = config.canSyncForUpdate || canSyncForDelete;
   const apiUrl = `${API_URL}${apiPath}`;
@@ -183,11 +190,15 @@ export function useSyncedCollection<TItem extends EntityId>(config: SyncedCollec
       const isNew = !oldItems.some(oi => sameEntity(oi, newItem));
       if (isNew) {
         try {
-          await apiFetch(apiUrl, {
+          const res = await apiFetch(apiUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(buildCreateBody(newItem, userId))
           });
+          if (!res.ok && onCreateRejected) {
+            const body = await res.json().catch(() => ({}));
+            onCreateRejected(newItem, res.status, body);
+          }
         } catch (err) {
           // Not queued for retry — see lib/mutation-queue.ts: replaying a failed create
           // safely needs a server-side idempotency key to avoid double-creating the entity,

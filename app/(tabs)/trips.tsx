@@ -19,7 +19,7 @@ import { searchHotelLocation, HotelLocationResult } from '@/lib/hotel-geocoding'
 import { CircleShareSelector } from '@/components/ui/circle-share-selector';
 import { FOOD_GENRES_CATEGORIZED, ACTIVITY_GENRES_CATEGORIZED, EVENT_GENRES_CATEGORIZED } from '@/constants/preferences';
 import { buildMapsUrl, MapsDestination } from '@/lib/maps-link';
-import { TripEvent, InvitedTripEvent, TripBaseLocation, TripMock, formatDistanceLabel, placePhotoUri, isTripPast } from '@/lib/trip-types';
+import { TripEvent, InvitedTripEvent, TripBaseLocation, TripMock, formatDistanceLabel, placePhotoUri, isTripPast, formatTripLimitMessage } from '@/lib/trip-types';
 import { PlaceCard } from '@/components/trips/place-card';
 import { RefineSearchCard } from '@/components/trips/refine-search-card';
 import { CalendarEventCard } from '@/components/trips/calendar-event-card';
@@ -685,6 +685,15 @@ export default function TripsScreen() {
   };
 
   const handleOpenCreateTarget = () => {
+    // Blocks up front using the server-computed tripQuota already on `user` (synced by
+    // syncProfileFromServer in hooks/useAuth.tsx) rather than waiting for the optimistic
+    // create to round-trip and get rejected — same underlying limit, just caught earlier when
+    // we already know about it. useTrips.tsx's onCreateRejected still covers the case where
+    // this is stale (offline, or a slot freed/used since the last profile sync).
+    if (user?.tripQuota?.remaining === 0) {
+      Alert.alert('Trip limit reached', formatTripLimitMessage(user.tripQuota.limit, user.tripQuota.resetsAt));
+      return;
+    }
     setEditTripId(null);
     setNewDestination('');
     setStartDate(new Date());
@@ -1105,9 +1114,21 @@ export default function TripsScreen() {
             <ThemedText style={styles.title}>Your Trips</ThemedText>
             <ThemedText style={styles.subtitle}>Plan and share your upcoming trips.</ThemedText>
           </View>
-          <TouchableOpacity style={styles.addButton} onPress={handleOpenCreateTarget}>
-            <Text style={styles.addButtonText}>+</Text>
-          </TouchableOpacity>
+          <View style={styles.addButtonColumn}>
+            <TouchableOpacity style={styles.addButton} onPress={handleOpenCreateTarget}>
+              <Text style={styles.addButtonText}>+</Text>
+            </TouchableOpacity>
+            {/* Free-tier-only, and only once we actually know the quota (tripQuota is absent
+                offline / before the first profile sync — see hooks/useAuth.tsx's
+                syncProfileFromServer). Deliberately no design investment beyond a plain label:
+                this exists so a human tester can see the cap state at a glance, not as a real
+                paywall UI (that's future work — see docs/monetization-strategy.md). */}
+            {user?.tripQuota && user.tripQuota.limit !== null ? (
+              <ThemedText style={styles.quotaIndicator}>
+                {user.tripQuota.remaining} of {user.tripQuota.limit} trips left this month
+              </ThemedText>
+            ) : null}
+          </View>
         </View>
 
         {/* The "Your Invites" modal (below) already correctly lists every invited event
@@ -1940,8 +1961,10 @@ const styles = StyleSheet.create({
   headerTextContainer: { flex: 1 },
   title: { color: '#FFFFFF', fontSize: 32, fontWeight: '800', marginBottom: 8 },
   subtitle: { color: '#94A3B8', fontSize: 16 },
+  addButtonColumn: { alignItems: 'center' },
   addButton: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#3B82F6', justifyContent: 'center', alignItems: 'center', shadowColor: '#3B82F6', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 8, elevation: 5 },
   addButtonText: { color: '#FFFFFF', fontSize: 28, fontWeight: '400', lineHeight: 30, marginTop: Platform.OS === 'ios' ? -2 : 0 },
+  quotaIndicator: { fontSize: 11, color: '#6B7280', marginTop: 6, textAlign: 'center' },
 
   inviteBanner: { backgroundColor: 'rgba(16, 185, 129, 0.15)', borderWidth: 1, borderColor: '#10B981', borderRadius: 14, padding: 16, marginBottom: 24 },
   inviteBannerText: { color: '#10B981', fontWeight: '800', fontSize: 14, textAlign: 'center' },

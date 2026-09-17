@@ -1,7 +1,8 @@
 import React, { createContext, useContext, ReactNode } from 'react';
+import { Alert } from 'react-native';
 import { apiFetch, API_URL } from '@/lib/api-client';
 import { guessTimezoneForCity } from '@/lib/timezones';
-import { TripMock } from '@/lib/trip-types';
+import { TripMock, formatTripLimitMessage } from '@/lib/trip-types';
 import { useSyncedCollection } from './useSyncedCollection';
 
 // Step 5 (last) of the useAuth.tsx split (see docs/useauth-split-plan.md) — last because
@@ -91,7 +92,17 @@ export const TripsProvider = ({ children }: { children: ReactNode }) => {
     canSyncForDelete: (id) => !id.startsWith('mock_'),
     hasChanged: tripHasChanged,
     buildCreateBody: (t, userId) => ({ userId, ...buildTripBody(t) }),
-    buildUpdateBody: buildTripBody
+    buildUpdateBody: buildTripBody,
+    // The free-tier trip cap (server.ts's POST /api/trips, lib/trip-quota.ts) rejects with a
+    // 403 rather than throwing, so the optimistic trip added to local state by setTrips above
+    // needs to be rolled back explicitly here — otherwise it would sit in `trips`/AsyncStorage
+    // forever looking created, even though the server never has it (and every refetch would
+    // just silently drop it again, with no explanation shown to the user).
+    onCreateRejected: (item, _status, body) => {
+      if (body?.error !== 'TRIP_LIMIT_REACHED') return;
+      replaceItems(prev => prev.filter(t => t.id !== item.id));
+      Alert.alert('Trip limit reached', formatTripLimitMessage(body.limit, body.periodEnd));
+    }
   });
 
   const toggleDismissedSlot = async (tripId: string, slotKey: string, dismissed: boolean) => {

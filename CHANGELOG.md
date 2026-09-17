@@ -6,6 +6,35 @@ this is still pre-release/beta.
 
 ## [Unreleased]
 ### Added
+- **Free-tier trip cap (3 scheduled trips/calendar month, configurable) + a manual admin
+  lever to mark a test account "paid" — entitlement infrastructure only, no real payment
+  processor wired up yet.** Implements the decisions recorded in
+  `docs/monetization-strategy.md`'s "Rough backend sketch" and "Finalized decisions
+  (2026-09-17)" sections.
+  - `models/User.ts` gains a formally-declared `subscription` sub-document (`tier`, `status`
+    — including a future-proof `grace_period` value for billing retries, `platform`,
+    `currentPeriodEnd`), deliberately excluded from `USER_UPDATABLE_FIELDS` in `server.ts` so
+    a client can never PUT itself into premium.
+  - New `models/TripCreationEvent.ts`: an append-only `{ user_id, createdAt }` log, one row
+    inserted per trip creation regardless of tier, counted instead of live `Trip` documents —
+    **deleting a trip does not free up that month's quota slot**, verified live below.
+  - New `models/AppConfig.ts` + `lib/trip-quota.ts`: the monthly cap (default 3, seeded
+    automatically) lives in a small Mongo doc with a ~60s in-memory cache, so it's changeable
+    without a Cloud Run redeploy. `getTripQuotaForUser` is the single function both
+    `POST /api/trips` (the entitlement gate) and `GET /api/users/:id` (the client-facing
+    `tripQuota` field) call, so they can't disagree.
+  - New admin routes `GET`/`PUT /admin/api/users/:id/subscription` (same `requireAdminToken`
+    shared-secret gate as `/admin/api/places`) — the manual lever for flipping a test account
+    to `premium` to validate the whole flow end-to-end.
+  - Client: `hooks/useSyncedCollection.ts` gains an `onCreateRejected` hook (a failed create
+    was previously only `console.warn`ed, never surfaced) so `hooks/useTrips.tsx` can roll
+    back an optimistically-added trip and show an explanatory alert when the server rejects it
+    with `TRIP_LIMIT_REACHED`. `app/(tabs)/trips.tsx` blocks the create button up front when
+    `tripQuota.remaining === 0` and shows a small "N of M trips left this month" indicator for
+    free-tier users.
+  - **Explicitly out of scope for this pass, and separate future work:** any real
+    RevenueCat/Play Billing/Stripe integration, real payment UI, or App Store/Play Console
+    configuration — see `docs/monetization-strategy.md` for that plan.
 - **Google Sign-In, added alongside the existing email-only login (not replacing it) — no
   migration needed for already-registered accounts, and lets testing with quick throwaway
   Google accounts happen without touching the existing flow.**

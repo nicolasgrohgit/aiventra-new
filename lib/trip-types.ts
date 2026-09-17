@@ -98,6 +98,21 @@ export function isTripActive(startDate: Date, endDate: Date, timezone: string = 
   return zonedRef >= zonedStart && zonedRef <= zonedEnd;
 }
 
+// Free-tier trip-cap message, shared between the two places a user can hit the limit:
+// hooks/useTrips.tsx's onCreateRejected (an offline-optimistic create that got rejected once
+// it reached the server) and app/(tabs)/trips.tsx's handleOpenCreateTarget (blocked up front
+// because the client already knows tripQuota.remaining === 0). Kept in one place so the
+// wording never drifts between the two. `periodEnd` is an ISO date string (server's
+// tripQuota.resetsAt / a 403's body.periodEnd) — formatted plainly, this doesn't need to be
+// fancy per the feature spec.
+export function formatTripLimitMessage(limit: number | null | undefined, periodEnd: string | null | undefined): string {
+  const limitText = typeof limit === 'number' ? `${limit} trips` : 'the free-tier limit';
+  const resetText = periodEnd
+    ? ` It resets on ${new Date(periodEnd).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}.`
+    : '';
+  return `You've reached the free plan's limit of ${limitText} this month.${resetText}`;
+}
+
 // Every card/detail-modal thumbnail points at this same server-side proxy (never at
 // googleapis.com directly) — see GET /api/places/:id/photo in server.ts for why: resolving a
 // Google photoRef into real image bytes needs GOOGLE_PLACES_API_KEY, which must never leave

@@ -55,6 +55,23 @@ export interface IUser extends Document {
   // it survives a reinstall/new device and can double as a later engagement/retention signal
   // (not built here — see the changelog entry for this feature).
   lastAppAccess?: Date;
+  // Manual/entitlement subscription state (see docs/monetization-strategy.md's "Rough backend
+  // sketch" and "Finalized decisions" sections). Formally declared — same "direct property
+  // access" reasoning as homebaseSharedCircles/expoPushToken/lastAppAccess above — because
+  // the entitlement check in POST /api/trips (server.ts) reads user.subscription?.tier/status
+  // directly. Deliberately NOT in USER_UPDATABLE_FIELDS (server.ts): a client must never be
+  // able to PUT itself into premium via PUT /api/users/:id. Written only by the admin-token-
+  // gated PUT /admin/api/users/:id/subscription route until real payment-processor
+  // integration (RevenueCat webhooks per the doc above) replaces that manual lever — that
+  // integration is explicitly out of scope for this pass. `status` includes 'grace_period'
+  // now (even though nothing sets it yet) so the entitlement check's enum doesn't need a
+  // migration once billing-retry webhooks exist.
+  subscription?: {
+    tier: 'free' | 'premium';
+    status: 'active' | 'grace_period' | 'canceled' | 'expired';
+    platform?: 'ios' | 'android' | 'web';
+    currentPeriodEnd?: Date;
+  };
 }
 
 const UserSchema = new Schema<IUser>({
@@ -77,7 +94,13 @@ const UserSchema = new Schema<IUser>({
   homebaseSharedCircles: { type: [String], default: [] },
   expoPushToken: { type: String },
   encryptedDataKey: { type: String },
-  lastAppAccess: { type: Date }
+  lastAppAccess: { type: Date },
+  subscription: {
+    tier: { type: String, enum: ['free', 'premium'], default: 'free' },
+    status: { type: String, enum: ['active', 'grace_period', 'canceled', 'expired'], default: 'active' },
+    platform: { type: String, enum: ['ios', 'android', 'web'] },
+    currentPeriodEnd: { type: Date }
+  }
 }, { timestamps: true, strict: false }); // strict: false only needed now for top-level ad hoc fields (firstName, homebase, etc.) — preferences.* is fully declared above
 
 export default mongoose.models.User || mongoose.model<IUser>('User', UserSchema);
