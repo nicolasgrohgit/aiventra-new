@@ -5,6 +5,8 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 this is still pre-release/beta.
 
 ## [Unreleased]
+
+## [0.0.42] - 2026-09-17
 ### Added
 - **Free-tier trip cap (3 scheduled trips/calendar month, configurable) + a manual admin
   lever to mark a test account "paid" — entitlement infrastructure only, no real payment
