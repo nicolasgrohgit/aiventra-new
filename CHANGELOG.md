@@ -300,6 +300,49 @@ this is still pre-release/beta.
   for a follow-up rather than forced through.
 
 ### Roadmap noted
+- **CRITICAL — Google Sign-In fails on Android with "A non-recoverable sign in failure occurred"
+  (Play Services status code 12, SIGN_IN_FAILED), root cause not yet found.** Live-reported the
+  day after this shipped. Every config-side and remote check performed came back clean, ruling
+  out every common cause:
+  - Package name (`com.nicolas.groh.Odysai`) and SHA-1 fingerprint of the actual signing
+    certificate used by `odys-ai-0.0.39/40/41.apk` (`E3:A3:13:24:76:70:37:83:D3:15:02:45:BB:F2:
+    52:59:50:9C:87:C9`, identical across all three builds) both confirmed to exactly match what's
+    registered on the Android OAuth client in Cloud Console.
+  - `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` confirmed actually present in the compiled Hermes bytecode
+    of the shipped APK (not a build-time env var miss) — extracted and grepped the real bundle,
+    not just `eas.json`.
+  - The Web OAuth client confirmed valid/enabled at Google's end (hit
+    `accounts.google.com/o/oauth2/v2/auth` directly with the real client_id and a throwaway
+    redirect_uri — a `redirect_uri_mismatch` response proves the client exists and is enabled; an
+    `invalid_client`/`deleted_client` response would have meant the client itself was the bug).
+  - The live backend's `POST /api/auth/google` confirmed reachable and correctly rejecting a bad
+    token (401 `Invalid Google token`, not a 503/500) — see the new
+    `scripts/verify-google-signin-config.sh`, which scripts both of the above two checks so they
+    don't need re-deriving by hand next time.
+  - OAuth consent screen confirmed NOT in Testing mode; "Updated contact information" and
+    "Billing account verification" both green in Cloud Console's own Project Checkup.
+  - Project Checkup's two active warnings (App security → "Use secure flows" → app ownership
+    verification; Developer identity → "Project contacts") both confirmed to be dead ends: the
+    ownership-verification flow is Play-Store-only by Google's own design and explicitly reports
+    "not applicable" for a sideloaded/pre-publish app like this one, and "Project contacts" is
+    just an unrelated project-owner-count hygiene nag.
+  - Ruled out (initially suspected, then disproved): the legacy Android Sign-In API
+    (`GoogleSignInClient`, confirmed via reading `RNGoogleSigninModule.java` to be what
+    `@react-native-google-signin/google-signin@16.1.5` — the current latest release — still uses)
+    being fully shut down. Google's own current migration docs confirm it's deprecated but still
+    functional; removal is only "planned for a future release," not yet in effect.
+  - Separately, unrelated to the Android bug: `app.json` has no iOS config at all for this
+    library (no `@react-native-google-signin/google-signin` plugin entry, no `iosUrlScheme`) — the
+    plugin's own source throws without it when not using Firebase, which this project deliberately
+    doesn't. Confirmed real but not the cause of the reported failure (testing happened on
+    Android) — still needs a dedicated iOS-type OAuth Client ID + `iosUrlScheme` config before
+    Google Sign-In is expected to work on iOS at all. Blocked on the user creating that client (no
+    API/CLI surface exists for it, Console-only).
+  - **Next step, blocked on physical device access**: capture `adb logcat` output on the actual
+    test device at the moment of the failed sign-in attempt. Every check above rules out a config
+    problem; the one piece of ground truth not yet available is Play Services' own diagnostic
+    detail, which the JS layer collapses down to this one generic message before it ever reaches
+    `app/login.tsx`'s catch block.
 - **On Cloud Run, every cold start has a ~30-40 second window where the server accepts real
   requests before its MongoDB connection is ready, failing them with "Internal server error."**
   Confirmed live during the GCP migration's Phase 6 verification: `server.ts` calls
