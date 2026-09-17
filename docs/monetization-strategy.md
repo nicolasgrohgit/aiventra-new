@@ -157,10 +157,37 @@ above doesn't require re-deriving the shape from scratch.
   payload in the API response, is sufficient engineering-wise — the actual blocker is
   business development (affiliate account approval with each provider), not code.
 
+## Finalized decisions (2026-09-17)
+
+Settled after reviewing a fuller implementation/payments plan (which also covers Google Play
+Billing vs. RevenueCat vs. alternative billing, and comparable-app research — not duplicated
+here, this section only records the numbers actually decided):
+
+- **Free tier cap: 3 scheduled trips per calendar month**, not 1-active-trip-at-a-time as
+  floated in the "Recommendation" section above — superseded by this. Deliberately a
+  starting number, expected to change; must be configurable without a redeploy (a small
+  Mongo config document + admin-token-gated route, not an env var, since Cloud Run needs a
+  new revision to pick up an env var change).
+- **Deleting a trip does NOT free up that month's quota slot.** This means the natural
+  "count `Trip` documents created this month" approach (in the "Rough backend sketch" above)
+  doesn't work as stated — a deleted `Trip` stops matching that query, which would
+  incorrectly free the slot. Needs a separate, append-only `TripCreationEvent` log
+  (`{ user_id, createdAt }`, one row inserted at trip-creation time, never modified or
+  deleted afterward) counted instead of `Trip` itself — same "count documents with a
+  timestamp, no drift possible" philosophy, just decoupled from the trip's own lifecycle.
+- **During a billing-retry grace period** (a renewal payment fails but Apple/Google are still
+  retrying), the user keeps full unlimited/premium access — do not downgrade to the free cap
+  just because a charge is pending retry.
+- **Pricing: $2.99/month, plus an annual plan at a discount (~$19.99/year, ~44% off the
+  monthly-equivalent rate).** Both under one `premium` entitlement in RevenueCat — no
+  separate feature difference between the two, purely a billing-cadence/price choice for the
+  user.
+- **Estonian OÜ + EU OSS VAT question is parked** — revisit before enabling any *direct*
+  (non-Play-Billing) payment path, not before standard in-app Play Billing, which keeps
+  Google as merchant of record and out of Odys's own VAT-collection obligations for now.
+
 ## What this deliberately doesn't cover
 
-Which specific numeric caps (trips/week, recommendation refreshes/week, price point) to
-ship with, ads as a fourth revenue stream (skipped — Beli's "ad-free ethos" pairs with a
-name-brand curated-experience upsell, which fits Odys's positioning better than a
-generic ad network would), and the actual UI for a paywall/upsell moment. Those are product
-decisions for once the tiering model above is agreed, not research questions.
+The actual UI/copy for a paywall or upsell moment, and ads as a fourth revenue stream
+(skipped — Beli's "ad-free ethos" pairs with a name-brand curated-experience upsell, which
+fits Odys's positioning better than a generic ad network would). Those remain open.
