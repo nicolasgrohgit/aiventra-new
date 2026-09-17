@@ -66,6 +66,22 @@ this is still pre-release/beta.
     data untouched, `MONGODB_URI`'s previous value still in Secret Manager as version 1).
     Whether to actually delete it later is an open decision, not made here.
 ### Fixed
+- **Past trips (the "Past" tab added in 0.0.41) still triggered AI Schedule Proposals,
+  free-time computation, and nearby-friends lookups in the background even though none of
+  that ever renders for a past trip — `PastTripCard` itself was already correctly lightweight
+  (destination/dates/photo + delete only), but the screen's background effects (the AI Schedule
+  Proposals recommendation fetch, the "Current Schedule" place-detail resolution, the
+  useFocusEffect/pull-to-refresh event + nearby-friends refresh) all still looped over every
+  trip in `trips`, past ones included, so a trip that ended months ago kept generating real
+  recommendations/geo API calls on every tab focus and pull-to-refresh.** Hoisted the existing
+  `isTripPast`-derived `currentTrips` split (`app/(tabs)/trips.tsx`) to the top of the
+  component and scoped those four effects to `currentTrips` instead of `trips` — city-photo
+  fetching (still needed for `PastTripCard`'s photo) and device-calendar sync were left
+  untouched, only the recommendation/free-time/nearby-friends work named in the original design
+  was skipped for past trips.
+  - Verified: `npx tsc --noEmit`, `npm run lint`, and `npm test` (248/248) all clean. No device/
+    simulator available in this environment, so this is type-checked/linted/tested and reviewed
+    by reading the render/effect structure, not visually confirmed in the running app.
 - **Cloud Run cold starts had a ~30-40 second window where the server accepted real requests
   before its MongoDB connection was ready, failing them with an opaque "Internal server error"
   500 instead of anything actionable (see the prior "Roadmap noted" entry below, which this

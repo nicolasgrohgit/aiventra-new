@@ -80,6 +80,12 @@ export default function TripsScreen() {
   const { user } = useAuth();
   const { trips, setTrips, toggleDismissedSlot } = useTrips();
   const { pendingProposal, consumePendingProposal, runDiscoveryScan } = useTripDiscovery();
+  // Current & Upcoming bucket, derived up front (see isTripPast) so the background effects
+  // below — nearby-friends lookups, AI Schedule Proposals, free-time computation — can skip
+  // past trips entirely rather than just hiding the result: a trip that's already over has no
+  // reason to burn a recommendations/geo-lookup API call every time this screen refreshes.
+  // pastTrips (sorted for display) is computed separately, right where it's rendered below.
+  const currentTrips = trips.filter(t => !isTripPast(t.endDate, t.timezone));
   const mealPrefs = { earliestLunchTime: user?.preferences?.earliestLunchTime, earliestDinnerTime: user?.preferences?.earliestDinnerTime };
   const { contacts, refreshContacts } = useContacts();
   const {
@@ -336,8 +342,11 @@ export default function TripsScreen() {
   useFocusEffect(
     useCallback(() => {
       refreshInvitedEvents();
-      trips.forEach(t => refreshTripEvents(t.id));
-      trips.forEach(t => refreshNearbyFriends(t));
+      // Scoped to currentTrips, not trips — a past trip's events/nearby-friends are never
+      // rendered (PastTripCard shows destination/dates/photo only), so there's no reason to
+      // keep refetching either for a trip that's already over.
+      currentTrips.forEach(t => refreshTripEvents(t.id));
+      currentTrips.forEach(t => refreshNearbyFriends(t));
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [trips])
   );
@@ -354,8 +363,9 @@ export default function TripsScreen() {
     try {
       await Promise.all([
         refreshInvitedEvents(),
-        ...trips.map(t => refreshTripEvents(t.id)),
-        ...trips.map(t => refreshNearbyFriends(t)),
+        // currentTrips only, same reasoning as the useFocusEffect above.
+        ...currentTrips.map(t => refreshTripEvents(t.id)),
+        ...currentTrips.map(t => refreshNearbyFriends(t)),
         // Trip-discovery path 3 (docs/auto-trip-discovery-plan.md Part B): a narrower ~7-day-
         // ahead scan, independent of and without resetting the server-side lastAppAccess
         // counter the foreground-gated path uses — a manual pull is an explicit "check right
@@ -436,7 +446,9 @@ export default function TripsScreen() {
   // models/Place.ts), the chain just breaks there and the next slot falls back to the trip
   // anchor too, same as today's behavior.
   useEffect(() => {
-    trips.forEach((trip: TripMock) => {
+    // currentTrips, not trips — a past trip has no free-time slots left to fill, so there's
+    // nothing to propose and no reason to fetch recommendations for it.
+    currentTrips.forEach((trip: TripMock) => {
       // A trip still on its mock_-prefixed local id hasn't synced to the server yet — fetching
       // recommendations against it 500s (invalid tripId) and, worse, permanently caches an
       // empty result under a key built from this soon-to-be-discarded id (fetchedSlotKeys
@@ -541,7 +553,9 @@ export default function TripsScreen() {
   // regardless of home-turf status or which day is expanded, so it needs its own, broader
   // trigger condition.
   useEffect(() => {
-    trips.forEach((trip: TripMock) => {
+    // currentTrips — a past trip's "Current Schedule" timeline is never rendered
+    // (PastTripCard doesn't show one), so there's nothing here to resolve place details for.
+    currentTrips.forEach((trip: TripMock) => {
       if (trip.id.startsWith('mock_')) return;
       if (collapsedTripIds.has(trip.id)) return;
       const tripEvents = eventsByTrip[trip.id] || [];
@@ -1034,9 +1048,9 @@ export default function TripsScreen() {
     e.participants.find(p => p.user_id === myUserId)?.status === 'pending'
   ).length;
 
-  // Split once per render rather than filtering inline twice — currentTrips keeps today's
-  // existing array order, pastTrips is newest-ended-first (most relevant "past" trip first).
-  const currentTrips = trips.filter(t => !isTripPast(t.endDate, t.timezone));
+  // currentTrips is computed once, up near the top of the component (see comment there) so the
+  // background effects can also skip past trips. pastTrips (only needed for this render) is
+  // newest-ended-first — most relevant "past" trip first.
   const pastTrips = trips
     .filter(t => isTripPast(t.endDate, t.timezone))
     .sort((a, b) => b.endDate.getTime() - a.endDate.getTime());
