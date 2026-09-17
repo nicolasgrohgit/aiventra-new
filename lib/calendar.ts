@@ -70,7 +70,9 @@ export async function getDeviceEventsForToday(useSimulatedIfDenied = false): Pro
           title: evt.title,
           startTime: new Date(evt.startDate),
           endTime: new Date(evt.endDate),
-          location: evt.location,
+          // expo-calendar 15.x types Event.location as `string | null` (was effectively
+          // optional before); normalize to undefined to match this app's CalendarEvent shape.
+          location: evt.location ?? undefined,
           allDay: evt.allDay,
         }));
     }
@@ -108,7 +110,9 @@ export async function getDeviceEventsForDateRange(startDate: Date, endDate: Date
         title: evt.title,
         startTime: new Date(evt.startDate),
         endTime: new Date(evt.endDate),
-        location: evt.location,
+        // expo-calendar 15.x types Event.location as `string | null` (was effectively
+        // optional before); normalize to undefined to match this app's CalendarEvent shape.
+        location: evt.location ?? undefined,
         allDay: evt.allDay,
       }));
   } catch (error) {
@@ -160,7 +164,9 @@ export async function scanForUpcomingTripSignals(daysAhead: number): Promise<Inf
           title: evt.title,
           startTime: new Date(evt.startDate),
           endTime: new Date(evt.endDate),
-          location: evt.location,
+          // expo-calendar 15.x types Event.location as `string | null` (was effectively
+          // optional before); normalize to undefined to match this app's CalendarEvent shape.
+          location: evt.location ?? undefined,
         };
         const signal = classifyImportedEvent(event);
         if (signal && (signal.kind === 'flight' || signal.kind === 'lodging')) {
