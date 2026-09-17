@@ -295,6 +295,13 @@ export default function SocialScreen() {
                 </View>
                 <View style={styles.contactInfo}>
                   <Text style={styles.contactName}>{request.from_user_id?.full_name || request.from_user_id?.email}</Text>
+                  {/* Name alone can't disambiguate two "Alex"es, or confirm you're accepting
+                      the right person — show the email too, muted/secondary. Skipped when
+                      full_name is absent since contactName above already fell back to
+                      showing the email as the primary line. */}
+                  {!!request.from_user_id?.full_name && !!request.from_user_id?.email && (
+                    <Text style={styles.requestEmailText}>{request.from_user_id.email}</Text>
+                  )}
                   <Text style={styles.inviteText}>wants to add you</Text>
                 </View>
                 <View style={styles.requestActions}>
@@ -643,6 +650,7 @@ const styles = StyleSheet.create({
   circleTagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 2 },
   circleTagPill: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1 },
   circleTagText: { fontSize: 11, fontWeight: 'bold' },
+  requestEmailText: { color: '#94A3B8', fontSize: 13, marginTop: 1 },
   inviteText: { color: '#64748B', fontSize: 13, marginTop: 4 },
   locationBadge: { backgroundColor: 'rgba(59, 130, 246, 0.15)', padding: 12, paddingVertical: 10, borderRadius: 12, alignItems: 'center', justifyContent: 'center', borderLeftWidth: 3, borderLeftColor: '#3B82F6', marginLeft: 12 },
   locationTitle: { color: '#3B82F6', fontSize: 11, fontWeight: '800', marginBottom: 2, textTransform: 'uppercase' },
