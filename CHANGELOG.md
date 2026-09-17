@@ -66,6 +66,35 @@ this is still pre-release/beta.
     data untouched, `MONGODB_URI`'s previous value still in Secret Manager as version 1).
     Whether to actually delete it later is an open decision, not made here.
 ### Fixed
+- **Cloud Run cold starts had a ~30-40 second window where the server accepted real requests
+  before its MongoDB connection was ready, failing them with an opaque "Internal server error"
+  500 instead of anything actionable (see the prior "Roadmap noted" entry below, which this
+  replaces).** Root cause: `server.ts` called `connectToDatabase().then(...).catch(...)`
+  fire-and-forget, never awaited, before `app.listen()` — Express started serving immediately,
+  but Mongoose's `bufferCommands: false` (`lib/mongodb.ts`) means any query issued before the
+  connection actually finishes throws instead of queuing. Never surfaced locally (127.0.0.1
+  connects near-instantly); real against the self-hosted Mongo VM over Cloud Run's network, and
+  recurring for real users on every cold start given Cloud Run's scale-to-zero model, not just at
+  deploy time.
+  - Chose the readiness-gate approach over awaiting the connection before `app.listen()`: a new
+    `requireDatabaseReady` middleware, registered via `app.use()` right after the `/health` route
+    (so liveness/startup probes are never gated on Mongo) and before every other route, returns a
+    clear `503` + `Retry-After: 5` for as long as the startup connection is still in flight,
+    instead of letting a query throw once it's issued. This was picked over the simpler
+    await-before-listen option specifically because that option makes the *first* request after
+    every cold start eat the full 30-40s connect time; the 503 instead gives an immediate, honest
+    "still starting up, retry" signal that Cloud Run's own request-level retry/queueing behavior
+    (or a well-behaved client) can act on right away. Once the connection resolves,
+    `dbConnectionReady` flips true and the gate becomes a single boolean check per request — no
+    change to steady-state behavior at all.
+  - Verified: `npx tsc --noEmit` clean, `npm run lint` clean, `npm test` 248/248 passing. Also ran
+    the server locally end-to-end: against real local Mongo, request behavior after the (near-
+    instant) connection is unchanged (`/api/trips` still 401s on a missing token, not gated).
+    Simulated the cold-start window itself by pointing `MONGODB_URI` at an unreachable host —
+    confirmed `/health` kept returning `200` throughout, while every other route consistently
+    returned `503`/`Retry-After: 5` with a clear message for the whole connecting window, before
+    reverting to normal behavior being exercised (the local Mongo case above) rather than only
+    inferred.
 - **Audited cross-account isolation of locally-cached trips/contacts after a live Google
   Sign-In test surfaced an old account's trip on-device (that specific incident turned out to
   be a client-side Google Sign-In failure falling back to an already-logged-in session, not a
@@ -343,19 +372,6 @@ this is still pre-release/beta.
     problem; the one piece of ground truth not yet available is Play Services' own diagnostic
     detail, which the JS layer collapses down to this one generic message before it ever reaches
     `app/login.tsx`'s catch block.
-- **On Cloud Run, every cold start has a ~30-40 second window where the server accepts real
-  requests before its MongoDB connection is ready, failing them with "Internal server error."**
-  Confirmed live during the GCP migration's Phase 6 verification: `server.ts` calls
-  `connectToDatabase().then(...).catch(...)` (fire-and-forget, never awaited) before
-  `app.listen()` — Express starts serving immediately, but Mongoose's `bufferCommands: false`
-  means any query issued before the connection actually completes throws instead of queuing.
-  Locally this never surfaced (127.0.0.1 connects near-instantly); against Atlas over the
-  internet, a fresh connection genuinely takes 30+ seconds, and Cloud Run's scale-to-zero model
-  means this cold-start window recurs for real users, not just at deploy time. Fix direction:
-  either await the DB connection before calling `app.listen()`, or add a readiness
-  gate/middleware that returns a clear 503 (with a retry hint) until connected, instead of the
-  current opaque 500. (`--min-instances=1` on Cloud Run would also sidestep it by keeping an
-  instance always warm, at the cost of giving up scale-to-zero.)
 - **"Have a suggestion?" modal (and most other full-screen modals) render too high, crowding
   the status bar** — live-reported from a screenshot where the title sits right against the
   clock/notch. `components/profile/suggestion-form-modal.tsx:105` uses a hardcoded

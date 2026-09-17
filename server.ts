@@ -116,10 +116,34 @@ app.use(pinoHttp({
   customProps: (req) => ({ userId: (req as AuthedRequest).userId })
 }));
 
-// Initialize MongoDB connection
+// Initialize MongoDB connection. Deliberately not awaited before app.listen() below (see
+// requireDatabaseReady, registered after the /health route further down): awaiting here would
+// make the *first* request after every Cloud Run cold start block for the full 30-40s a fresh
+// connection to the self-hosted Mongo VM takes, instead of getting an immediate, honest signal.
+let dbConnectionReady = false;
 connectToDatabase()
-  .then(() => logger.info('Connected to MongoDB database successfully.'))
+  .then(() => {
+    dbConnectionReady = true;
+    logger.info('Connected to MongoDB database successfully.');
+  })
   .catch((err) => logger.error({ err }, 'MongoDB connection error'));
+
+// Cold-start gate: Mongoose's `bufferCommands: false` (lib/mongodb.ts) makes any query issued
+// before the connection above actually resolves throw, which every route's own try/catch was
+// turning into an opaque, misleading `{ error: 'Internal server error' }` 500 — indistinguishable
+// from a real bug. This middleware short-circuits that same connecting-but-not-yet-ready window
+// with a clear, retryable 503 + Retry-After instead, before any route's DB query gets the
+// chance to throw. Applied via app.use() *after* the /health route below so liveness/startup
+// probes are never gated on Mongo, and before every other route so they all inherit it without
+// each needing its own check. Once dbConnectionReady flips true this is a single boolean read
+// per request — no behavior change at all in steady state.
+function requireDatabaseReady(_req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (dbConnectionReady) {
+    return next();
+  }
+  res.set('Retry-After', '5');
+  res.status(503).json({ error: 'Server is starting up, please try again shortly.' });
+}
 
 // Every protected route trusts req.userId (set here from a verified token) instead of
 // any userId a client sends in a query string or body — that's what actually stops one
@@ -206,6 +230,10 @@ function stripPhotoRef(places: any[]): any[] {
 app.get('/health', (_req: express.Request, res: express.Response) => {
   res.status(200).json({ status: 'ok', uptime: process.uptime(), timestamp: new Date().toISOString() });
 });
+
+// Everything registered below this needs the database; /health above is intentionally
+// registered before this gate so it always reflects the process being up, not Mongo.
+app.use(requireDatabaseReady);
 
 // REST API Endpoints
 
