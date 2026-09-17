@@ -5,7 +5,7 @@
 
 import {
   TASTE_DOMAINS, VIBE_PRESETS, TasteDomain,
-  PreferenceCategoryGroup, FOOD_GENRES_CATEGORIZED, ACTIVITY_GENRES_CATEGORIZED, EVENT_GENRES_CATEGORIZED,
+  PreferenceCategoryGroup, ACTIVITY_GENRES_CATEGORIZED, EVENT_GENRES_CATEGORIZED,
 } from '@/constants/preferences';
 
 // --- Generic circle-cluster tree -------------------------------------------------------
@@ -46,21 +46,25 @@ export interface CircleNode {
 // philosophy VIBE_PRESETS' own comments already apply to cross-vibe tag sharing, e.g. `Scenic
 // Drives` appearing in 3 vibes). A group already 2-3/3 covered by a vibe's flat tags is
 // deliberately left alone: wrapping tags the vibe already exposes directly as top-level leaves
-// would just add a redundant extra tap to reach the exact same tags, not new depth. Only 5 of
+// would just add a redundant extra tap to reach the exact same tags, not new depth. Only 4 of
 // the 8 vibes clear that bar — Nightlife & Live Music (`Live Music` is already 3/3 flat),
 // Chill & Relax (`Relaxation` is already 3/3 flat) and Shopping & Markets (no group is both
 // thematically tight and meaningfully under-covered) don't get a category node and keep
 // today's pure-flat structure, per the task's explicit "skip where it doesn't cleanly cluster."
+//
+// Foodie originally got the same treatment (this was the taxonomy doc's own worked example:
+// wrapping FOOD_GENRES_CATEGORIZED's Asian/European/Americas cuisine groups as extra children
+// so `Foodie -> Asian -> Japanese/Chinese/Thai` became reachable). Reverted after live testing
+// (reported bug): Foodie's flat leaves (Street Food/Cafes/Local Markets/Festivals) are all
+// food *occasions* — how/where you eat — while Asian/European/Americas are cuisine *origins* —
+// a different classification axis entirely. Presenting both as sibling sub-circles under the
+// same "Foodie" tap reads as "these are all the same kind of choice" when they aren't, which is
+// exactly what was reported live. The cuisine leaf tags (Japanese/Chinese/Thai/Italian/French/
+// Mediterranean/Mexican/American/Brazilian) aren't lost — they're real `foodGenres` taxonomy
+// tags, so they still surface through the swipe-refine deck's leftover-domain pool (see
+// `buildSwipeCandidatePool` below) for anyone who didn't already pick something food-related in
+// the vibe picker, without forcing a mismatched drill-down into Foodie's own circle.
 const VIBE_CATEGORY_LINKS: Record<string, PreferenceCategoryGroup[]> = {
-  // The doc's own worked example: Foodie's flat tags (Street Food/Cafes/Local Markets/
-  // Festivals) touch zero real cuisine leaves. Cuisine is the obvious "go one level deeper"
-  // axis for a food vibe, so all three cuisine groups are added (Dining Style/Specialty are
-  // deliberately left out — Street Food/Cafes already represent them at the top level).
-  foodie: [
-    findGroup(FOOD_GENRES_CATEGORIZED, 'Asian'),
-    findGroup(FOOD_GENRES_CATEGORIZED, 'European'),
-    findGroup(FOOD_GENRES_CATEGORIZED, 'Americas'),
-  ],
   // Culture's own name is this activity category's name; only `Galleries` overlaps today —
   // Workshops/Local Markets are net-new, museum-adjacent ways to engage with a city's culture.
   culture: [findGroup(ACTIVITY_GENRES_CATEGORIZED, 'Arts & Culture')],
@@ -260,11 +264,24 @@ export function getAllDomainTags(): string[] {
   return TASTE_DOMAINS.flatMap(d => d.taxonomy.flatMap(g => g.activities));
 }
 
-// The capped swipe-deck's candidate pool: every taxonomy tag NOT already selected by the vibe
-// picker, capped at `cap` (default 10 per docs/onboarding-redesign.md). Drawing from the gap
-// rather than the whole taxonomy is what keeps the deck short even as TASTE_DOMAINS grows.
+// The capped swipe-deck's candidate pool: every taxonomy tag from a domain (Food/Activity/
+// Event, per TASTE_DOMAINS/DOMAIN_LABELS in components/ui/swipe-deck.tsx) the vibe picker
+// didn't already touch, capped at `cap` (default 10 per docs/onboarding-redesign.md).
+//
+// A whole domain is skipped, not just the individual tags already picked, once the user has
+// made at least one explicit selection anywhere in it — reported live: after explicitly
+// picking a food tag (e.g. Japanese, under Foodie -> Asian) the deck still proposed "FOOD:
+// Thai," which reads as re-litigating a category the user already weighed in on ("we should
+// only show them if the user didn't select anything in food"). Drawing only from genuinely
+// untouched domains — not merely untouched individual tags — is what keeps "Anything else?"
+// limited to categories the user hasn't expressed a preference in at all.
 export function buildSwipeCandidatePool(alreadySelected: string[], cap = 10): string[] {
   const selected = new Set(alreadySelected);
-  const remaining = getAllDomainTags().filter(t => !selected.has(t));
+  const untouchedDomains = TASTE_DOMAINS.filter(
+    domain => !domain.taxonomy.some(group => group.activities.some(tag => selected.has(tag)))
+  );
+  const remaining = untouchedDomains
+    .flatMap(domain => domain.taxonomy.flatMap(group => group.activities))
+    .filter(tag => !selected.has(tag));
   return remaining.slice(0, cap);
 }

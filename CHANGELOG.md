@@ -66,6 +66,56 @@ this is still pre-release/beta.
     data untouched, `MONGODB_URI`'s previous value still in Secret Manager as version 1).
     Whether to actually delete it later is an open decision, not made here.
 ### Fixed
+- **Audited cross-account isolation of locally-cached trips/contacts after a live Google
+  Sign-In test surfaced an old account's trip on-device (that specific incident turned out to
+  be a client-side Google Sign-In failure falling back to an already-logged-in session, not a
+  data leak — confirmed against the production DB) — found and closed a real, if latent, gap
+  in the offline-sync engine behind it.**
+  - `hooks/useSyncedCollection.ts` (shared by `useTrips.tsx`/`useContacts.tsx`) only reset its
+    cached state when `user` transitioned to `null` (logout); it never reset on a straight
+    switch between two different non-null user ids. Today's routing (`app/_layout.tsx`) always
+    forces a logout — `user` going through `null` — before a new login is reachable, so this
+    was masked in practice by the app's own navigation, not actually prevented by the sync
+    engine itself. `@trips`/`@contacts`/`@user` remain global (not per-user-id) AsyncStorage
+    keys, so nothing else was standing in the way of a stale previous account's cached items
+    rendering (or being diffed against by `setTrips`/`setContacts`) for a brief window after a
+    same-device account switch, or indefinitely if the post-switch server refetch failed.
+  - Fixed by having that same effect clear state (and the `@trips`/`@contacts` AsyncStorage
+    key) immediately on *any* change to a different user id, not just a transition to `null` —
+    mirroring the clearing the `null` branch already did, in the one place both providers share.
+  - Also audited `lib/mutation-queue.ts`'s `@pendingMutations` queue (also a global key) for the
+    same risk: confirmed harmless as-is, since every PUT/DELETE endpoint it can replay
+    (`server.ts`'s `/api/trips/:id`, `/api/contacts/:id`) scopes its Mongo query by
+    `req.userId` from the authenticated token, not just the id in the URL — a queued mutation
+    replayed under a different account's token 404s and is cleared as a no-op rather than
+    mutating the wrong account's data.
+  - Verified: `npx tsc --noEmit` clean, `npm run lint` clean, `npm test` 248/248 passing (no
+    device/simulator available in this environment for this pass).
+- **Onboarding "Pick your vibe"/swipe-refine: Foodie's sub-circles mixed cuisine-origin tags in
+  with food-occasion tags, and the swipe deck kept re-proposing food cards after the user had
+  already made a food choice — both found live-testing the flow.**
+  - Root cause 1: `lib/onboarding-taste.ts`'s `VIBE_CATEGORY_LINKS` (added for the taxonomy
+    doc's cuisine-depth proposal) appended `FOOD_GENRES_CATEGORIZED`'s Asian/European/Americas
+    category nodes as extra children under the Foodie circle, alongside its existing flat
+    leaves (Street Food/Cafes/Local Markets/Festivals). Those flat leaves are food
+    *occasions*; Asian/European/Americas are cuisine *origins* — a different axis — so tapping
+    Foodie surfaced "choices which aren't type of food," as reported. Fixed by dropping
+    Foodie's entry from `VIBE_CATEGORY_LINKS` entirely (the other 4 vibes that use it —
+    Culture, Outdoors, Arts, Scenic — were unaffected and are untouched). The cuisine leaf
+    tags aren't lost: they're still real `foodGenres` taxonomy tags and now surface through the
+    swipe-refine deck instead, for anyone who didn't already pick something food-related.
+  - Root cause 2: `buildSwipeCandidatePool()` only filtered out individually-already-selected
+    tags from the swipe deck's candidate pool, so picking e.g. one Asian cuisine tag under
+    Foodie still left sibling Food-domain tags (e.g. `Thai`) eligible, surfacing a "FOOD: Thai"
+    card right after the user had already made a food choice. Fixed by having the pool skip a
+    whole `TASTE_DOMAINS` domain (Food/Activity/Event) once any one of its tags is already
+    selected, not just the exact tag(s) picked — matching the actual ask ("only show them if
+    the user didn't select anything in food").
+  - Verified: `npx tsc --noEmit` clean, `npm run lint` clean, `npm test` 248/248 passing
+    (`lib/onboarding-taste.test.ts` updated for both fixes — a regression test that Foodie's
+    children are purely flat with no cuisine category nodes, and new `buildSwipeCandidatePool`
+    tests covering the whole-domain skip). No device/simulator available in this environment;
+    verification is code-reading + type-check + lint + unit tests.
 - **The Cloud Run deployment couldn't connect to MongoDB Atlas at all — every request failed
   with "Could not connect to any servers in your MongoDB Atlas cluster," a message that points
   at an IP-whitelist problem but wasn't one.** `Dockerfile`'s base image, `node:20-slim`, strips

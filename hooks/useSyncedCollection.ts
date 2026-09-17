@@ -87,8 +87,26 @@ export function useSyncedCollection<TItem extends EntityId>(config: SyncedCollec
       return;
     }
 
-    if (String(userId).startsWith('mock_') || lastSyncedUserId.current === userId) return;
+    if (lastSyncedUserId.current === userId) return;
+
+    // Switching to a different account than whoever this hook last synced for — including
+    // straight from one real user to another with no intervening logout/null in between (e.g.
+    // two people sharing a device, or an offline-fallback mock_ login layered on top of a
+    // previous real session). Today's UI always routes through logout (user -> null, handled
+    // above) before a new login is reachable, so this branch is normally a no-op — but that's
+    // an incidental property of the current routing, not something this hook could otherwise
+    // guarantee on its own. Clear immediately rather than leaving the previous account's cached
+    // items on screen (or diffable-against by setItems, which could otherwise mutate/delete the
+    // wrong account's server-side data) while the fetch below is in flight, or indefinitely if
+    // it fails outright or never runs (the mock_ case just below never syncs from the server at
+    // all).
+    if (lastSyncedUserId.current !== null) {
+      setItemsState(emptyState);
+      AsyncStorage.removeItem(storageKey);
+    }
     lastSyncedUserId.current = userId;
+
+    if (String(userId).startsWith('mock_')) return;
 
     (async () => {
       try {

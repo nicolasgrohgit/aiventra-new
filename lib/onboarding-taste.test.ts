@@ -88,40 +88,45 @@ describe('buildVibeTree', () => {
 describe('buildVibeTree category-level drill-down augmentation (Part 1 of the taxonomy doc)', () => {
   const tree = buildVibeTree();
 
-  test('foodie keeps its 4 existing occasion leaves AND gains Asian/European/Americas category nodes', () => {
+  test('foodie keeps only its 4 occasion leaves and gains no cuisine category nodes', () => {
+    // Regression test: Foodie's flat leaves (Street Food/Cafes/Local Markets/Festivals) are
+    // food *occasions*; Asian/European/Americas are cuisine *origins* — a different axis.
+    // Mixing cuisine-origin category nodes into Foodie's own sub-circles (as a prior pass did)
+    // was reported live as showing "choices which aren't type of food" under Foodie, so
+    // Foodie is back to a purely flat child list. The cuisine leaf tags themselves aren't
+    // gone — they still surface via the swipe-refine deck (see buildSwipeCandidatePool tests).
     const foodie = tree.find(n => n.key === 'foodie')!;
     assert.deepEqual(
-      foodie.children!.slice(0, 4).map(c => c.label),
+      foodie.children!.map(c => c.label),
       ['Street Food', 'Cafes', 'Local Markets', 'Festivals']
     );
-    const categoryChildren = foodie.children!.filter(c => !!c.children);
-    assert.deepEqual(categoryChildren.map(c => c.label).sort(), ['Americas', 'Asian', 'European']);
+    assert.ok(foodie.children!.every(c => c.children === undefined));
   });
 
-  test('a category node (e.g. Asian) bulk-selects its whole cuisine group in one tap, like any other parent', () => {
-    const foodie = tree.find(n => n.key === 'foodie')!;
-    const asian = foodie.children!.find(c => c.label === 'Asian')!;
-    assert.deepEqual(asian.tags.sort(), ['Chinese', 'Japanese', 'Thai']);
-    const { selectedTags, engagedKeys } = tapNode(asian, [], []);
-    assert.deepEqual(selectedTags.sort(), ['Chinese', 'Japanese', 'Thai']);
-    assert.deepEqual(engagedKeys, [asian.key]);
-    assert.equal(isNodeActive(asian, selectedTags, engagedKeys), true);
+  test('a category node (e.g. culture -> Arts & Culture) bulk-selects its whole group in one tap, like any other parent', () => {
+    const culture = tree.find(n => n.key === 'culture')!;
+    const artsAndCulture = culture.children!.find(c => c.label === 'Arts & Culture')!;
+    assert.deepEqual(artsAndCulture.tags.sort(), ['Galleries', 'Local Markets', 'Workshops']);
+    const { selectedTags, engagedKeys } = tapNode(artsAndCulture, [], []);
+    assert.deepEqual(selectedTags.sort(), ['Galleries', 'Local Markets', 'Workshops']);
+    assert.deepEqual(engagedKeys, [artsAndCulture.key]);
+    assert.equal(isNodeActive(artsAndCulture, selectedTags, engagedKeys), true);
   });
 
-  test('drilling once more into an engaged Asian exposes Japanese/Chinese/Thai as individually toggleable leaves', () => {
-    const foodie = tree.find(n => n.key === 'foodie')!;
-    const asian = foodie.children!.find(c => c.label === 'Asian')!;
-    const selected = [...asian.tags];
-    const engaged = [asian.key];
-    assert.equal(shouldDrillIn(asian, selected, engaged), true);
-    const japanese = asian.children!.find(c => c.label === 'Japanese')!;
-    assert.equal(japanese.children, undefined);
-    const next = tapNode(japanese, selected, engaged);
-    assert.deepEqual(next.selectedTags.sort(), ['Chinese', 'Thai']);
+  test('drilling once more into an engaged category node exposes its leaves as individually toggleable', () => {
+    const culture = tree.find(n => n.key === 'culture')!;
+    const artsAndCulture = culture.children!.find(c => c.label === 'Arts & Culture')!;
+    const selected = [...artsAndCulture.tags];
+    const engaged = [artsAndCulture.key];
+    assert.equal(shouldDrillIn(artsAndCulture, selected, engaged), true);
+    const workshops = artsAndCulture.children!.find(c => c.label === 'Workshops')!;
+    assert.equal(workshops.children, undefined);
+    const next = tapNode(workshops, selected, engaged);
+    assert.deepEqual(next.selectedTags.sort(), ['Galleries', 'Local Markets']);
   });
 
-  test('vibes without a clean category-group match keep a purely flat child list', () => {
-    for (const key of ['nightlife', 'chill', 'shopping']) {
+  test('vibes without a clean category-group match (including foodie) keep a purely flat child list', () => {
+    for (const key of ['foodie', 'nightlife', 'chill', 'shopping']) {
       const node = tree.find(n => n.key === key)!;
       assert.ok(node.children!.every(c => c.children === undefined), `${key} should have no category-node children`);
     }
@@ -179,9 +184,8 @@ describe('tap/drill-down state machine (generic, depth-agnostic)', () => {
 
   test('pruning an engaged parent down to zero of its tags drops it back to inactive', () => {
     // Simulate the user drilling into Foodie and toggling off every sub-tag one at a time.
-    // Only the flat leaves represent foodie.tags directly — the category nodes (Asian/etc.)
-    // are additional children that don't seed any of foodie.tags, so looping over them too
-    // would bulk-*add* cuisine tags instead of pruning, which isn't what this test simulates.
+    // Foodie is purely flat (no category-node children — see the fix above), so slicing to
+    // foodie.tags.length here covers every one of its children, not just a subset.
     let selectedTags: string[] = [...foodie.tags];
     let engagedKeys: string[] = ['foodie'];
     const flatLeaves = foodie.children!.slice(0, foodie.tags.length);
@@ -281,14 +285,45 @@ describe('buildSwipeCandidatePool', () => {
     }
   });
 
-  test('shrinks below the cap once the remaining gap is smaller than it', () => {
-    const almostEverything = getAllDomainTags().slice(0, 40); // 45 total, 5 left
-    const pool = buildSwipeCandidatePool(almostEverything, 10);
-    assert.equal(pool.length, 5);
+  test('shrinks below the cap once the only untouched domain has fewer leaves than the cap', () => {
+    // Touch one tag each in Food and Activity (enough to skip those domains entirely, per the
+    // domain-skip test below), leaving only Event's 15 leaves as candidates against a cap of 20.
+    const oneFoodTag = FOOD_GENRES_CATEGORIZED[0].activities[0];
+    const oneActivityTag = ACTIVITY_GENRES_CATEGORIZED[0].activities[0];
+    const pool = buildSwipeCandidatePool([oneFoodTag, oneActivityTag], 20);
+    assert.equal(pool.length, 15);
   });
 
   test('returns empty once nothing is left', () => {
     const pool = buildSwipeCandidatePool(getAllDomainTags(), 10);
     assert.deepEqual(pool, []);
+  });
+
+  // --- Bug fix: a domain the user already engaged with in the vibe picker is skipped
+  // entirely, not just the exact tag(s) picked (reported live: picking a food tag under
+  // Foodie still surfaced an unrelated "FOOD: Thai" card in the swipe-refine deck) ----------
+
+  test('skips a whole domain once any one of its tags is already selected, not just that exact tag', () => {
+    const pool = buildSwipeCandidatePool(['Japanese'], 50); // cap high enough to see everything left
+    const foodTags = new Set(FOOD_GENRES_CATEGORIZED.flatMap(g => g.activities));
+    assert.ok(
+      pool.every(tag => !foodTags.has(tag)),
+      'no Food-domain tag (e.g. "Thai") should be proposed once any Food tag is already selected'
+    );
+  });
+
+  test('a domain with zero selections is left untouched and still proposes its tags', () => {
+    const pool = buildSwipeCandidatePool(['Japanese'], 50);
+    const activityTags = ACTIVITY_GENRES_CATEGORIZED.flatMap(g => g.activities);
+    const eventTags = EVENT_GENRES_CATEGORIZED.flatMap(g => g.activities);
+    for (const tag of [...activityTags, ...eventTags]) {
+      assert.ok(pool.includes(tag), `${tag} should still be proposed — its domain has no selections`);
+    }
+  });
+
+  test('a category-node bulk-selection (e.g. tapping Asian under Foodie pre-fix, or any multi-tag pick) blocks the whole domain', () => {
+    const pool = buildSwipeCandidatePool(['Chinese', 'Japanese', 'Thai'], 50);
+    const foodTags = new Set(FOOD_GENRES_CATEGORIZED.flatMap(g => g.activities));
+    assert.ok(pool.every(tag => !foodTags.has(tag)));
   });
 });
