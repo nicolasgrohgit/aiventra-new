@@ -321,6 +321,49 @@ this is still pre-release/beta.
   `npm test` (248/248) all clean; no device/simulator available in this environment, so this
   was verified by code-reading + type-check + lint + the existing test suite, not an on-screen
   visual check.
+- **Resolved the `expo doctor` dependency drift against Expo SDK 54, originally logged as a
+  Roadmap noted item during the 0.0.40 build and carried unaddressed through the 0.0.41
+  release (that Roadmap noted entry is now removed as superseded by this fix).** Re-ran
+  `npx expo install --check` fresh rather than trusting that entry's numbers verbatim — they
+  still matched exactly. Investigated each flagged package before bumping, since a
+  major-version change can carry breaking API/native surface even when "recommended":
+  - **`@sentry/react-native` `^8.23.0` → `~7.2.0` — a genuine downgrade, confirmed correct, not a
+    stale doctor note.** `node_modules/expo/bundledNativeModules.json` (the live manifest shipped
+    inside the installed `expo@54.0.33`/`54.0.37` package, i.e. Expo's own authoritative
+    compatibility record for this SDK) really does pin `~7.2.0`. Sentry's own upstream changelog
+    confirms why: 8.0.0 raised iOS/tvOS to 15.0+, requires Android Gradle Plugin 7.4.0+/Sentry
+    Gradle Plugin 6.0.0+, and 8.23.0 additionally ships Swift code in `RNSentry` requiring
+    `use_modular_headers!` in a non-modularized `Podfile` — native/build-toolchain requirements
+    SDK 54's tested config predates, not something this project's build is confirmed ready for.
+    No breaking changes to `Sentry.init`/`Sentry.wrap`/`tracesSampleRate` between 7.2.0 and
+    8.23.0, which is all `app/_layout.tsx` actually calls — so the downgrade needed no code
+    changes.
+  - **`expo-calendar` `~14.0.4` → `~15.0.8`.** No breaking changes to any of the APIs
+    `lib/calendar.ts` calls (`requestCalendarPermissionsAsync`, `getCalendarPermissionsAsync`,
+    `getCalendarsAsync`, `EntityTypes`, `getEventsAsync`) between these versions, but the
+    `Event.location` field's TypeScript type tightened to `string | null` (previously effectively
+    `string | undefined`), which doesn't match this app's own `CalendarEvent.location?: string`
+    shape (`lib/free-time.ts`) — `npx tsc --noEmit` caught this immediately post-bump. Fixed by
+    normalizing `evt.location ?? undefined` at all three device-event mapping sites in
+    `lib/calendar.ts` (`getDeviceEventsForToday`, `getDeviceEventsForDateRange`,
+    `scanForUpcomingTripSignals`); no behavior change, since a `null` location was already
+    functionally "no location" and is now represented the same way this app already expects.
+  - **Patch-level bumps applied as recommended, no code changes needed:** `expo` (`~54.0.33` →
+    `~54.0.37`), `expo-constants` (`~18.0.13` → `~18.0.14`), `expo-font` (`~14.0.11` →
+    `~14.0.12`), `expo-linking` (`~8.0.11` → `~8.0.12`), `expo-router` (`~6.0.23` → `~6.0.24`),
+    `expo-web-browser` (`~15.0.10` → `~15.0.11`).
+  - All 8 packages installed via `npx expo install <pkg>@<version>` (not plain `npm install`) so
+    peer-dependency resolution stayed Expo-aware. This itself surfaced one more required change:
+    `expo install` auto-registered `@sentry/react-native`, `expo-font`, and `expo-web-browser` as
+    Expo config plugins in `app.json` — these newly-bumped versions ship config plugins that
+    weren't previously wired in; leaving them unregistered would silently skip their native-side
+    setup at prebuild time, so this is a required part of the bump, not scope creep.
+  - Verified clean: `npx tsc --noEmit`, `npm run lint`, `npm test` (248/248 passing), and
+    `npx expo-doctor` now reports 18/18 checks passed (was 17/18). No device/simulator available
+    in this environment — the `expo-calendar` major bump touches a native module (device calendar
+    read permissions/behavior), so a real-device smoke test of calendar-permission flows is
+    recommended before the next release ships, even though nothing in this app's own usage of it
+    changed at the API level.
 
 ### Roadmap noted
 - **CRITICAL — Google Sign-In fails on Android with "A non-recoverable sign in failure occurred"
@@ -406,17 +449,6 @@ this is still pre-release/beta.
   booking/ticketing integration, a narrower calendar-signal net than TripIt's inbox-scanning,
   no automatic friend-proximity detection, and the local-infra reliability gap versus every
   well-funded competitor named. Investigated, not built.
-- **`expo doctor` reports real dependency drift against the installed Expo SDK (54), surfaced
-  during the 0.0.40 local build.** Non-fatal today (the local build proceeds past it), but
-  worth resolving before it becomes blocking: major-version mismatches on
-  `@sentry/react-native` (declared `^8.23.0` in `package.json`, SDK 54 expects `~7.2.0`) and
-  `expo-calendar` (declared `~14.0.4`, SDK 54 expects `~15.0.8`), plus patch-level drift on six
-  more `expo-*` packages (`expo`, `expo-constants`, `expo-font`, `expo-linking`,
-  `expo-router`, `expo-web-browser`). Pre-existing — confirmed via `git diff` against the
-  0.0.39 release commit that `package.json` was untouched by the 0.0.40 sprint, so this drift
-  predates it. Not investigated further here (which direction is safe to bump, especially the
-  Sentry major-version jump, needs its own look) — `npx expo install --check` is the fastest
-  way to see current recommendations when this gets picked up.
 
 ## [0.0.41] - 2026-09-11
 ### Added
