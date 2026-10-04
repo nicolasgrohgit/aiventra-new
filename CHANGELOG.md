@@ -6,6 +6,25 @@ this is still pre-release/beta.
 
 ## [Unreleased]
 
+## [0.0.43] - 2026-10-04
+### Added
+- **Plan status card on the Profile screen** — the free-tier trip cap and subscription tier
+  (shipped in 0.0.42) had no visible surface anywhere in the app; a user genuinely couldn't
+  tell whether they were on Free or Premium, or how many trips they had left this month.
+  - Free-tier users see "Free Plan" + the existing `tripQuota` data (`N of M trips left this
+    month · resets <date>`, the same server-computed field `trips.tsx`'s quota indicator
+    already reads — no new fetch) plus a "See Premium Plans →" link.
+  - Premium users (reachable today only via the admin-token subscription override — see
+    0.0.42) see a plain "Premium Plan — Unlimited trips" badge, no button.
+  - New `components/profile/plan-comparison-modal.tsx`: tapping "See Premium Plans" opens an
+    info-only comparison modal (free vs. premium pricing and the full premium feature list
+    from `docs/monetization-strategy.md`'s finalized decisions). The "Upgrade to Premium"
+    button is intentionally non-functional (shows a "Coming soon" alert) — there is still no
+    real RevenueCat/Play Billing integration, so a working purchase button would be
+    misleading; the point of this pass is explaining the freemium model exists, not
+    processing payment.
+  - No backend or model changes — purely new UI reading fields already synced onto `user`.
+
 ## [0.0.42] - 2026-09-17
 ### Added
 - **Free-tier trip cap (3 scheduled trips/calendar month, configurable) + a manual admin

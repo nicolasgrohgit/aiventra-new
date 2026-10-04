@@ -18,6 +18,7 @@ import { CategorizedSelectionModal } from '@/components/profile/categorized-sele
 import { GenericSelectionModal } from '@/components/profile/generic-selection-modal';
 import { VersionHistoryModal } from '@/components/profile/version-history-modal';
 import { SuggestionFormModal } from '@/components/profile/suggestion-form-modal';
+import { PlanComparisonModal } from '@/components/profile/plan-comparison-modal';
 
 export const COMMON_DIETS = ['Vegetarian', 'Vegan', 'Halal', 'Kosher', 'Gluten-Free', 'Keto', 'Nut-Free'];
 
@@ -52,6 +53,14 @@ export default function ProfileScreen() {
   const { user, updatePreferences, updateUser, logout } = useAuth();
   // Derived from app.json rather than a second hardcoded copy, so the two can't drift apart.
   const appVersion = Constants.expoConfig?.version || CHANGELOG_HISTORY[0]?.version || '1.0.0';
+
+  // Mirrors lib/trip-quota.ts's isPremiumEntitled server-side check (grace_period still
+  // counts as full access) — can't import that file directly, it pulls in Mongoose models.
+  const isPremium = user?.subscription?.tier === 'premium'
+    && (user.subscription.status === 'active' || user.subscription.status === 'grace_period');
+  const tripQuotaResetLabel = user?.tripQuota?.resetsAt
+    ? new Date(user.tripQuota.resetsAt).toLocaleDateString(undefined, { month: 'long', day: 'numeric' })
+    : null;
 
   const [firstName, setFirstName] = useState(user?.firstName || '');
   const [lastName, setLastName] = useState(user?.lastName || '');
@@ -118,6 +127,7 @@ export default function ProfileScreen() {
   const [showEventModal, setShowEventModal] = useState(false);
   const [showVersionModal, setShowVersionModal] = useState(false);
   const [showSuggestionModal, setShowSuggestionModal] = useState(false);
+  const [showPlanModal, setShowPlanModal] = useState(false);
   // Disables the avatar tap target and swaps in a spinner while the pick -> crop -> resize ->
   // compress pipeline runs, so a slow device/large source photo can't be tapped again mid-flight
   // (which would kick off a second concurrent updateUser call).
@@ -261,6 +271,35 @@ export default function ProfileScreen() {
           </View>
         </View>
 
+        {/* Reads the same user.subscription/tripQuota fields trips.tsx's quota indicator
+            already reads (server-computed, synced via hooks/useAuth.tsx) — no new fetch.
+            Premium is only reachable today via the admin-token override route; there's no
+            real payment flow yet, which is why "See Premium Plans" opens an info/comparison
+            modal rather than any purchase action. */}
+        <View style={styles.engineConfigCard}>
+          {isPremium ? (
+            <>
+              <Text style={styles.cardHeader}>Premium Plan</Text>
+              <Text style={styles.cardDesc}>Unlimited trips and full access to every Premium feature.</Text>
+            </>
+          ) : (
+            <>
+              <Text style={styles.cardHeader}>Free Plan</Text>
+              {user?.tripQuota && user.tripQuota.limit !== null ? (
+                <Text style={styles.cardDesc}>
+                  {user.tripQuota.remaining} of {user.tripQuota.limit} trips left this month
+                  {tripQuotaResetLabel ? ` · resets ${tripQuotaResetLabel}` : ''}
+                </Text>
+              ) : (
+                <Text style={styles.cardDesc}>3 scheduled trips per month.</Text>
+              )}
+              <TouchableOpacity style={styles.seePlansButton} onPress={() => setShowPlanModal(true)} activeOpacity={0.7}>
+                <Text style={styles.seePlansButtonText}>See Premium Plans →</Text>
+              </TouchableOpacity>
+            </>
+          )}
+        </View>
+
         <View style={styles.engineConfigCard}>
            <Text style={styles.cardHeader}>Personal Details</Text>
            <Text style={styles.cardDesc}>Manage your basic identity and contact information.</Text>
@@ -381,6 +420,7 @@ export default function ProfileScreen() {
       <CategorizedSelectionModal visible={showEventModal} close={() => setShowEventModal(false)} title="Event Types" description="Select the categories of live entertainment and events you would like to discover." groupedOptions={EVENT_GENRES_CATEGORIZED} selected={eventGenres} onSelectedChange={setEventGenres} category="Event" />
       <VersionHistoryModal visible={showVersionModal} close={() => setShowVersionModal(false)} history={CHANGELOG_HISTORY} />
       <SuggestionFormModal visible={showSuggestionModal} close={() => setShowSuggestionModal(false)} />
+      <PlanComparisonModal visible={showPlanModal} close={() => setShowPlanModal(false)} />
 
     </View>
   );
@@ -405,6 +445,8 @@ const styles = StyleSheet.create({
   cardHeader: { color: '#F8FAFC', fontSize: 20, fontWeight: '700', marginBottom: 8 },
   cardDesc: { color: '#64748B', fontSize: 14, lineHeight: 22 },
   separator: { height: 1, backgroundColor: '#1E293B', marginVertical: 24 },
+  seePlansButton: { marginTop: 16, alignSelf: 'flex-start' },
+  seePlansButtonText: { color: '#3B82F6', fontSize: 15, fontWeight: '700' },
   
   inputLabel: { color: '#DBEAFE', fontSize: 13, fontWeight: '700', textTransform: 'uppercase', marginBottom: 8 },
   input: { backgroundColor: '#1E293B', borderWidth: 1, borderColor: '#1E293B', borderRadius: 12, padding: 14, color: '#FFF', fontSize: 16, marginBottom: 20 },
