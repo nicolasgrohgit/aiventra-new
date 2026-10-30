@@ -18,6 +18,9 @@ interface AuthContextType {
   completeOnboarding: (preferences: any) => void;
   updatePreferences: (newPreferences: any) => void;
   updateUser: (newUserData: any) => void;
+  // Re-pulls the profile (incl. server-computed subscription/tripQuota) on demand — e.g. the
+  // subscription screen on open, since otherwise it's only refreshed at boot.
+  refreshUser: () => Promise<void>;
   isReady: boolean;
 }
 
@@ -30,6 +33,7 @@ const AuthContext = createContext<AuthContextType>({
   completeOnboarding: () => {},
   updatePreferences: () => {},
   updateUser: () => {},
+  refreshUser: async () => {},
   isReady: false
 });
 
@@ -61,6 +65,13 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     } catch (err) {
       console.warn("Could not sync profile with backend server. Offline mode active:", err);
     }
+  };
+
+  const refreshUser = async () => {
+    const id = user?._id || user?.id;
+    // Offline/mock users have no server record to refresh (see the mock_ ID convention).
+    if (!id || String(id).startsWith('mock_')) return;
+    await syncProfileFromServer(id);
   };
 
   useEffect(() => {
@@ -277,6 +288,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       completeOnboarding,
       updatePreferences,
       updateUser,
+      refreshUser,
       isReady
     }}>
       {children}

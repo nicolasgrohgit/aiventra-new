@@ -64,6 +64,7 @@ function InitialLayout() {
       <Stack.Screen name="login" options={{ headerShown: false, animation: 'fade' }} />
       <Stack.Screen name="onboarding" options={{ headerShown: false, animation: 'slide_from_right' }} />
       <Stack.Screen name="recommendation" options={{ presentation: 'modal', title: 'Smart Suggestions' }} />
+      <Stack.Screen name="subscription" options={{ headerShown: false, animation: 'slide_from_right' }} />
     </Stack>
   );
 }

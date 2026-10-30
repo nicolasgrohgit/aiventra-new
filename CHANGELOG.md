@@ -5,6 +5,31 @@ All notable changes to Odys.ai are documented here. Format loosely follows
 this is still pre-release/beta.
 
 ## [Unreleased]
+### Added
+- **Admin "Users & Billing" tab** in `public/admin.html` (now tabbed: Vetted Places / Users &
+  Billing). Billing overview counts (total / free / premium / grace / canceled / expired /
+  free users already at this month's cap), an editor for the free-tier monthly trip cap
+  (previously a direct Mongo edit only), and a searchable user table (email, name, joined, last
+  active, plan, trips used this month vs. cap) with inline per-user plan editing via the
+  existing `PUT /admin/api/users/:id/subscription`.
+  - New admin-token routes: `GET /admin/api/users` (`?q=` search, `?plan=free|premium`,
+    newest 200), `GET /admin/api/billing/summary`, `GET/PUT /admin/api/app-config/trip-cap`
+    (integer 1–100; same-instance cache cleared immediately, other instances within ~60s).
+- **In-app Subscription screen** (`app/subscription.tsx`), opened by tapping the Profile plan
+  card: current plan + status (renewal date, grace-period payment warning, canceled/expired),
+  trip-usage bar with reset date, free vs. Premium comparison (free cap now read from the
+  server rather than hardcoded "3"), and "Manage subscription in Google Play" for real Play
+  subscriptions. Refreshes the profile on open and on pull-to-refresh (new `refreshUser()` on
+  `useAuth`), so a server-side plan change shows without restarting the app. Upgrade is still
+  "Coming soon" — no RevenueCat yet. Replaces `components/profile/plan-comparison-modal.tsx`.
+- `lib/subscription.ts` — Mongoose-free entitlement/plan logic (`isPremiumEntitled`,
+  `classifySubscription`, `summarizeSubscriptions`, `describeSubscription`, `parseTripCap`)
+  shared by server and app; removes Profile's mirrored copy of the entitlement check.
+
+### Fixed
+- Admin API routes used `strictLimiter` (10 requests / 15 min per IP, shared across all of
+  them), so normal use of the admin page hit 429s within minutes. They now use `adminLimiter`,
+  which keeps the 10-attempt ceiling but only counts failed requests.
 
 ## [0.0.43] - 2026-10-04
 ### Added

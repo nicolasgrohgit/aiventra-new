@@ -26,7 +26,8 @@ import Place from './models/Place';
 import Suggestion from './models/Suggestion';
 import TripCreationEvent from './models/TripCreationEvent';
 import { ensurePlacesForCity, refreshNearbyPlacesLive } from './lib/places-population';
-import { getTripQuotaForUser, isPremiumEntitled } from './lib/trip-quota';
+import { getTripQuotaForUser, isPremiumEntitled, getMonthlyTripCap, setMonthlyTripCap, getCurrentMonthBoundaries } from './lib/trip-quota';
+import { summarizeSubscriptions, parseTripCap, MAX_MONTHLY_TRIP_CAP } from './lib/subscription';
 import { searchCities } from './lib/geocoding';
 import { sendPushNotification } from './lib/push-notifications';
 import { sendMail } from './lib/mailer';
@@ -96,6 +97,20 @@ app.use(globalLimiter);
 const strictLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later.' }
+});
+
+// For the /admin/api/* routes: the shared-secret check has no account to lock out, so
+// throttling is the brute-force defense — but only *failed* attempts need throttling.
+// strictLimiter counted every call, so a single admin page load (several requests) burned
+// through its 10-per-15-min budget almost immediately. skipSuccessfulRequests keeps the
+// same 10-failures ceiling on token guessing while letting a valid token use the page freely.
+const adminLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  skipSuccessfulRequests: true,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests, please try again later.' }
@@ -191,7 +206,7 @@ function timingSafeStringEqual(a: string, b: string): boolean {
 // token and echoes it back on every admin API call (see public/admin.html) — this is what
 // actually stops that page from being useful to anyone who doesn't have the token, since the
 // page itself can't be gated at the express.static level without restructuring. Every route
-// using this also goes through strictLimiter (see its call sites below) — this shared-secret
+// using this also goes through adminLimiter (see its call sites below) — this shared-secret
 // check has no per-user account to lock out, so throttling attempts is the only brute-force
 // defense available.
 function requireAdminToken(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -1690,7 +1705,7 @@ app.put('/api/friend-requests/:id/respond', authenticate, async (req: AuthedRequ
 // source: 'curated' server-side, regardless of what a client sends, so this is the one and
 // only path that can create permanent, vetted entries — everything else in the app only
 // ever produces source: 'generated' filler (see lib/places-population.ts).
-app.get('/admin/api/places', strictLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
+app.get('/admin/api/places', adminLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
   try {
     const filter: any = {};
     if (typeof req.query.city === 'string' && req.query.city.trim()) {
@@ -1704,7 +1719,7 @@ app.get('/admin/api/places', strictLimiter, requireAdminToken, async (req: Authe
   }
 });
 
-app.post('/admin/api/places', strictLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
+app.post('/admin/api/places', adminLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
   try {
     const { name, city, category, genre, rating, description, estimatedDuration, distanceKm } = req.body;
     if (!name || !city || !category || !genre) {
@@ -1729,7 +1744,7 @@ app.post('/admin/api/places', strictLimiter, requireAdminToken, async (req: Auth
   }
 });
 
-app.put('/admin/api/places/:id', strictLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
+app.put('/admin/api/places/:id', adminLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
   try {
     const { name, city, category, genre, rating, description, estimatedDuration, distanceKm } = req.body;
     const updateData: any = { source: 'curated' };
@@ -1761,7 +1776,7 @@ app.put('/admin/api/places/:id', strictLimiter, requireAdminToken, async (req: A
   }
 });
 
-app.delete('/admin/api/places/:id', strictLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
+app.delete('/admin/api/places/:id', adminLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
   try {
     const place = await Place.findByIdAndDelete(req.params.id);
     if (!place) {
@@ -1787,7 +1802,7 @@ const VALID_SUBSCRIPTION_TIERS = ['free', 'premium'] as const;
 const VALID_SUBSCRIPTION_STATUSES = ['active', 'grace_period', 'canceled', 'expired'] as const;
 const VALID_SUBSCRIPTION_PLATFORMS = ['ios', 'android', 'web'] as const;
 
-app.get('/admin/api/users/:id/subscription', strictLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
+app.get('/admin/api/users/:id/subscription', adminLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
   try {
     const user = await User.findById(req.params.id).select('email subscription');
     if (!user) {
@@ -1800,7 +1815,7 @@ app.get('/admin/api/users/:id/subscription', strictLimiter, requireAdminToken, a
   }
 });
 
-app.put('/admin/api/users/:id/subscription', strictLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
+app.put('/admin/api/users/:id/subscription', adminLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
   try {
     const { tier, status, platform, currentPeriodEnd } = req.body;
     if (!VALID_SUBSCRIPTION_TIERS.includes(tier)) {
@@ -1828,6 +1843,106 @@ app.put('/admin/api/users/:id/subscription', strictLimiter, requireAdminToken, a
     res.json({ userId: user._id, email: user.email, subscription: user.subscription || null });
   } catch (error: any) {
     reportError(error, req, 'set admin user subscription failed');
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Admin user list + billing overview for public/admin.html's "Users & Billing" tab. Read-only
+// here; plan changes go through PUT /admin/api/users/:id/subscription above. Explicit field
+// selection — avatar_url is a base64 data URI (see lib/avatar.ts) and would bloat a list
+// response, and encryptedDataKey has no business leaving the server.
+const ADMIN_USER_LIST_FIELDS = 'email full_name firstName lastName google_id createdAt lastAppAccess subscription';
+const ADMIN_USER_LIST_LIMIT = 200;
+
+app.get('/admin/api/users', adminLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    const filter: any = {};
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    if (q) {
+      const rx = { $regex: escapeRegExp(q), $options: 'i' };
+      filter.$or = [{ email: rx }, { full_name: rx }, { firstName: rx }, { lastName: rx }];
+    }
+    const plan = typeof req.query.plan === 'string' ? req.query.plan : '';
+    if (plan === 'free') {
+      filter.$and = [{ $or: [{ 'subscription.tier': { $ne: 'premium' } }, { subscription: { $exists: false } }] }];
+    } else if (plan === 'premium') {
+      filter['subscription.tier'] = 'premium';
+    }
+    const users = await User.find(filter)
+      .select(ADMIN_USER_LIST_FIELDS)
+      .sort({ createdAt: -1 })
+      .limit(ADMIN_USER_LIST_LIMIT)
+      .lean();
+
+    // One aggregation for this month's trip-creation counts across the whole page, instead
+    // of a getTripQuotaForUser round-trip per row.
+    const { start, end } = getCurrentMonthBoundaries();
+    const counts = await TripCreationEvent.aggregate([
+      { $match: { user_id: { $in: users.map((u: any) => u._id) }, createdAt: { $gte: start, $lt: end } } },
+      { $group: { _id: '$user_id', n: { $sum: 1 } } }
+    ]);
+    const countByUser = new Map(counts.map((c: any) => [c._id.toString(), c.n]));
+
+    res.json({
+      users: users.map((u: any) => ({
+        ...u,
+        tripsThisMonth: countByUser.get(u._id.toString()) || 0,
+        premiumEntitled: isPremiumEntitled(u)
+      })),
+      truncated: users.length === ADMIN_USER_LIST_LIMIT
+    });
+  } catch (error: any) {
+    reportError(error, req, 'list admin users failed');
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/admin/api/billing/summary', adminLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    const users = await User.find({}).select('subscription').lean();
+    const summary = summarizeSubscriptions(users.map((u: any) => u.subscription));
+    const tripCap = await getMonthlyTripCap();
+
+    // Free (non-entitled) users who've already used this month's full allowance — the
+    // people most likely to hit the paywall, so worth watching during the beta.
+    const { start, end } = getCurrentMonthBoundaries();
+    const atCapGroups = await TripCreationEvent.aggregate([
+      { $match: { createdAt: { $gte: start, $lt: end } } },
+      { $group: { _id: '$user_id', n: { $sum: 1 } } },
+      { $match: { n: { $gte: tripCap } } }
+    ]);
+    const entitledIds = new Set(users.filter((u: any) => isPremiumEntitled(u)).map((u: any) => u._id.toString()));
+    const freeUsersAtCap = atCapGroups.filter((g: any) => !entitledIds.has(g._id.toString())).length;
+
+    res.json({ ...summary, tripCap, freeUsersAtCap, monthStart: start.toISOString(), monthEnd: end.toISOString() });
+  } catch (error: any) {
+    reportError(error, req, 'admin billing summary failed');
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// The free-tier monthly cap, previously only changeable via a direct Mongo edit of the
+// AppConfig doc (see lib/trip-quota.ts).
+app.get('/admin/api/app-config/trip-cap', adminLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    res.json({ value: await getMonthlyTripCap(), max: MAX_MONTHLY_TRIP_CAP });
+  } catch (error: any) {
+    reportError(error, req, 'get admin trip cap failed');
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.put('/admin/api/app-config/trip-cap', adminLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    const value = parseTripCap(req.body?.value);
+    if (value === null) {
+      return res.status(400).json({ error: `value must be a whole number between 1 and ${MAX_MONTHLY_TRIP_CAP}` });
+    }
+    await setMonthlyTripCap(value);
+    req.log.info({ event: 'admin_trip_cap_change', value }, 'admin set free-tier monthly trip cap');
+    res.json({ value, max: MAX_MONTHLY_TRIP_CAP });
+  } catch (error: any) {
+    reportError(error, req, 'set admin trip cap failed');
     res.status(500).json({ error: 'Internal server error' });
   }
 });

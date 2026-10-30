@@ -1,6 +1,7 @@
 import AppConfig from '../models/AppConfig';
 import TripCreationEvent from '../models/TripCreationEvent';
 import { IUser } from '../models/User';
+import { isPremiumEntitled } from './subscription';
 
 // Server-side free-tier trip cap: entitlement logic shared by POST /api/trips (the actual
 // gate) and GET /api/users/:id (the tripQuota field the client reads to show "N of M trips
@@ -39,6 +40,15 @@ export async function getMonthlyTripCap(): Promise<number> {
   return value;
 }
 
+// Admin-route write path (PUT /admin/api/app-config/trip-cap in server.ts). Callers validate
+// with lib/subscription.ts's parseTripCap first. Clears this instance's cache so the change is
+// immediate here; other Cloud Run instances pick it up within CACHE_TTL_MS.
+export async function setMonthlyTripCap(value: number): Promise<number> {
+  await AppConfig.findOneAndUpdate({ key: CONFIG_KEY }, { $set: { value } }, { upsert: true });
+  clearTripCapCache();
+  return value;
+}
+
 // Pure — the calendar-month boundaries (not rolling 30 days, per the finalized decisions)
 // a given instant falls in, in UTC. Split out so it's directly unit-testable without a
 // database (see lib/trip-quota.test.ts).
@@ -48,14 +58,9 @@ export function getCurrentMonthBoundaries(now: Date = new Date()): { start: Date
   return { start, end };
 }
 
-// Full premium access includes the billing-retry grace period (a renewal payment failed but
-// Apple/Google are still retrying) — the user must not be downgraded to the free cap just
-// because a charge is pending retry. 'canceled'/'expired' fall through to the free cap even
-// if `tier` is still 'premium' (e.g. a lapsed subscription whose tier hasn't been reset yet).
-export function isPremiumEntitled(user: Pick<IUser, 'subscription'> | null | undefined): boolean {
-  const sub = user?.subscription;
-  return sub?.tier === 'premium' && (sub.status === 'active' || sub.status === 'grace_period');
-}
+// isPremiumEntitled lives in lib/subscription.ts (Mongoose-free, so the app can import it
+// too) — re-exported here so existing server-side imports keep working.
+export { isPremiumEntitled };
 
 export interface TripQuota {
   used: number | null;
