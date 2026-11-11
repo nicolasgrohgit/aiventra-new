@@ -71,6 +71,12 @@ export interface IUser extends Document {
     status: 'active' | 'grace_period' | 'canceled' | 'expired';
     platform?: 'ios' | 'android' | 'web';
     currentPeriodEnd?: Date;
+    // Provenance + RevenueCat bookkeeping (POST /api/webhooks/revenuecat, lib/revenuecat-events.ts):
+    // who last wrote this, which store product, and the RevenueCat event clock used to drop
+    // out-of-order webhook retries.
+    source?: 'admin' | 'revenuecat';
+    productId?: string;
+    lastEventAt?: Date;
   };
 }
 
@@ -99,7 +105,10 @@ const UserSchema = new Schema<IUser>({
     tier: { type: String, enum: ['free', 'premium'], default: 'free' },
     status: { type: String, enum: ['active', 'grace_period', 'canceled', 'expired'], default: 'active' },
     platform: { type: String, enum: ['ios', 'android', 'web'] },
-    currentPeriodEnd: { type: Date }
+    currentPeriodEnd: { type: Date },
+    source: { type: String, enum: ['admin', 'revenuecat'] },
+    productId: { type: String },
+    lastEventAt: { type: Date }
   }
 }, { timestamps: true, strict: false }); // strict: false only needed now for top-level ad hoc fields (firstName, homebase, etc.) — preferences.* is fully declared above
 

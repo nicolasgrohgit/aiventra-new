@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, ReactNode, useEffect } from
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { apiFetch, API_URL, setAuthToken } from '@/lib/api-client';
 import { registerForPushNotificationsAsync } from '@/lib/push-token';
+import { identifyPurchasesUser, resetPurchasesUser } from '@/lib/purchases';
 
 // Step 2 of the useAuth.tsx split (see docs/useauth-split-plan.md): this is now just
 // identity/session/onboarding. Trips, contacts, and events live in their own providers
@@ -20,7 +21,7 @@ interface AuthContextType {
   updateUser: (newUserData: any) => void;
   // Re-pulls the profile (incl. server-computed subscription/tripQuota) on demand — e.g. the
   // subscription screen on open, since otherwise it's only refreshed at boot.
-  refreshUser: () => Promise<void>;
+  refreshUser: () => Promise<any | null>;
   isReady: boolean;
 }
 
@@ -33,7 +34,7 @@ const AuthContext = createContext<AuthContextType>({
   completeOnboarding: () => {},
   updatePreferences: () => {},
   updateUser: () => {},
-  refreshUser: async () => {},
+  refreshUser: async () => null,
   isReady: false
 });
 
@@ -54,24 +55,26 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   // Re-fetches just the profile (not trips/contacts — those providers sync themselves)
   // so a returning user's data reflects anything changed server-side since their last visit.
-  const syncProfileFromServer = async (userId: string) => {
+  const syncProfileFromServer = async (userId: string): Promise<any | null> => {
     try {
       const userRes = await apiFetch(`${API_URL}/api/users/${userId}`);
       if (userRes.ok) {
         const userData = await userRes.json();
         setUser(userData);
         await AsyncStorage.setItem('@user', JSON.stringify(userData));
+        return userData;
       }
     } catch (err) {
       console.warn("Could not sync profile with backend server. Offline mode active:", err);
     }
+    return null;
   };
 
   const refreshUser = async () => {
     const id = user?._id || user?.id;
     // Offline/mock users have no server record to refresh (see the mock_ ID convention).
-    if (!id || String(id).startsWith('mock_')) return;
-    await syncProfileFromServer(id);
+    if (!id || String(id).startsWith('mock_')) return null;
+    return syncProfileFromServer(id);
   };
 
   useEffect(() => {
@@ -98,6 +101,15 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     };
     loadStorage();
   }, []);
+
+  // Keeps RevenueCat's app user id = the Odys user id (see lib/purchases.ts) across boot with a
+  // stored session, login, account switch, and logout — one effect keyed on the id rather than
+  // calls sprinkled through each path. No-op in builds without a RevenueCat key.
+  const userId = user?._id || user?.id || null;
+  useEffect(() => {
+    if (userId) identifyPurchasesUser(String(userId));
+    else resetPurchasesUser();
+  }, [userId]);
 
   // Shared by both login paths (email-only below, and loginWithGoogle) once the server has
   // actually returned a real {user, token} pair — persists the session and best-effort

@@ -1,19 +1,34 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Linking, RefreshControl } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert, Linking, RefreshControl, ActivityIndicator } from 'react-native';
+import type { PurchasesPackage } from 'react-native-purchases';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Constants from 'expo-constants';
 import { useAuth } from '@/hooks/useAuth';
 import { describeSubscription, isPremiumEntitled } from '@/lib/subscription';
 import { PlanComparison } from '@/components/subscription/plan-comparison';
+import { isPurchasesAvailable, getPremiumPackages, purchasePremiumPackage, restorePremiumPurchases } from '@/lib/purchases';
 
-// The user's plan, this month's trip usage, and the free vs. Premium comparison. Opened from
-// the Profile plan card. There's no purchase flow yet (RevenueCat/Play Billing not wired), so
-// "Upgrade" still just explains that — once RevenueCat lands, this screen is where the
-// offerings/purchase/restore calls go, followed by refreshUser() to pick up the
-// webhook-updated subscription.
+// The user's plan, this month's trip usage, the free vs. Premium comparison, and the purchase
+// flow. Opened from the Profile plan card. Purchases go through RevenueCat (lib/purchases.ts);
+// the screen then waits for the server to show Premium (set by the RevenueCat webhook) instead
+// of trusting the SDK's result. In builds without a RevenueCat key, "Upgrade" falls back to the
+// "Coming soon" explanation.
+
+// How long to wait for the webhook to land after a purchase/restore before telling the user
+// it's processing — typically a few seconds.
+const ENTITLEMENT_POLL_ATTEMPTS = 8;
+const ENTITLEMENT_POLL_INTERVAL_MS = 2000;
 
 const ANDROID_PACKAGE = Constants.expoConfig?.android?.package;
+
+function packageLabel(pkg: PurchasesPackage) {
+  switch (pkg.packageType) {
+    case 'ANNUAL': return { title: 'Annual', suffix: '/year' };
+    case 'MONTHLY': return { title: 'Monthly', suffix: '/month' };
+    default: return { title: pkg.product.title, suffix: '' };
+  }
+}
 
 function formatDate(d: Date | string | null | undefined) {
   if (!d) return null;
@@ -25,6 +40,10 @@ export default function SubscriptionScreen() {
   const insets = useSafeAreaInsets();
   const { user, refreshUser } = useAuth();
   const [refreshing, setRefreshing] = useState(false);
+  const [packages, setPackages] = useState<PurchasesPackage[]>([]);
+  const [packagesLoading, setPackagesLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const billingAvailable = isPurchasesAvailable();
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -48,8 +67,64 @@ export default function SubscriptionScreen() {
   const hasQuota = !isPremium && quota && quota.limit !== null;
   const usedRatio = hasQuota ? Math.min(1, quota.used / quota.limit) : 0;
 
+  useEffect(() => {
+    if (!billingAvailable || isPremium) return;
+    let cancelled = false;
+    setPackagesLoading(true);
+    getPremiumPackages()
+      .then((pkgs) => { if (!cancelled) setPackages(pkgs); })
+      .finally(() => { if (!cancelled) setPackagesLoading(false); });
+    return () => { cancelled = true; };
+  }, [billingAvailable, isPremium]);
+
+  // Polls the profile until the webhook-updated subscription shows Premium.
+  const waitForPremium = async (): Promise<boolean> => {
+    for (let i = 0; i < ENTITLEMENT_POLL_ATTEMPTS; i++) {
+      const fresh = await refreshUser();
+      if (isPremiumEntitled(fresh)) return true;
+      await new Promise((resolve) => setTimeout(resolve, ENTITLEMENT_POLL_INTERVAL_MS));
+    }
+    return false;
+  };
+
   const handleUpgradePress = () => {
     Alert.alert('Coming soon', 'Payments are launching soon — this will let you upgrade directly.');
+  };
+
+  const handlePurchase = async (pkg: PurchasesPackage) => {
+    setBusy(true);
+    try {
+      const { outcome, message } = await purchasePremiumPackage(pkg);
+      if (outcome === 'cancelled') return;
+      if (outcome === 'failed') {
+        Alert.alert('Purchase failed', message || 'Something went wrong. You have not been charged.');
+        return;
+      }
+      const active = await waitForPremium();
+      Alert.alert(
+        active ? 'Welcome to Premium' : 'Purchase received',
+        active ? 'Unlimited trips are unlocked.' : "Your purchase went through — Premium will appear here within a minute. Pull down to refresh."
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRestore = async () => {
+    setBusy(true);
+    try {
+      const { ok, hasPremium, message } = await restorePremiumPurchases();
+      if (!ok) {
+        Alert.alert('Restore failed', message || 'Could not reach Google Play. Try again later.');
+      } else if (!hasPremium) {
+        Alert.alert('Nothing to restore', 'No active Premium subscription was found for this Google account.');
+      } else {
+        const active = await waitForPremium();
+        Alert.alert('Purchases restored', active ? 'Premium is active again.' : 'Premium will appear here within a minute. Pull down to refresh.');
+      }
+    } finally {
+      setBusy(false);
+    }
   };
 
   const handleManagePress = () => {
@@ -111,7 +186,36 @@ export default function SubscriptionScreen() {
         <Text style={styles.sectionTitle}>{isPremium ? "What's included" : 'Compare plans'}</Text>
         <PlanComparison tripCap={quota?.limit ?? null} />
 
-        {!isPremium ? (
+        {!isPremium && billingAvailable ? (
+          <View>
+            {packagesLoading ? <ActivityIndicator color="#94A3B8" style={{ marginVertical: 20 }} /> : null}
+            {!packagesLoading && packages.length === 0 ? (
+              <Text style={styles.planDetail}>Plans couldn&apos;t be loaded right now. Pull down to try again.</Text>
+            ) : null}
+            {packages.map((pkg) => {
+              const { title, suffix } = packageLabel(pkg);
+              return (
+                <TouchableOpacity
+                  key={pkg.identifier}
+                  style={[styles.buyButton, busy && styles.buttonDisabled]}
+                  onPress={() => handlePurchase(pkg)}
+                  disabled={busy}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.buyButtonTitle}>{title}</Text>
+                  <Text style={styles.buyButtonPrice}>{pkg.product.priceString}{suffix}</Text>
+                </TouchableOpacity>
+              );
+            })}
+            {busy ? <ActivityIndicator color="#94A3B8" style={{ marginVertical: 12 }} /> : null}
+            <TouchableOpacity onPress={handleRestore} disabled={busy} style={styles.restoreButton}>
+              <Text style={styles.restoreButtonText}>Restore purchases</Text>
+            </TouchableOpacity>
+            <Text style={styles.legal}>Billed through Google Play. Renews automatically until canceled — cancel anytime in Google Play.</Text>
+          </View>
+        ) : null}
+
+        {!isPremium && !billingAvailable ? (
           <TouchableOpacity style={styles.upgradeButton} onPress={handleUpgradePress} activeOpacity={0.7}>
             <Text style={styles.upgradeButtonText}>Upgrade to Premium</Text>
           </TouchableOpacity>
@@ -147,6 +251,14 @@ const styles = StyleSheet.create({
   secondaryButtonText: { color: '#3B82F6', fontSize: 15, fontWeight: '700' },
 
   sectionTitle: { color: '#F8FAFC', fontSize: 18, fontWeight: '700', marginTop: 12, marginBottom: 14 },
+
+  buyButton: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#3B82F6', paddingVertical: 18, paddingHorizontal: 20, borderRadius: 16, marginBottom: 12 },
+  buttonDisabled: { opacity: 0.5 },
+  buyButtonTitle: { color: '#FFF', fontSize: 16, fontWeight: '800' },
+  buyButtonPrice: { color: '#FFF', fontSize: 16, fontWeight: '600' },
+  restoreButton: { alignSelf: 'center', paddingVertical: 12 },
+  restoreButtonText: { color: '#3B82F6', fontSize: 14, fontWeight: '600' },
+  legal: { color: '#64748B', fontSize: 12, lineHeight: 18, textAlign: 'center', marginTop: 4, marginBottom: 20 },
 
   upgradeButton: { backgroundColor: '#1E293B', paddingVertical: 18, borderRadius: 16, alignItems: 'center', marginBottom: 20, borderWidth: 1, borderColor: '#334155', opacity: 0.5 },
   upgradeButtonText: { color: '#94A3B8', fontSize: 16, fontWeight: '800' },

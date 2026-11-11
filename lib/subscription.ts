@@ -17,11 +17,22 @@ export interface SubscriptionState {
 
 // Full premium access includes the billing-retry grace period (a renewal payment failed but
 // Apple/Google are still retrying) — the user must not be downgraded to the free cap just
-// because a charge is pending retry. 'canceled'/'expired' fall through to the free cap even
-// if `tier` is still 'premium' (e.g. a lapsed subscription whose tier hasn't been reset yet).
-export function isPremiumEntitled(user: { subscription?: SubscriptionState | null } | null | undefined): boolean {
+// because a charge is pending retry. 'canceled' means auto-renew was turned off (that's what a
+// Play/RevenueCat CANCELLATION is): the user already paid for the current period, so access
+// continues until currentPeriodEnd — a canceled subscription with no/past period end (e.g. an
+// admin override) is not entitled. 'expired' is never entitled, even if `tier` is still
+// 'premium' (a lapsed subscription whose tier hasn't been reset yet).
+export function isPremiumEntitled(
+  user: { subscription?: SubscriptionState | null } | null | undefined,
+  now: Date = new Date()
+): boolean {
   const sub = user?.subscription;
-  return sub?.tier === 'premium' && (sub.status === 'active' || sub.status === 'grace_period');
+  if (sub?.tier !== 'premium') return false;
+  if (sub.status === 'active' || sub.status === 'grace_period') return true;
+  if (sub.status === 'canceled' && sub.currentPeriodEnd) {
+    return new Date(sub.currentPeriodEnd).getTime() > now.getTime();
+  }
+  return false;
 }
 
 // One bucket per user for the admin billing overview — a missing subscription or tier
@@ -47,7 +58,7 @@ export function summarizeSubscriptions(subs: (SubscriptionState | null | undefin
 
 // User-facing status line for the plan card / subscription screen. Dates are returned raw
 // (not formatted) so the caller formats them in the device locale.
-export function describeSubscription(sub: SubscriptionState | null | undefined): {
+export function describeSubscription(sub: SubscriptionState | null | undefined, now: Date = new Date()): {
   planName: 'Free' | 'Premium';
   statusLabel: string | null;
   periodEnd: Date | null;
@@ -60,6 +71,10 @@ export function describeSubscription(sub: SubscriptionState | null | undefined):
     case 'grace_period':
       return { planName: 'Premium', statusLabel: 'Payment issue — update your payment method to keep Premium', periodEnd: validPeriodEnd };
     case 'canceled':
+      // Still inside the paid period → still Premium, just not renewing (see isPremiumEntitled).
+      if (validPeriodEnd && validPeriodEnd.getTime() > now.getTime()) {
+        return { planName: 'Premium', statusLabel: 'Canceled — Premium until', periodEnd: validPeriodEnd };
+      }
       return { planName: 'Free', statusLabel: 'Premium canceled', periodEnd: null };
     case 'expired':
       return { planName: 'Free', statusLabel: 'Premium expired', periodEnd: null };

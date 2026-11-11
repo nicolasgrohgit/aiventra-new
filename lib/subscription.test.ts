@@ -24,6 +24,19 @@ describe('isPremiumEntitled', () => {
   });
 });
 
+describe('isPremiumEntitled — canceled (auto-renew off)', () => {
+  const now = new Date('2026-11-10T00:00:00Z');
+  test('stays entitled until the paid period ends', () => {
+    const user = { subscription: { tier: 'premium' as const, status: 'canceled' as const, currentPeriodEnd: '2026-11-30T00:00:00Z' } };
+    assert.equal(isPremiumEntitled(user, now), true);
+  });
+
+  test('not entitled once the period end has passed', () => {
+    const user = { subscription: { tier: 'premium' as const, status: 'canceled' as const, currentPeriodEnd: '2026-11-01T00:00:00Z' } };
+    assert.equal(isPremiumEntitled(user, now), false);
+  });
+});
+
 describe('classifySubscription', () => {
   test('free tier is free regardless of status', () => {
     assert.equal(classifySubscription({ tier: 'free', status: 'expired' }), 'free');
@@ -72,7 +85,17 @@ describe('describeSubscription', () => {
     assert.match(d.statusLabel!, /Payment issue/);
   });
 
-  test('canceled/expired premium read as Free (matches the entitlement check)', () => {
+  test('canceled inside the paid period is still Premium, with the end date', () => {
+    const d = describeSubscription(
+      { tier: 'premium', status: 'canceled', currentPeriodEnd: '2026-11-30T00:00:00Z' },
+      new Date('2026-11-10T00:00:00Z')
+    );
+    assert.equal(d.planName, 'Premium');
+    assert.match(d.statusLabel!, /Canceled/);
+    assert.equal(d.periodEnd?.toISOString(), '2026-11-30T00:00:00.000Z');
+  });
+
+  test('canceled (no period end) / expired premium read as Free (matches the entitlement check)', () => {
     assert.equal(describeSubscription({ tier: 'premium', status: 'canceled' }).planName, 'Free');
     assert.equal(describeSubscription({ tier: 'premium', status: 'expired' }).planName, 'Free');
   });

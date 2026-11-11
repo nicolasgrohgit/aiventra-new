@@ -22,9 +22,47 @@ this is still pre-release/beta.
   subscriptions. Refreshes the profile on open and on pull-to-refresh (new `refreshUser()` on
   `useAuth`), so a server-side plan change shows without restarting the app. Upgrade is still
   "Coming soon" — no RevenueCat yet. Replaces `components/profile/plan-comparison-modal.tsx`.
+- **RevenueCat / Google Play Billing integration** (inert until keys are configured — see
+  `docs/play-beta-setup.md` for the console setup).
+  - `POST /api/webhooks/revenuecat` — the only writer of real subscription state. Shared-secret
+    `Authorization` check (`REVENUECAT_WEBHOOK_SECRET`; unset = 503). Event mapping in
+    `lib/revenuecat-events.ts`: purchase/renewal/uncancel/product change → premium active,
+    `BILLING_ISSUE` → grace_period, `CANCELLATION` → canceled (access until period end),
+    `EXPIRATION` → free/expired. Out-of-order retries dropped via a stored `lastEventAt`
+    (conditional write); anonymous/unknown users, `TEST`, and non-`premium` events
+    acknowledged and ignored.
+  - `User.subscription` gains `source` (`admin`/`revenuecat`), `productId`, `lastEventAt`. The
+    admin override now stamps `source: 'admin'`.
+  - App: `react-native-purchases` + `lib/purchases.ts` (Android only, no-op without
+    `EXPO_PUBLIC_REVENUECAT_ANDROID_KEY`). RevenueCat app user id = Odys Mongo `_id`, kept in
+    sync with login/logout by one effect in `useAuth`. The Subscription screen lists the
+    offering's packages with store-localized prices, purchases, restores, and then polls the
+    profile until the webhook-set Premium shows up (falls back to "Coming soon" without a key).
+    `refreshUser()` now returns the fresh user.
+- `eas.json`: `production` profile (Play `.aab`, remote auto-incremented `versionCode`) and
+  `eas submit` config for the internal track (`secrets/play-service-account.json`, gitignored).
+- `docs/play-beta-setup.md` — step-by-step console guide: first Play upload, Play App Signing
+  SHA-1 for Google Sign-In, service account, subscription products, RevenueCat
+  app/entitlement/offering/webhook, closed testing.
+- `scripts/setup-billing.ts` (`npm run setup-billing status|gcp|play|revenuecat|all`,
+  `--dry-run`) — scripts the parts of `docs/play-beta-setup.md` that have an API: GCP service
+  account + key + webhook secret on Cloud Run, the Play `premium` subscription with both base
+  plans (region prices converted from $2.99 / $19.99), and the whole RevenueCat project
+  config (app, credentials, products, entitlement, offering, packages, webhook, SDK key into
+  `eas.json`). Idempotent. Only exercised in `--dry-run` so far.
+- `docs/differentiation-plan.md` — strengths vs. travel apps and the general chatbots, the
+  ranked list of differentiating features (overlap alerts, free-window nudges, mutual free
+  windows, "say it" box, booking-confirmation import), and the phased plan with decisions
+  pre-made per feature.
 - `lib/subscription.ts` — Mongoose-free entitlement/plan logic (`isPremiumEntitled`,
   `classifySubscription`, `summarizeSubscriptions`, `describeSubscription`, `parseTripCap`)
   shared by server and app; removes Profile's mirrored copy of the entitlement check.
+
+### Changed
+- A `canceled` premium subscription (auto-renew turned off) now stays entitled until
+  `currentPeriodEnd` instead of losing Premium immediately — the user already paid for the
+  period, matching how Play/RevenueCat define cancellation. `canceled` with no/past period end
+  (e.g. an admin override) is still free.
 
 ### Fixed
 - Admin API routes used `strictLimiter` (10 requests / 15 min per IP, shared across all of

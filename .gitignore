@@ -49,3 +49,6 @@ public/*.apk
 
 # personal Claude Code skills (not shared)
 .claude/skills/
+
+# Play Console service-account key for `eas submit` (see docs/play-beta-setup.md)
+secrets/

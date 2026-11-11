@@ -28,6 +28,7 @@ import TripCreationEvent from './models/TripCreationEvent';
 import { ensurePlacesForCity, refreshNearbyPlacesLive } from './lib/places-population';
 import { getTripQuotaForUser, isPremiumEntitled, getMonthlyTripCap, setMonthlyTripCap, getCurrentMonthBoundaries } from './lib/trip-quota';
 import { summarizeSubscriptions, parseTripCap, MAX_MONTHLY_TRIP_CAP } from './lib/subscription';
+import { mapRevenueCatEvent, resolveOdysUserId } from './lib/revenuecat-events';
 import { searchCities } from './lib/geocoding';
 import { sendPushNotification } from './lib/push-notifications';
 import { sendMail } from './lib/mailer';
@@ -185,6 +186,10 @@ function authenticate(req: AuthedRequest, res: express.Response, next: express.N
 }
 
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
+// Shared secret RevenueCat sends as the Authorization header on every webhook (configured in
+// RevenueCat → Integrations → Webhooks, see docs/play-beta-setup.md step 5). Unset = the
+// webhook endpoint refuses everything (fails closed, like ADMIN_TOKEN).
+const REVENUECAT_WEBHOOK_SECRET = process.env.REVENUECAT_WEBHOOK_SECRET;
 
 // Plain !== leaks how many leading bytes matched via response-time differences (a textbook
 // timing side-channel) — low-stakes while this only sits behind an unguessable tunnel
@@ -1827,7 +1832,7 @@ app.put('/admin/api/users/:id/subscription', adminLimiter, requireAdminToken, as
     if (platform !== undefined && !VALID_SUBSCRIPTION_PLATFORMS.includes(platform)) {
       return res.status(400).json({ error: `platform must be one of: ${VALID_SUBSCRIPTION_PLATFORMS.join(', ')}` });
     }
-    const subscription: Record<string, any> = { tier, status };
+    const subscription: Record<string, any> = { tier, status, source: 'admin' };
     if (platform !== undefined) subscription.platform = platform;
     if (currentPeriodEnd !== undefined) subscription.currentPeriodEnd = new Date(currentPeriodEnd);
 
@@ -1843,6 +1848,59 @@ app.put('/admin/api/users/:id/subscription', adminLimiter, requireAdminToken, as
     res.json({ userId: user._id, email: user.email, subscription: user.subscription || null });
   } catch (error: any) {
     reportError(error, req, 'set admin user subscription failed');
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// RevenueCat webhook — the only writer of real (non-admin) subscription state. Maps each event
+// through lib/revenuecat-events.ts and writes User.subscription. Responds 200 to anything it
+// deliberately ignores (unknown user, other entitlement, stale event) so RevenueCat doesn't
+// retry it; a 5xx (DB error, or requireDatabaseReady during a cold start) makes RevenueCat retry
+// with backoff, which is what we want there. No `authenticate`: RevenueCat isn't a user — the
+// shared Authorization secret is the auth.
+app.post('/api/webhooks/revenuecat', async (req: AuthedRequest, res: express.Response) => {
+  if (!REVENUECAT_WEBHOOK_SECRET) {
+    return res.status(503).json({ error: 'RevenueCat webhook is disabled: REVENUECAT_WEBHOOK_SECRET is not configured on the server.' });
+  }
+  const header = req.headers.authorization;
+  // Accept the secret as-is or "Bearer <secret>", whichever way it was entered in RevenueCat.
+  const provided = typeof header === 'string' ? header.replace(/^Bearer\s+/i, '') : '';
+  if (!provided || !timingSafeStringEqual(provided, REVENUECAT_WEBHOOK_SECRET)) {
+    return res.status(401).json({ error: 'Invalid authorization' });
+  }
+
+  try {
+    const event = req.body?.event;
+    const logBase = { event: 'revenuecat_webhook', rcEventId: event?.id, rcType: event?.type, rcEnvironment: event?.environment };
+    const userId = event ? resolveOdysUserId(event) : null;
+    if (!userId) {
+      req.log.warn({ ...logBase, appUserId: event?.app_user_id }, 'revenuecat webhook: no Odys user id on event, ignored');
+      return res.json({ ok: true, ignored: 'no matching user id' });
+    }
+    const user = await User.findById(userId).select('subscription');
+    if (!user) {
+      req.log.warn({ ...logBase, userId }, 'revenuecat webhook: user not found, ignored');
+      return res.json({ ok: true, ignored: 'user not found' });
+    }
+
+    const result = mapRevenueCatEvent(event, user.subscription?.lastEventAt);
+    if (result.action === 'ignore') {
+      req.log.info({ ...logBase, userId, reason: result.reason }, 'revenuecat webhook ignored');
+      return res.json({ ok: true, ignored: result.reason });
+    }
+
+    // Conditional write, so two concurrent deliveries can't apply out of order between the read
+    // above and this update.
+    const eventAt = result.subscription.lastEventAt;
+    const write = await User.updateOne(
+      { _id: userId, $or: [{ 'subscription.lastEventAt': { $exists: false } }, { 'subscription.lastEventAt': { $lte: eventAt } }] },
+      { $set: { subscription: result.subscription } },
+      { runValidators: true }
+    );
+    req.log.info({ ...logBase, userId, applied: write.modifiedCount > 0, subscription: result.subscription }, 'revenuecat webhook processed');
+    res.json({ ok: true });
+  } catch (error: any) {
+    reportError(error, req, 'revenuecat webhook failed');
     res.status(500).json({ error: 'Internal server error' });
   }
 });

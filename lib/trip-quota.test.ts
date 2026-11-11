@@ -44,7 +44,7 @@ describe('isPremiumEntitled', () => {
     assert.equal(isPremiumEntitled({ subscription: { tier: 'premium', status: 'grace_period' } } as any), true);
   });
 
-  test('false once canceled, even if tier is still premium', () => {
+  test('false once canceled with no paid period left, even if tier is still premium', () => {
     assert.equal(isPremiumEntitled({ subscription: { tier: 'premium', status: 'canceled' } } as any), false);
   });
 
