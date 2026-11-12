@@ -59,6 +59,11 @@ const SKIP_CLOUD_RUN = args.includes('--skip-cloud-run');
 
 class Blocked extends Error {}
 
+// A refused `gcloud … keys create` leaves a 0-byte file behind, so existence alone isn't enough.
+function hasPlayKey(): boolean {
+  return fs.existsSync(PLAY_KEY_PATH) && fs.statSync(PLAY_KEY_PATH).size > 0;
+}
+
 function log(msg: string) {
   console.log(msg);
 }
@@ -123,12 +128,24 @@ async function phaseGcp() {
     gcloud(['projects', 'add-iam-policy-binding', project, '--member', `serviceAccount:${saEmail}`, '--role', role, '--condition', 'None', '--quiet'], { mutating: true });
   }
 
+  let keyBlocked = false;
   step('Service account key → secrets/play-service-account.json');
-  if (!DRY_RUN && fs.existsSync(PLAY_KEY_PATH)) {
+  if (!DRY_RUN && !hasPlayKey()) fs.rmSync(PLAY_KEY_PATH, { force: true });
+  if (!DRY_RUN && hasPlayKey()) {
     log('  already present, not creating another key');
   } else {
-    gcloud(['iam', 'service-accounts', 'keys', 'create', PLAY_KEY_PATH, '--iam-account', saEmail, '--project', project], { mutating: true });
-    if (!DRY_RUN) fs.chmodSync(PLAY_KEY_PATH, 0o600);
+    try {
+      gcloud(['iam', 'service-accounts', 'keys', 'create', PLAY_KEY_PATH, '--iam-account', saEmail, '--project', project], { mutating: true });
+      if (!DRY_RUN) fs.chmodSync(PLAY_KEY_PATH, 0o600);
+    } catch (err: any) {
+      // Organizations created since 2024 enforce this by default. Lifting it is a security
+      // decision for the org owner, so report it and carry on with the steps that don't need
+      // the key rather than trying to override the policy from here.
+      if (!DRY_RUN) fs.rmSync(PLAY_KEY_PATH, { force: true });
+      if (!/iam\.disableServiceAccountKeyCreation/.test(err.message)) throw err;
+      keyBlocked = true;
+      log('  ! blocked by the org policy iam.disableServiceAccountKeyCreation — continuing without the key');
+    }
   }
 
   step(`Webhook shared secret → Secret Manager (${WEBHOOK_SECRET_NAME})`);
@@ -162,6 +179,16 @@ async function phaseGcp() {
     gcloud(['run', 'services', 'update', CLOUD_RUN_SERVICE, '--region', GCP_REGION, '--project', project, '--update-secrets', `${WEBHOOK_SECRET_NAME}=${WEBHOOK_SECRET_NAME}:latest`, '--quiet'], { mutating: true });
   }
 
+  if (keyBlocked) {
+    throw new Blocked(
+      `The rest of the gcp phase ran, but no key could be created for ${saEmail}:\n` +
+        '  the organization enforces constraints/iam.disableServiceAccountKeyCreation. RevenueCat and\n' +
+        '  `eas submit` both need a JSON key, so an org admin has to exempt this project: Cloud Console →\n' +
+        '  IAM & Admin → Organization policies → "Disable service account key creation" → Manage policy →\n' +
+        `  Override parent's policy → Enforcement off (project ${project}). That needs the Organization\n` +
+        '  Policy Administrator role on the organization. Then re-run: npm run setup-billing gcp'
+    );
+  }
   log(`\n✓ gcp done. HUMAN STEP: Play Console → Users and permissions → Invite new users →\n  ${saEmail}\n  App permissions for ${PACKAGE_NAME}: View app information, View financial data, Manage orders\n  and subscriptions, Release apps to testing tracks. Then: npm run setup-billing play`);
 }
 
@@ -253,7 +280,7 @@ async function phasePlay() {
     for (const plan of BASE_PLANS) log(`  [dry-run] POST ${PLAY_API}/subscriptions/${SUBSCRIPTION_ID}/basePlans/${plan.id}:activate`);
     return;
   }
-  if (!fs.existsSync(PLAY_KEY_PATH)) throw new Blocked('secrets/play-service-account.json is missing — run the gcp phase first.');
+  if (!hasPlayKey()) throw new Blocked('secrets/play-service-account.json is missing — run the gcp phase first.');
 
   const key = JSON.parse(fs.readFileSync(PLAY_KEY_PATH, 'utf8'));
   const jwt = new JWT({ email: key.client_email, key: key.private_key, scopes: ['https://www.googleapis.com/auth/androidpublisher'] });
@@ -376,7 +403,7 @@ async function phaseRevenueCat() {
   step('Play service-account credentials');
   if (!DRY_RUN && app.play_store?.play_service_account_credentials_configured) {
     log('  already configured');
-  } else if (DRY_RUN || fs.existsSync(PLAY_KEY_PATH)) {
+  } else if (DRY_RUN || hasPlayKey()) {
     const credentials = DRY_RUN ? '<key json>' : fs.readFileSync(PLAY_KEY_PATH, 'utf8');
     await rc('POST', `${P}/apps/${app.id}`, { play_store: { package_name: PACKAGE_NAME, play_service_account_credentials_json: credentials } });
     log('  uploaded (RevenueCat validates them against Play in the background — can take up to 36h)');
@@ -463,7 +490,7 @@ function phaseStatus() {
   const has = (p: string) => fs.existsSync(p);
   const mark = (ok: boolean) => (ok ? '✓' : '·');
   log(`Package: ${PACKAGE_NAME}\n`);
-  log(`${mark(has(PLAY_KEY_PATH))} secrets/play-service-account.json        (gcp phase)`);
+  log(`${mark(hasPlayKey())} secrets/play-service-account.json        (gcp phase)`);
   log(`${mark(has(WEBHOOK_SECRET_PATH))} secrets/revenuecat-webhook-secret        (gcp phase)`);
   log(`${mark(has(RC_KEY_PATH) || !!process.env.RC_API_KEY)} secrets/revenuecat-api-key               (you: RevenueCat v2 secret key)`);
   log(`${mark(!!eas.build?.preview?.env?.EXPO_PUBLIC_REVENUECAT_ANDROID_KEY)} eas.json EXPO_PUBLIC_REVENUECAT_ANDROID_KEY  (revenuecat phase)`);

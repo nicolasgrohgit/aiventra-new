@@ -19,6 +19,12 @@ phase to see what it would do without touching anything.
 | `npm run setup-billing revenuecat` | section 5 except "Connect to Google" | a RevenueCat **v2 secret key** (Project settings → API keys, project configuration read & write) saved as `secrets/revenuecat-api-key` |
 | `npm run setup-billing play` | section 4 | section 1 done, and the service account invited (end of section 3) |
 
+If `gcp` reports that key creation is blocked: the Google Cloud organization enforces
+`constraints/iam.disableServiceAccountKeyCreation`. An org admin has to turn enforcement off
+for this project (IAM & Admin → Organization policies → "Disable service account key
+creation" → Manage policy → Override parent's policy), then re-run `gcp`. The same block
+applies to creating the key by hand in section 3.
+
 Still by hand: section 1, section 2, the Play Console invite in section 3, "Connect to
 Google" + pasting the topic in section 5, and section 6. The `play` and `revenuecat` phases
 were written from the API references and have only been run with `--dry-run` so far — if a

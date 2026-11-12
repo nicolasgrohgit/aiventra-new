@@ -49,7 +49,10 @@ this is still pre-release/beta.
   account + key + webhook secret on Cloud Run, the Play `premium` subscription with both base
   plans (region prices converted from $2.99 / $19.99), and the whole RevenueCat project
   config (app, credentials, products, entitlement, offering, packages, webhook, SDK key into
-  `eas.json`). Idempotent. Only exercised in `--dry-run` so far.
+  `eas.json`). Idempotent. The `gcp` phase has run for real (service account, roles, webhook
+  secret bound on Cloud Run) except the key, which the organization's
+  `iam.disableServiceAccountKeyCreation` policy refuses; `play` and `revenuecat` are still
+  `--dry-run` only.
 - `docs/differentiation-plan.md` — strengths vs. travel apps and the general chatbots, the
   ranked list of differentiating features (overlap alerts, free-window nudges, mutual free
   windows, "say it" box, booking-confirmation import), and the phased plan with decisions
