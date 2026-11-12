@@ -27,6 +27,10 @@ export const API_URL = (() => {
 
 console.log('Connecting to Backend API at:', API_URL);
 
+// The server also hosts the static legal pages (public/privacy.html, public/delete-account.html)
+// — the same URL that's registered in the Play Console listing.
+export const PRIVACY_POLICY_URL = `${API_URL}/privacy.html`;
+
 // Session token issued by POST /api/auth/login. Every protected endpoint requires this —
 // it's what lets the server scope requests to "the authenticated user" instead of trusting
 // whatever userId a client happens to send. Module-scoped (not React state) so apiFetch can

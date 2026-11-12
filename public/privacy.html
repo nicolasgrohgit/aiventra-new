@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Odys.ai privacy policy</title>
+<style>
+  :root { --bg: #f7f7f8; --card: #fff; --text: #1a1a1a; --muted: #5f6368; --line: #e3e3e6; --accent: #0a7ea4; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f172a; --card: #17213a; --text: #f1f5f9; --muted: #a3aec2; --line: #2a3654; --accent: #5cc3e6; }
+  }
+  body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 24px 16px 48px; line-height: 1.6; }
+  main { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 8px 0 4px; }
+  h2 { font-size: 17px; margin: 32px 0 8px; }
+  p, li, td, th { font-size: 15px; }
+  .brand { font-weight: 700; color: var(--accent); font-size: 14px; letter-spacing: .02em; }
+  .muted { color: var(--muted); }
+  a { color: var(--accent); }
+  ul { padding-left: 20px; }
+  li { margin-bottom: 6px; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
+  th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+  th { font-size: 13px; color: var(--muted); font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand">Odys.ai</div>
+  <h1>Privacy policy</h1>
+  <p class="muted">Effective 12 November 2026</p>
+
+  <p>Odys.ai is a travel app for people who travel for work: it finds the free time around your schedule, suggests things to do near where you are staying, and shows which of your contacts are in the same city. It is published by Nicolas Groh, an individual developer, who is the controller of the data described here ("we", "us").</p>
+  <p>The short version: we store what you put into the app so it works across your devices and with your contacts. We do not sell it, we do not show ads, and you can delete all of it at any time.</p>
+
+  <h2>What we store on our servers</h2>
+  <ul>
+    <li><strong>Account.</strong> Your email address and name. If you sign in with Google, the Google account identifier, and the name and photo Google provides.</li>
+    <li><strong>Profile.</strong> What you choose to add: profile photo, date of birth, home city and which circles can see it, and your preferences (dietary limits, budget, currency, favourite kinds of food, activities and events, earliest meal times).</li>
+    <li><strong>Trips.</strong> Destination, dates, time zone, where you are staying (the name and coordinates of a hotel or city), which circles a trip is shared with, and suggestions you dismissed.</li>
+    <li><strong>Events.</strong> Events you create in the app, and the events from your phone's calendar that fall inside a trip's dates: title, start and end time, location. Titles, locations and place names are encrypted in our database with a key unique to your account.</li>
+    <li><strong>Circles.</strong> The contacts you add (name, email address, circle), friend requests, and event invitations and replies.</li>
+    <li><strong>Subscription.</strong> Whether you are on the free or Premium plan, its status, renewal date and product. We never receive your card or payment details; Google Play handles payment.</li>
+    <li><strong>Usage counters.</strong> When you last opened the app and how many trips you created this month (used for the free plan's limit).</li>
+    <li><strong>Notification token.</strong> The identifier that lets us send you a push notification, for example when someone invites you to an event.</li>
+    <li><strong>Feedback.</strong> What you write in "Have a suggestion" or "Report a problem", with the app version and phone model when you report a problem.</li>
+    <li><strong>Request logs.</strong> Technical logs of requests to our server (time, address requested, IP address, device type). Kept for 30 days.</li>
+  </ul>
+
+  <h2>What the app reads on your phone</h2>
+  <ul>
+    <li><strong>Calendar</strong> (if you allow it). The app reads your calendar on the phone to work out when you are free and to spot upcoming trips. Only events that fall inside a trip you have in Odys.ai are uploaded, as described above. Events you create in the app can be written to your calendar.</li>
+    <li><strong>Location</strong> (if you allow it, only while the app is open). Used to show local weather and to rank nearby suggestions. Your coordinates are sent with those requests and are not saved to your account.</li>
+    <li><strong>Camera and photos</strong> (only when you set a profile picture). The picture you choose is resized on the phone and uploaded as your profile photo.</li>
+  </ul>
+  <p>Trips, contacts and your profile are also kept on the phone so the app works offline.</p>
+
+  <h2>What other people can see</h2>
+  <ul>
+    <li>Contacts in a circle you shared a trip with see that trip's destination and dates.</li>
+    <li>Contacts in the circles you chose see your home city.</li>
+    <li>People you invite to an event see the event and your name and photo.</li>
+    <li>Contacts you are connected with see your name and photo.</li>
+  </ul>
+  <p>Nothing is public, and nobody outside your circles can look you up.</p>
+
+  <h2>Services we use</h2>
+  <p>These companies process data for us, only to provide the service:</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Service</th><th>Used for</th><th>Receives</th></tr></thead>
+    <tbody>
+      <tr><td>Google Cloud (United States)</td><td>Running our server</td><td>Everything listed under "What we store"</td></tr>
+      <tr><td>MongoDB database hosting</td><td>Storing your data</td><td>Everything listed under "What we store"</td></tr>
+      <tr><td>Google Sign-In</td><td>Signing in with Google</td><td>That you signed in to Odys.ai</td></tr>
+      <tr><td>Google Play and RevenueCat</td><td>Premium subscriptions</td><td>A random account identifier and your purchases</td></tr>
+      <tr><td>Expo push service, Firebase Cloud Messaging</td><td>Delivering notifications</td><td>Notification token and notification text</td></tr>
+      <tr><td>Google Places</td><td>Finding restaurants and activities</td><td>The city and kind of place searched; nothing about you</td></tr>
+      <tr><td>Open-Meteo</td><td>Weather and city search</td><td>Coordinates or the city name typed, sent from your phone</td></tr>
+      <tr><td>OpenStreetMap Nominatim</td><td>Finding a hotel address</td><td>The address or hotel name typed, sent from your phone</td></tr>
+      <tr><td>Sentry</td><td>Crash and error reports, when enabled</td><td>Technical details of the error, phone model, app version</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Our server runs in the United States, so your data is transferred there. We share data with nobody else, unless the law requires it.</p>
+
+  <h2>Why we are allowed to use it</h2>
+  <ul>
+    <li>To provide the app you signed up for (performance of a contract): your account, trips, events, circles, subscription.</li>
+    <li>With your permission, which you can withdraw in your phone's settings: calendar, location, camera, photos, notifications.</li>
+    <li>Because we have a legitimate interest in keeping the service secure and working: request logs, crash reports, usage counters.</li>
+  </ul>
+
+  <h2>How long we keep it</h2>
+  <p>For as long as you have an account. When you delete your account, everything listed under "What we store" is deleted immediately, except request logs, which expire after 30 days, and the purchase records held by Google Play and RevenueCat.</p>
+
+  <h2>Your choices and rights</h2>
+  <ul>
+    <li><strong>Delete your account</strong> in the app (Profile &rarr; Delete account), or from the <a href="delete-account.html">account deletion page</a> if you no longer have the app.</li>
+    <li><strong>See and correct your data</strong> in the app: your profile, trips, events and contacts are all shown and editable there.</li>
+    <li><strong>Get a copy, object, or ask a question</strong> through Profile &rarr; Report a problem in the app.</li>
+    <li>If you live in the European Economic Area, the United Kingdom or Switzerland, you also have the right to complain to your data protection authority.</li>
+  </ul>
+
+  <h2>Children</h2>
+  <p>Odys.ai is for adults who travel for work. It is not meant for anyone under 16, and we do not knowingly collect their data.</p>
+
+  <h2>Changes</h2>
+  <p>When this policy changes, this page and the date at the top are updated. If a change affects how data you already gave us is used, we will tell you in the app first.</p>
+</main>
+</body>
+</html>

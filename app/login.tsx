@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Text, StyleSheet, TouchableOpacity, TextInput, KeyboardAvoidingView, Platform, Alert, ActivityIndicator } from 'react-native';
+import { Text, StyleSheet, TouchableOpacity, TextInput, KeyboardAvoidingView, Platform, Alert, ActivityIndicator, Linking } from 'react-native';
 import { GoogleSignin, isSuccessResponse, isErrorWithCode, statusCodes } from '@react-native-google-signin/google-signin';
 import { useAuth } from '@/hooks/useAuth';
+import { PRIVACY_POLICY_URL } from '@/lib/api-client';
 
 // Only truthy in a build that actually has this configured (see .env.example's
 // EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID) — lets the button disappear cleanly in any environment
@@ -103,6 +104,11 @@ export default function LoginScreen() {
       >
         <Text style={styles.buttonText}>Continue</Text>
       </TouchableOpacity>
+
+      <Text style={styles.legalText}>
+        Read how we handle your data in our{' '}
+        <Text style={styles.legalLink} onPress={() => Linking.openURL(PRIVACY_POLICY_URL).catch(() => {})}>privacy policy</Text>.
+      </Text>
     </KeyboardAvoidingView>
   );
 }
@@ -178,6 +184,16 @@ const styles = StyleSheet.create({
   buttonText: {
     color: '#fff',
     fontSize: 18,
+    fontWeight: '600',
+  },
+  legalText: {
+    marginTop: 20,
+    fontSize: 13,
+    color: '#64748b',
+    textAlign: 'center',
+  },
+  legalLink: {
+    color: '#2563eb',
     fontWeight: '600',
   },
 });
