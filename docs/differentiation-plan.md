@@ -119,32 +119,38 @@ shapes come from the current API references, not from a live run.
 
 ### Phase 1 — Beta gate (Play requires these before closed testing)
 
-**B1. Account deletion.** `DELETE /api/users/me` (authenticated, `strictLimiter`) removes the
-user and everything keyed to them: trips, events they created, their participation in others'
-events, contacts they own and contacts pointing at them, friend requests either way,
-suggestions, `TripCreationEvent` rows. Pure `lib/account-deletion.ts` builds the list of
+**B1. Account deletion.** *(built)* `DELETE /api/users/me` (authenticated, `strictLimiter`)
+removes the user and everything keyed to them: trips, events they created, their participation
+in others' events, contacts they own and contacts pointing at them, friend requests either way,
+suggestions, `TripCreationEvent` rows. Pure `lib/account-deletion.ts` builds the ordered list of
 `{ model, filter }` operations so the coverage is unit-tested. App: "Delete account" at the
 bottom of Profile → confirm dialog → call → `logout()`. Web: `public/delete-account.html`
-(Play needs a URL that works without the app) — email + emailed confirmation link through the
-existing `lib/mailer.ts`.
+(Play needs a URL that works without the app) — an email form that files a request
+(`POST /api/account-deletion-requests`) into a queue shown in the admin page's Users & Billing
+tab, where the owner confirms with the address holder and deletes or dismisses it.
 *Decided:* hard delete, no soft-delete window; a still-active Play subscription is not
-cancelled by deletion — the confirm dialog says so and links to Play's subscription page.
+cancelled by deletion — the confirm dialog says so and links to the Subscription screen.
+*Changed from the first draft:* no emailed confirmation link — `lib/mailer.ts` has no relay
+configured, so a link would never arrive. Revisit if a mail relay is added.
 
-**B2. Privacy policy.** `public/privacy.html`, served by the existing static handler, written
+**B2. Privacy policy.** *(built)* `public/privacy.html`, served by the existing static handler, written
 from what the code actually collects (email, name, avatar, homebase, trips, calendar-derived
 events encrypted at rest, contacts, push token, purchase state via RevenueCat, Sentry crash
 data). Linked from Profile and the login screen.
 *Decided:* English only for the beta; controller named as Nicolas Groh (individual) until a
 company exists.
 
-**B3. Sentry on.** Add `EXPO_PUBLIC_SENTRY_DSN` to the `preview` env in `eas.json` and
-`SENTRY_DSN` to Cloud Run. Needs the DSN from the owner (or stays off — nothing breaks).
+**B3. Sentry on.** *(waiting on a DSN)* Both ends are already wired and inert. Turning it on
+is two values — `EXPO_PUBLIC_SENTRY_DSN` in the `preview` env in `eas.json` and `SENTRY_DSN` on
+Cloud Run — spelled out in `docs/play-beta-setup.md` → "Error tracking". Stays off until the
+owner creates the Sentry project; nothing breaks without it.
 
-**B4. Feedback link.** Profile already has the suggestion form (`suggestion-form-modal.tsx`);
-add a "Report a problem" entry that opens it pre-set to a `bug` type with app version and
-device model attached.
+**B4. Feedback link.** *(built)* Profile already had the suggestion form
+(`suggestion-form-modal.tsx`); a "Report a problem" entry opens the same form with
+`kind: 'problem'` and attaches app version, platform, OS version and device model. Because the
+suggestion email is inert, the admin page gained a **Feedback** tab that lists both kinds.
 
-**B5. Data Safety draft.** `docs/play-data-safety.md` — the form's answers derived from B2, so
+**B5. Data Safety draft.** *(built)* `docs/play-data-safety.md` — the form's answers derived from B2, so
 filling the console form is copy-paste.
 
 ### Phase 2 — Wave 1: make the social pillar proactive

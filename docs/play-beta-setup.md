@@ -116,7 +116,37 @@ track before production access can be requested.
 1. **Testing → Closed testing** → create a track → testers via a Google Group (easiest to
    manage) or email list → promote the internal release to it.
 2. Store listing, content rating questionnaire, Data Safety form, privacy policy URL, and the
-   account-deletion URL must be filled before the closed track can go live (the app-side
-   pieces — deletion flow, privacy page — are on the beta plan).
+   account-deletion URL must be filled before the closed track can go live.
+   `docs/play-data-safety.md` has the Data Safety answers and both URLs
+   (`<Cloud Run URL>/privacy.html`, `<Cloud Run URL>/delete-account.html`) — the pages are
+   served by the backend, so deploy it first and open both before pasting them.
 3. Recruit ~15–20 so drop-outs don't reset the count below 12; share the opt-in link Play gives
    you on the track page.
+
+## 7. While the beta runs
+
+**Deletion requests.** `delete-account.html` files requests into `admin.html` → Users & Billing
+→ "Account deletion requests". The page promises they are handled within 30 days: confirm with
+the address holder (anyone can type any address into the form), then **Delete account** (asks
+you to type the email back) or **Dismiss**.
+
+**Feedback.** `admin.html` → Feedback lists what testers send from Profile → "Have a
+suggestion" / "Report a problem" (problem reports carry app version and phone model). Nothing
+is emailed — `lib/mailer.ts` has no relay — so this tab is the only place it shows up.
+
+**Error tracking (optional).** Sentry is wired on both ends and off until it has a DSN:
+
+1. Create a free project at [sentry.io](https://sentry.io) (React Native; the same DSN can be
+   reused for the backend) and copy its DSN.
+2. App: add `"EXPO_PUBLIC_SENTRY_DSN": "<dsn>"` to `build.preview.env` in `eas.json`
+   (`production` extends it). Takes effect on the next build.
+3. Backend:
+   ```bash
+   gcloud run services update odysai-server --region us-central1 \
+     --update-env-vars SENTRY_DSN=<dsn>
+   ```
+4. Add the two "Only when Sentry is on" rows from `docs/play-data-safety.md` to the Data Safety
+   form.
+
+Stack traces will be minified: `SENTRY_DISABLE_AUTO_UPLOAD` stays `true` in `eas.json` because
+source-map upload needs a Sentry auth token and broke the EAS build without one.
