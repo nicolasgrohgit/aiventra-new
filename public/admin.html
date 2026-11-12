@@ -48,6 +48,7 @@
   <div class="tabs">
     <button type="button" data-tab="places">Vetted Places</button>
     <button type="button" data-tab="users">Users &amp; Billing</button>
+    <button type="button" data-tab="feedback">Feedback</button>
   </div>
 
   <div id="tab-users" style="display:none;">
@@ -61,6 +62,17 @@
         <div class="field" style="max-width:160px;"><label>Trips per month</label><input type="number" id="trip-cap" min="1" step="1"></div>
         <button type="button" id="save-trip-cap">Save cap</button>
       </div>
+    </div>
+
+    <div class="panel" id="deletion-requests-panel" style="display:none;">
+      <h2 style="margin-top:0; font-size:15px;">Account deletion requests</h2>
+      <p class="hint">Sent from the public delete-account page. Anyone can type any address there, so confirm with the address's owner before deleting. "Dismiss" drops the request and keeps the account.</p>
+      <table>
+        <thead>
+          <tr><th>Email</th><th>Requested</th><th>Account</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="deletion-requests-body"></tbody>
+      </table>
     </div>
 
     <div class="panel">
@@ -80,6 +92,27 @@
         <tbody id="users-body"></tbody>
       </table>
       <p class="muted" id="users-footer"></p>
+    </div>
+  </div>
+
+  <div id="tab-feedback" style="display:none;">
+    <div class="panel">
+      <div class="filter-row">
+        <div class="field" style="max-width:200px;">
+          <label>Show</label>
+          <select id="feedback-kind"><option value="">Everything</option><option value="problem">Problem reports only</option></select>
+        </div>
+        <button type="button" class="secondary" id="feedback-refresh">Refresh</button>
+      </div>
+      <p class="hint">Sent from Profile &rarr; "Have a suggestion" and "Report a problem". Newest first.</p>
+      <div id="feedback-status" style="font-size:13px; min-height:16px; color:#b00020;"></div>
+      <table>
+        <thead>
+          <tr><th>When</th><th>From</th><th>Type</th><th>Message</th></tr>
+        </thead>
+        <tbody id="feedback-body"></tbody>
+      </table>
+      <p class="muted" id="feedback-footer"></p>
     </div>
   </div>
 
@@ -358,9 +391,62 @@ function renderUserRow(u) {
     <td>${fmtDate(u.lastAppAccess)}</td>
     <td><span class="plan plan-${bucket}">${PLAN_LABELS[bucket]}</span>${platform}${periodEnd}</td>
     <td>${trips}</td>
-    <td class="actions"><button type="button" class="secondary" data-edit-plan>Edit plan</button></td>`;
+    <td class="actions"><button type="button" class="secondary" data-edit-plan>Edit plan</button><button type="button" class="danger" data-delete-user>Delete</button></td>`;
   tr.querySelector('[data-edit-plan]').addEventListener('click', () => tr.replaceWith(renderEditRow(u)));
+  tr.querySelector('[data-delete-user]').addEventListener('click', () => deleteUser(u));
   return tr;
+}
+
+// Deletes the account and everything it owns (trips, events, contacts, friend requests,
+// feedback). Typing the address back is the guard — there is no undo and no backup to restore
+// a single user from.
+async function deleteUser(u) {
+  const typed = prompt(`Permanently delete ${u.email} and all of their data?\n\nThis does not cancel a Google Play subscription.\nType the email address to confirm:`);
+  if (typed === null) return;
+  if (typed.trim().toLowerCase() !== String(u.email).toLowerCase()) {
+    setUsersStatus('Email did not match — nothing was deleted.', true);
+    return;
+  }
+  const res = await adminFetch(`/admin/api/users/${u._id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    setUsersStatus(err.error || 'Delete failed', true);
+    return;
+  }
+  setUsersStatus(`Deleted ${u.email}.`);
+  await refreshUsersTab();
+}
+
+async function loadDeletionRequests() {
+  const res = await adminFetch('/admin/api/deletion-requests');
+  if (!res.ok) { setUsersStatus('Failed to load deletion requests', true); return; }
+  const { requests } = await res.json();
+  document.getElementById('deletion-requests-panel').style.display = requests.length ? '' : 'none';
+  const body = document.getElementById('deletion-requests-body');
+  body.innerHTML = '';
+  requests.forEach(r => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${escapeHtml(r.email)}</td>
+      <td>${fmtDate(r.createdAt)}</td>
+      <td>${r.user ? `${escapeHtml(r.user.email)}<br><span class="muted">${escapeHtml(r.user.full_name || '')}</span>` : '<span class="muted">No account with this address</span>'}</td>
+      <td class="actions">${r.user ? '<button type="button" class="danger" data-delete-account>Delete account</button>' : ''}<button type="button" class="secondary" data-dismiss>Dismiss</button></td>`;
+    if (r.user) tr.querySelector('[data-delete-account]').addEventListener('click', () => deleteUser(r.user));
+    tr.querySelector('[data-dismiss]').addEventListener('click', async () => {
+      if (!confirm(`Dismiss the deletion request for ${r.email}? The account is kept.`)) return;
+      const del = await adminFetch(`/admin/api/deletion-requests/${r._id}`, { method: 'DELETE' });
+      if (!del.ok) { setUsersStatus('Dismiss failed', true); return; }
+      setUsersStatus(`Dismissed the request for ${r.email}.`);
+      await loadDeletionRequests();
+    });
+    body.appendChild(tr);
+  });
+}
+
+async function refreshUsersTab() {
+  await loadBillingSummary(); // first, so currentTripCap is known when rows render
+  await loadDeletionRequests();
+  await loadUsers();
 }
 
 function renderEditRow(u) {
@@ -422,28 +508,57 @@ document.getElementById('save-trip-cap').addEventListener('click', async () => {
   await loadUsers();
 });
 
-document.getElementById('users-refresh').addEventListener('click', async () => { await loadBillingSummary(); await loadUsers(); });
+document.getElementById('users-refresh').addEventListener('click', refreshUsersTab);
 document.getElementById('user-plan-filter').addEventListener('change', loadUsers);
 document.getElementById('user-search').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); loadUsers(); } });
+
+// --- Feedback ---------------------------------------------------------------------------
+async function loadFeedback() {
+  const kind = document.getElementById('feedback-kind').value;
+  const statusEl = document.getElementById('feedback-status');
+  statusEl.textContent = '';
+  const res = await adminFetch('/admin/api/feedback' + (kind ? `?kind=${kind}` : ''));
+  if (!res.ok) { statusEl.textContent = 'Failed to load feedback'; return; }
+  const { feedback } = await res.json();
+  const body = document.getElementById('feedback-body');
+  body.innerHTML = '';
+  feedback.forEach(f => {
+    const tr = document.createElement('tr');
+    const from = f.user ? `${escapeHtml(f.user.email)}<br><span class="muted">${escapeHtml(f.user.full_name || '')}</span>` : '<span class="muted">Deleted account</span>';
+    const context = f.context ? `<br><span class="muted">${escapeHtml(Object.values(f.context).join(' · '))}</span>` : '';
+    tr.innerHTML = `
+      <td style="white-space:nowrap;">${fmtDate(f.createdAt)}</td>
+      <td>${from}</td>
+      <td>${f.kind === 'problem' ? 'Problem' : 'Suggestion'}${context}</td>
+      <td style="white-space:pre-wrap;">${escapeHtml(f.text)}</td>`;
+    body.appendChild(tr);
+  });
+  document.getElementById('feedback-footer').textContent =
+    feedback.length ? `${feedback.length} shown (newest 200).` : 'Nothing yet.';
+}
+document.getElementById('feedback-refresh').addEventListener('click', loadFeedback);
+document.getElementById('feedback-kind').addEventListener('change', loadFeedback);
 
 // --- Tabs: only the visible tab loads its data. Remembered via the URL hash. -------------
 const loadedTabs = new Set();
 async function showTab(name) {
   document.getElementById('tab-places').style.display = name === 'places' ? '' : 'none';
   document.getElementById('tab-users').style.display = name === 'users' ? '' : 'none';
+  document.getElementById('tab-feedback').style.display = name === 'feedback' ? '' : 'none';
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
   if (location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`);
   if (loadedTabs.has(name)) return;
   loadedTabs.add(name);
   if (name === 'places') {
     loadPlaces();
+  } else if (name === 'feedback') {
+    await loadFeedback();
   } else {
-    await loadBillingSummary(); // first, so currentTripCap is known when rows render
-    await loadUsers();
+    await refreshUsersTab();
   }
 }
 document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
-showTab(location.hash === '#users' ? 'users' : 'places');
+showTab(['users', 'feedback'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'places');
 </script>
 </body>
 </html>

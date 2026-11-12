@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, ScrollView, TouchableOpacity, Text, TextInput, Alert, ActivityIndicator } from 'react-native';
+import { StyleSheet, View, ScrollView, TouchableOpacity, Text, TextInput, Alert, ActivityIndicator, Linking } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import Constants from 'expo-constants';
@@ -7,6 +7,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { ThemedText } from '@/components/themed-text';
 import { useAuth } from '@/hooks/useAuth';
+import { PRIVACY_POLICY_URL } from '@/lib/api-client';
 import { NativeDatePicker } from '@/components/ui/NativeDatePicker';
 import { searchCities, CityResult } from '@/lib/geocoding';
 import { FOOD_GENRES_CATEGORIZED, ACTIVITY_GENRES_CATEGORIZED, EVENT_GENRES_CATEGORIZED } from '@/constants/preferences';
@@ -51,7 +52,7 @@ export const CHANGELOG_HISTORY = [
 
 export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
-  const { user, updatePreferences, updateUser, logout } = useAuth();
+  const { user, updatePreferences, updateUser, logout, deleteAccount } = useAuth();
   // Derived from app.json rather than a second hardcoded copy, so the two can't drift apart.
   const appVersion = Constants.expoConfig?.version || CHANGELOG_HISTORY[0]?.version || '1.0.0';
 
@@ -127,6 +128,8 @@ export default function ProfileScreen() {
   const [showEventModal, setShowEventModal] = useState(false);
   const [showVersionModal, setShowVersionModal] = useState(false);
   const [showSuggestionModal, setShowSuggestionModal] = useState(false);
+  const [showProblemModal, setShowProblemModal] = useState(false);
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   // Disables the avatar tap target and swaps in a spinner while the pick -> crop -> resize ->
   // compress pipeline runs, so a slow device/large source photo can't be tapped again mid-flight
   // (which would kick off a second concurrent updateUser call).
@@ -215,6 +218,37 @@ export default function ProfileScreen() {
       { text: 'Choose from Library', onPress: pickAvatarFromLibrary },
       { text: 'Cancel', style: 'cancel' }
     ]);
+  };
+
+  const openPrivacyPolicy = () => {
+    Linking.openURL(PRIVACY_POLICY_URL).catch(() => Alert.alert('Could not open the privacy policy', PRIVACY_POLICY_URL));
+  };
+
+  const confirmDeleteAccount = async () => {
+    setIsDeletingAccount(true);
+    const result = await deleteAccount();
+    // On success the auth redirect (app/_layout.tsx) has already left this screen.
+    if (!result.ok) {
+      setIsDeletingAccount(false);
+      Alert.alert('Account not deleted', result.message || 'Please try again.');
+    }
+  };
+
+  const handleDeleteAccount = () => {
+    // Deleting the account can't cancel a store subscription — only the user can, in Google
+    // Play — so someone still entitled is told first and offered the way there.
+    const subscriptionNote = isPremium
+      ? '\n\nYour Premium subscription is NOT cancelled by this. Cancel it in Google Play first, or you will keep being charged.'
+      : '';
+    Alert.alert(
+      'Delete your account?',
+      `This permanently deletes your profile, trips, events and circles, and removes you from your contacts' circles. It cannot be undone.${subscriptionNote}`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        ...(isPremium ? [{ text: 'Manage subscription', onPress: () => router.push('/subscription') }] : []),
+        { text: 'Delete account', style: 'destructive' as const, onPress: confirmDeleteAccount },
+      ]
+    );
   };
 
   const handleSave = () => {
@@ -401,6 +435,15 @@ export default function ProfileScreen() {
             <Text style={styles.cardDesc}>Tell us what&apos;s missing or what could be better.</Text>
          </TouchableOpacity>
 
+        <TouchableOpacity
+           style={styles.engineConfigCard}
+           activeOpacity={0.7}
+           onPress={() => setShowProblemModal(true)}
+         >
+            <Text style={styles.cardHeader}>Report a problem</Text>
+            <Text style={styles.cardDesc}>Something broken or confusing? Tell us what happened.</Text>
+         </TouchableOpacity>
+
         <TouchableOpacity style={styles.saveButton} onPress={handleSave}>
           <Text style={styles.saveButtonText}>Save Changes</Text>
         </TouchableOpacity>
@@ -408,6 +451,19 @@ export default function ProfileScreen() {
         <TouchableOpacity style={styles.logoutButton} onPress={logout}>
           <Text style={styles.logoutText}>Sign Out</Text>
         </TouchableOpacity>
+
+        <View style={styles.accountLinks}>
+          <TouchableOpacity onPress={openPrivacyPolicy} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Text style={styles.accountLink}>Privacy policy</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={handleDeleteAccount} disabled={isDeletingAccount} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            {isDeletingAccount ? (
+              <ActivityIndicator color="#FCA5A5" />
+            ) : (
+              <Text style={[styles.accountLink, styles.deleteAccountLink]}>Delete account</Text>
+            )}
+          </TouchableOpacity>
+        </View>
       </ScrollView>
       <GenericSelectionModal visible={showDietModal} close={() => setShowDietModal(false)} title="Dietary Limiters" description="Select any dietary restrictions to exclude matching food options from your suggestions." options={COMMON_DIETS} selected={dietary} toggle={(i:string) => toggleArrayItem(i, dietary, setDietary)} />
       <CategorizedSelectionModal visible={showFoodModal} close={() => setShowFoodModal(false)} title="Dining Contexts" description="Select your favorite cuisines to prioritize them in dining recommendations." groupedOptions={FOOD_GENRES_CATEGORIZED} selected={foodGenres} onSelectedChange={setFoodGenres} category="Restaurant" />
@@ -415,6 +471,7 @@ export default function ProfileScreen() {
       <CategorizedSelectionModal visible={showEventModal} close={() => setShowEventModal(false)} title="Event Types" description="Select the categories of live entertainment and events you would like to discover." groupedOptions={EVENT_GENRES_CATEGORIZED} selected={eventGenres} onSelectedChange={setEventGenres} category="Event" />
       <VersionHistoryModal visible={showVersionModal} close={() => setShowVersionModal(false)} history={CHANGELOG_HISTORY} />
       <SuggestionFormModal visible={showSuggestionModal} close={() => setShowSuggestionModal(false)} />
+      <SuggestionFormModal kind="problem" visible={showProblemModal} close={() => setShowProblemModal(false)} />
 
     </View>
   );
@@ -459,6 +516,9 @@ const styles = StyleSheet.create({
   saveButtonText: { color: '#F8FAFC', fontSize: 16, fontWeight: '800' },
   logoutButton: { backgroundColor: 'rgba(220, 38, 38, 0.1)', paddingVertical: 18, borderRadius: 16, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(220, 38, 38, 0.3)' },
   logoutText: { color: '#FCA5A5', fontSize: 16, fontWeight: '800' },
+  accountLinks: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 28, paddingHorizontal: 4 },
+  accountLink: { color: '#94A3B8', fontSize: 14, fontWeight: '600' },
+  deleteAccountLink: { color: '#FCA5A5' },
 
   // modalContainer/modalHeader/modalTitle/closeButton/closeButtonText/modalSubtitle,
   // dietModalOption*/checkmark, categoryGroup/categoryTitle/bubblesContainer/bubbleOption*/

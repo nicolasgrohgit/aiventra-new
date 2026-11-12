@@ -25,6 +25,7 @@ import FriendRequest from './models/FriendRequest';
 import Place from './models/Place';
 import Suggestion from './models/Suggestion';
 import TripCreationEvent from './models/TripCreationEvent';
+import AccountDeletionRequest from './models/AccountDeletionRequest';
 import { ensurePlacesForCity, refreshNearbyPlacesLive } from './lib/places-population';
 import { getTripQuotaForUser, isPremiumEntitled, getMonthlyTripCap, setMonthlyTripCap, getCurrentMonthBoundaries } from './lib/trip-quota';
 import { summarizeSubscriptions, parseTripCap, MAX_MONTHLY_TRIP_CAP } from './lib/subscription';
@@ -32,6 +33,10 @@ import { mapRevenueCatEvent, resolveOdysUserId } from './lib/revenuecat-events';
 import { searchCities } from './lib/geocoding';
 import { sendPushNotification } from './lib/push-notifications';
 import { sendMail } from './lib/mailer';
+import {
+  buildAccountDeletionPlan, isObjectIdString, isValidDeletionRequestEmail, normalizeDeletionRequestEmail, DeletionModel
+} from './lib/account-deletion';
+import { parseFeedbackKind, sanitizeFeedbackContext } from './lib/feedback';
 
 dotenv.config({ quiet: true });
 
@@ -471,6 +476,70 @@ app.post('/api/users/me/app-access', authenticate, async (req: AuthedRequest, re
   } catch (error: any) {
     reportError(error, req, 'save app access timestamp failed');
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Account deletion (Google Play requires both an in-app path and a web one). What gets removed
+// is decided by lib/account-deletion.ts; this just runs that plan, in order, against the real
+// models. Not a transaction: the plan deletes the User document last, so a run that dies
+// partway leaves an account that can still authenticate and call this again — and every step
+// is a deleteMany/$pull, so a second run is harmless.
+const ACCOUNT_DELETION_MODELS: Record<DeletionModel, any> = {
+  Event, Trip, Contact, FriendRequest, Suggestion, TripCreationEvent, AccountDeletionRequest, User
+};
+
+async function deleteAccountData(userId: string): Promise<Record<string, number> | null> {
+  const user = await User.findById(userId).select('email');
+  if (!user) return null;
+  const ownTripIds = (await Trip.find({ user_id: userId }).distinct('_id')).map((id: any) => id.toString());
+  const affected: Record<string, number> = {};
+  for (const step of buildAccountDeletionPlan(userId, ownTripIds, user.email)) {
+    const model = ACCOUNT_DELETION_MODELS[step.model];
+    const result = step.op === 'updateMany'
+      ? await model.updateMany(step.filter, step.update)
+      : await model.deleteMany(step.filter);
+    const n = step.op === 'updateMany' ? result.modifiedCount : result.deletedCount;
+    affected[step.model] = (affected[step.model] || 0) + (n || 0);
+  }
+  return affected;
+}
+
+// In-app "Delete account" (Profile). Scoped to req.userId — there is deliberately no
+// DELETE /api/users/:id. strictLimiter because it's irreversible and, while login is still
+// email-only, a session is cheap to obtain.
+app.delete('/api/users/me', strictLimiter, authenticate, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    if (!isObjectIdString(req.userId)) {
+      return res.status(400).json({ error: 'This account only exists on the device' });
+    }
+    const affected = await deleteAccountData(req.userId);
+    if (!affected) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    // Counts only — the point of the log line is "it happened and what it touched", not who.
+    req.log.info({ event: 'account_deleted', via: 'app', affected }, 'account deleted');
+    res.json({ success: true });
+  } catch (error: any) {
+    reportError(error, req, 'delete account failed');
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// The form on public/delete-account.html. Records the request and nothing more (see
+// models/AccountDeletionRequest.ts for why it can't delete directly). Same response whether
+// or not an account exists for that address, so it can't be used to probe for accounts.
+app.post('/api/account-deletion-requests', strictLimiter, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    const email = normalizeDeletionRequestEmail(req.body?.email);
+    if (!isValidDeletionRequestEmail(email)) {
+      return res.status(400).json({ error: 'A valid email address is required' });
+    }
+    await AccountDeletionRequest.updateOne({ email }, { $setOnInsert: { email, createdAt: new Date() } }, { upsert: true });
+    req.log.info({ event: 'account_deletion_requested' }, 'account deletion requested via web form');
+    res.json({ success: true });
+  } catch (error: any) {
+    reportError(error, req, 'create account deletion request failed');
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -1508,20 +1577,22 @@ app.post('/api/suggestions', authenticate, async (req: AuthedRequest, res: expre
     // best-effort admin-notification email) is caught separately and never turns into a
     // client-facing error, per the doc's explicit call: the user shouldn't see an error for
     // an email-relay gap that isn't their problem to know about.
-    const suggestion = await Suggestion.create({ user: req.userId, text });
+    const kind = parseFeedbackKind(req.body?.kind);
+    const context = sanitizeFeedbackContext(req.body?.context);
+    const suggestion = await Suggestion.create({ user: req.userId, text, kind, ...(context ? { context } : {}) });
 
     try {
       const user = await User.findById(req.userId).select('full_name email');
       const { sent } = await sendMail({
         to: 'admin@odys.ai',
-        subject: 'New Odys.ai suggestion',
-        text: `From: ${user?.full_name || user?.email || req.userId}\n\n${text}`
+        subject: kind === 'problem' ? 'New Odys.ai problem report' : 'New Odys.ai suggestion',
+        text: `From: ${user?.full_name || user?.email || req.userId}\n${context ? `${Object.values(context).join(' · ')}\n` : ''}\n${text}`
       });
       if (sent) {
         suggestion.emailed = true;
         await suggestion.save();
       }
-      req.log.info({ event: 'suggestion_submitted', userId: req.userId, suggestionId: suggestion._id.toString(), emailed: sent }, 'suggestion submitted');
+      req.log.info({ event: 'suggestion_submitted', userId: req.userId, suggestionId: suggestion._id.toString(), kind, emailed: sent }, 'suggestion submitted');
     } catch (mailError: any) {
       reportError(mailError, req, 'suggestion email notification failed');
     }
@@ -2001,6 +2072,85 @@ app.put('/admin/api/app-config/trip-cap', adminLimiter, requireAdminToken, async
     res.json({ value, max: MAX_MONTHLY_TRIP_CAP });
   } catch (error: any) {
     reportError(error, req, 'set admin trip cap failed');
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// What testers send from Profile ("Have a suggestion" / "Report a problem"). The emailed
+// notification is inert without a mail relay (lib/mailer.ts), so this list is where feedback
+// actually gets read.
+app.get('/admin/api/feedback', adminLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    const filter = req.query.kind === 'problem' ? { kind: 'problem' } : {};
+    const items = await Suggestion.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(ADMIN_USER_LIST_LIMIT)
+      .populate('user', 'email full_name')
+      .lean();
+    res.json({
+      feedback: items.map((s: any) => ({
+        _id: s._id,
+        kind: s.kind || 'suggestion',
+        text: s.text,
+        context: s.context || null,
+        createdAt: s.createdAt,
+        user: s.user ? { email: s.user.email, full_name: s.user.full_name } : null
+      }))
+    });
+  } catch (error: any) {
+    reportError(error, req, 'list admin feedback failed');
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Web deletion requests (POST /api/account-deletion-requests) wait here for a human: confirm
+// with the address's owner out of band, then delete the account or dismiss the request.
+app.get('/admin/api/deletion-requests', adminLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    const requests = await AccountDeletionRequest.find().sort({ createdAt: 1 }).limit(ADMIN_USER_LIST_LIMIT).lean();
+    // Stored lowercased, but account emails are kept as typed at signup — match case-insensitively.
+    const withAccounts = await Promise.all(requests.map(async (r: any) => {
+      const user = await User.findOne({ email: { $regex: `^${escapeRegExp(r.email)}$`, $options: 'i' } })
+        .select('email full_name')
+        .lean() as any;
+      return { _id: r._id, email: r.email, createdAt: r.createdAt, user: user ? { _id: user._id, email: user.email, full_name: user.full_name } : null };
+    }));
+    res.json({ requests: withAccounts });
+  } catch (error: any) {
+    reportError(error, req, 'list account deletion requests failed');
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.delete('/admin/api/deletion-requests/:id', adminLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    if (!isObjectIdString(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid request id' });
+    }
+    const removed = await AccountDeletionRequest.findByIdAndDelete(req.params.id);
+    if (!removed) {
+      return res.status(404).json({ error: 'Request not found' });
+    }
+    res.json({ success: true });
+  } catch (error: any) {
+    reportError(error, req, 'dismiss account deletion request failed');
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.delete('/admin/api/users/:id', adminLimiter, requireAdminToken, async (req: AuthedRequest, res: express.Response) => {
+  try {
+    if (!isObjectIdString(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid user id' });
+    }
+    const affected = await deleteAccountData(req.params.id);
+    if (!affected) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    req.log.info({ event: 'account_deleted', via: 'admin', affected }, 'account deleted');
+    res.json({ success: true, affected });
+  } catch (error: any) {
+    reportError(error, req, 'admin delete account failed');
     res.status(500).json({ error: 'Internal server error' });
   }
 });

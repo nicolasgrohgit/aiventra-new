@@ -6,6 +6,35 @@ this is still pre-release/beta.
 
 ## [Unreleased]
 ### Added
+- **Account deletion** (Play requires it before closed testing).
+  - `DELETE /api/users/me` — removes the account and everything keyed to it: own trips and
+    their events, the copies of those trips that invited participants hold, events created on
+    other people's trips, participation in others' events, the user's contacts and their entry
+    in other people's contact lists, friend requests both ways, feedback, and trip-count rows. The ordered operation list comes from the pure
+    `lib/account-deletion.ts` (`buildAccountDeletionPlan`), with a test that fails if a model
+    referencing a user is added without being covered.
+  - App: "Delete account" under Sign Out in Profile → confirmation (Premium users are told the
+    Play subscription is **not** cancelled and offered the Subscription screen) → server call →
+    sign-out. `useAuth().deleteAccount()` is deliberately not offline-first: nothing is cleared
+    locally unless the server confirmed.
+  - Web: `public/delete-account.html` for people who no longer have the app. The form files a
+    request (`POST /api/account-deletion-requests`, same reply whether or not the address has
+    an account); the admin page's Users & Billing tab lists open requests with **Delete
+    account** / **Dismiss**, and every user row gained a **Delete** button (type the email back
+    to confirm). New admin routes: `GET /admin/api/deletion-requests`,
+    `DELETE /admin/api/deletion-requests/:id`, `DELETE /admin/api/users/:id`. Requests are
+    handled by hand rather than by an emailed link because `lib/mailer.ts` has no relay.
+- **Privacy policy** at `public/privacy.html`, written from what the code stores and sends,
+  linked from the login screen and from Profile (`PRIVACY_POLICY_URL` in `lib/api-client.ts`).
+- **"Report a problem"** in Profile — the suggestion form with `kind: 'problem'`, attaching app
+  version, platform, OS version and device model (`lib/feedback.ts` validates both on the
+  server; `Suggestion` gained `kind` and `context`, both additive). The admin page has a new
+  **Feedback** tab (`GET /admin/api/feedback`, `?kind=problem` to filter) — until now
+  suggestions were only readable in Mongo, since the notification email is inert.
+- `docs/play-data-safety.md` — the Play Console Data safety answers, the privacy-policy and
+  delete-account URLs, and the judgment calls to settle before submitting.
+  `docs/play-beta-setup.md` gained "While the beta runs" (deletion requests, feedback, and the
+  two values that switch Sentry on).
 - **Admin "Users & Billing" tab** in `public/admin.html` (now tabbed: Vetted Places / Users &
   Billing). Billing overview counts (total / free / premium / grace / canceled / expired /
   free users already at this month's cap), an editor for the free-tier monthly trip cap

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Delete your Odys.ai account</title>
+<style>
+  :root { --bg: #f7f7f8; --card: #fff; --text: #1a1a1a; --muted: #5f6368; --line: #e3e3e6; --accent: #0a7ea4; --danger: #b00020; --ok: #0a7a2f; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f172a; --card: #17213a; --text: #f1f5f9; --muted: #a3aec2; --line: #2a3654; --accent: #5cc3e6; --danger: #ff8a9a; --ok: #6bd695; }
+  }
+  body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 24px 16px 48px; line-height: 1.55; }
+  main { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 24px; margin: 8px 0 4px; }
+  h2 { font-size: 16px; margin: 28px 0 8px; }
+  p, li { font-size: 15px; }
+  .brand { font-weight: 700; color: var(--accent); font-size: 14px; letter-spacing: .02em; }
+  .muted { color: var(--muted); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 18px; margin-top: 12px; }
+  label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  input[type=email] { width: 100%; box-sizing: border-box; padding: 11px 12px; font-size: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); }
+  button { margin-top: 12px; padding: 11px 18px; font-size: 15px; font-weight: 600; border: 0; border-radius: 8px; background: var(--danger); color: #fff; cursor: pointer; }
+  @media (prefers-color-scheme: dark) { button { color: #0f172a; } }
+  button[disabled] { opacity: .6; cursor: default; }
+  #result { min-height: 22px; margin: 12px 0 0; font-size: 14px; }
+  a { color: var(--accent); }
+  ol, ul { padding-left: 20px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand">Odys.ai</div>
+  <h1>Delete your account</h1>
+  <p class="muted">Odys.ai is published by Nicolas Groh. This page explains how to delete your Odys.ai account and the data stored with it.</p>
+
+  <h2>Fastest: delete it in the app</h2>
+  <ol>
+    <li>Open Odys.ai and go to the <strong>Profile</strong> tab.</li>
+    <li>Scroll to the bottom and tap <strong>Delete account</strong>.</li>
+    <li>Confirm. The account and its data are deleted immediately.</li>
+  </ol>
+
+  <h2>No longer have the app?</h2>
+  <div class="card">
+    <form id="form" novalidate>
+      <label for="email">Email address of the account</label>
+      <input type="email" id="email" name="email" autocomplete="email" required maxlength="254" placeholder="you@example.com">
+      <button type="submit" id="submit">Request deletion</button>
+      <p id="result" role="status" aria-live="polite"></p>
+    </form>
+    <p class="muted" style="margin-bottom:0;">We handle requests by hand, within 30 days. Because anyone can type any address here, we confirm with the owner of the address before deleting anything.</p>
+  </div>
+
+  <h2>What is deleted</h2>
+  <ul>
+    <li>Your profile: email address, name, profile photo, home base, preferences, and notification token.</li>
+    <li>Your trips, and the events you created or imported from your calendar for them.</li>
+    <li>Your circles: the contacts you added, and friend requests you sent or received.</li>
+    <li>Your place in other people's data: you are removed from their contact lists, from events they invited you to, and trips you shared stop appearing for them.</li>
+    <li>Feedback you sent us through the app.</li>
+  </ul>
+
+  <h2>What is not deleted</h2>
+  <ul>
+    <li><strong>A Google Play subscription is not cancelled.</strong> Cancel it in Google Play &rarr; Payments &amp; subscriptions, otherwise Google keeps charging you.</li>
+    <li>Purchase records held by Google Play and by RevenueCat, our billing provider. They are tied to a random account identifier, not to your name or email.</li>
+    <li>Server request logs, which are removed automatically after 30 days.</li>
+    <li>Data stored only on your phone. Uninstalling the app, or clearing its storage, removes it.</li>
+  </ul>
+
+  <p class="muted" style="margin-top:28px;"><a href="privacy.html">Privacy policy</a></p>
+</main>
+<script>
+const form = document.getElementById('form');
+const result = document.getElementById('result');
+const submit = document.getElementById('submit');
+
+function show(msg, ok) {
+  result.textContent = msg;
+  result.style.color = ok ? 'var(--ok)' : 'var(--danger)';
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const email = document.getElementById('email').value.trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { show('Enter the email address of your account.', false); return; }
+  submit.disabled = true;
+  try {
+    const res = await fetch('/api/account-deletion-requests', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email })
+    });
+    if (res.status === 429) { show('Too many requests from this network. Try again in 15 minutes.', false); return; }
+    if (!res.ok) { show('That did not go through. Check the address and try again.', false); return; }
+    // Same message whether or not an account exists, by design.
+    show('Request received. If an Odys.ai account uses this address, we will contact you to confirm and then delete it.', true);
+    form.reset();
+  } catch {
+    show('Could not reach the server. Check your connection and try again.', false);
+  } finally {
+    submit.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { apiFetch, API_URL, setAuthToken } from '@/lib/api-client';
 import { registerForPushNotificationsAsync } from '@/lib/push-token';
 import { identifyPurchasesUser, resetPurchasesUser } from '@/lib/purchases';
+import { interpretAccountDeletionStatus } from '@/lib/account-deletion';
 
 // Step 2 of the useAuth.tsx split (see docs/useauth-split-plan.md): this is now just
 // identity/session/onboarding. Trips, contacts, and events live in their own providers
@@ -16,6 +17,8 @@ interface AuthContextType {
   login: (userData: any) => void;
   loginWithGoogle: (idToken: string) => Promise<void>;
   logout: () => void;
+  // Deletes the account on the server, then signs out. Resolves with why it didn't, if it didn't.
+  deleteAccount: () => Promise<{ ok: boolean; message?: string }>;
   completeOnboarding: (preferences: any) => void;
   updatePreferences: (newPreferences: any) => void;
   updateUser: (newUserData: any) => void;
@@ -31,6 +34,7 @@ const AuthContext = createContext<AuthContextType>({
   login: () => {},
   loginWithGoogle: async () => {},
   logout: () => {},
+  deleteAccount: async () => ({ ok: false }),
   completeOnboarding: () => {},
   updatePreferences: () => {},
   updateUser: () => {},
@@ -213,6 +217,26 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     // state/storage when it goes null, rather than this hook reaching into their concerns.
   };
 
+  // The one mutator here that is deliberately NOT offline-first: local data is only wiped once
+  // the server confirms the account is gone (lib/account-deletion.ts decides what counts), so a
+  // failed request leaves the user signed in with everything intact.
+  const deleteAccount = async (): Promise<{ ok: boolean; message?: string }> => {
+    const id = user?._id || user?.id;
+    // An offline/mock user has no server record — deleting it is just clearing the device.
+    if (id && !String(id).startsWith('mock_')) {
+      try {
+        const res = await apiFetch(`${API_URL}/api/users/me`, { method: 'DELETE' });
+        const outcome = interpretAccountDeletionStatus(res.status);
+        if (!outcome.deleted) return { ok: false, message: outcome.message };
+      } catch (err) {
+        console.warn('Account deletion request failed:', err);
+        return { ok: false, message: 'Could not reach the server. Check your connection and try again.' };
+      }
+    }
+    logout();
+    return { ok: true };
+  };
+
   const completeOnboarding = async (preferences: any) => {
     if (user) {
       // Merge rather than replace — onboarding only collects a subset of preference fields
@@ -297,6 +321,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       login,
       loginWithGoogle,
       logout,
+      deleteAccount,
       completeOnboarding,
       updatePreferences,
       updateUser,

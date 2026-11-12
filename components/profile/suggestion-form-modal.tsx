@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, Modal, StyleSheet, TextInput, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, TouchableOpacity, Modal, StyleSheet, TextInput, Alert, ActivityIndicator, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '@/hooks/useAuth';
+import Constants from 'expo-constants';
 import { apiFetch, API_URL } from '@/lib/api-client';
+import { FeedbackContext, FeedbackKind } from '@/lib/feedback';
 
 // New component, following the exact `VersionHistoryModal`/`CategorizedSelectionModal`
 // extraction pattern (see components/profile/version-history-modal.tsx): a `Modal` with
@@ -18,12 +20,44 @@ import { apiFetch, API_URL } from '@/lib/api-client';
 
 const MAX_LENGTH = 1500;
 
+// "Report a problem" (Profile) is this same form with different copy — one endpoint, one
+// collection, told apart by `kind`. A problem report also carries the app version and phone
+// model, so a beta tester doesn't have to be asked for them.
+const COPY: Record<FeedbackKind, { title: string; subtitle: string; label: string; placeholder: string; thanks: string }> = {
+  suggestion: {
+    title: 'Have a suggestion?',
+    subtitle: "Tell us what's missing or what could be better — this goes straight to the Odys.ai team.",
+    label: 'Your suggestion',
+    placeholder: 'What would make Odys.ai better for you?',
+    thanks: 'Your suggestion has been sent to the Odys.ai team.',
+  },
+  problem: {
+    title: 'Report a problem',
+    subtitle: 'Tell us what went wrong and what you were doing when it happened. Your app version and phone model are sent with the report.',
+    label: 'What happened?',
+    placeholder: 'e.g. I tapped "Add trip" and the screen stayed blank.',
+    thanks: 'Your report has been sent to the Odys.ai team.',
+  },
+};
+
+function getDeviceContext(): FeedbackContext {
+  const android = Platform.OS === 'android' ? (Platform.constants as { Brand?: string; Model?: string; Release?: string }) : null;
+  return {
+    appVersion: Constants.expoConfig?.version,
+    platform: Platform.OS,
+    osVersion: android?.Release ?? String(Platform.Version),
+    deviceModel: android ? [android.Brand, android.Model].filter(Boolean).join(' ') : undefined,
+  };
+}
+
 interface SuggestionFormModalProps {
   visible: boolean;
   close: () => void;
+  kind?: FeedbackKind;
 }
 
-export function SuggestionFormModal({ visible, close }: SuggestionFormModalProps) {
+export function SuggestionFormModal({ visible, close, kind = 'suggestion' }: SuggestionFormModalProps) {
+  const copy = COPY[kind];
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const [text, setText] = useState('');
@@ -38,17 +72,17 @@ export function SuggestionFormModal({ visible, close }: SuggestionFormModalProps
       const res = await apiFetch(`${API_URL}/api/suggestions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: text.trim() })
+        body: JSON.stringify({ text: text.trim(), kind, ...(kind === 'problem' ? { context: getDeviceContext() } : {}) })
       });
       if (!res.ok) {
         throw new Error('Request failed');
       }
       setText('');
       close();
-      Alert.alert('Thanks!', 'Your suggestion has been sent to the Odys.ai team.');
+      Alert.alert('Thanks!', copy.thanks);
     } catch (err) {
       console.warn('Failed to submit suggestion:', err);
-      Alert.alert('Something went wrong', 'We could not send your suggestion. Please try again.');
+      Alert.alert('Something went wrong', 'We could not send this. Please try again.');
     } finally {
       setIsSubmitting(false);
     }
@@ -60,22 +94,22 @@ export function SuggestionFormModal({ visible, close }: SuggestionFormModalProps
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={close}>
       <View style={[styles.modalContainer, { paddingTop: insets.top + 16 }]}>
         <View style={styles.modalHeader}>
-          <Text style={styles.modalTitle}>Have a suggestion?</Text>
+          <Text style={styles.modalTitle}>{copy.title}</Text>
           <TouchableOpacity onPress={close} style={styles.closeButton} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
             <Text style={styles.closeButtonText}>‹ Back</Text>
           </TouchableOpacity>
         </View>
-        <Text style={styles.modalSubtitle}>Tell us what&apos;s missing or what could be better — this goes straight to the Odys.ai team.</Text>
+        <Text style={styles.modalSubtitle}>{copy.subtitle}</Text>
 
         <Text style={styles.inputLabel}>From</Text>
         <Text style={styles.nameText}>{user?.full_name || 'You'}</Text>
 
-        <Text style={styles.inputLabel}>Your suggestion</Text>
+        <Text style={styles.inputLabel}>{copy.label}</Text>
         <TextInput
           style={styles.textArea}
           value={text}
           onChangeText={(t) => setText(t.slice(0, MAX_LENGTH))}
-          placeholder="What would make Odys.ai better for you?"
+          placeholder={copy.placeholder}
           placeholderTextColor="#64748B"
           multiline
           maxLength={MAX_LENGTH}
